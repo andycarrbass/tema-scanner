@@ -1,20 +1,22 @@
-// functions/bitunix.js
+// functions/api/bitunix/[[path]].js
 // Cloudflare Pages Function — Bitunix market-data proxy
-// Routes handled (via _routes.json):
-//   /api/bitunix/kline          — candlestick data (single page)
-//   /api/bitunix/tickers        — all futures ticker prices
-//   /api/bitunix/trading-pairs  — all tradeable symbols
-//
-// The browser cannot call Bitunix directly (CORS).
-// This function fetches server-side and returns the raw Bitunix envelope
-// unchanged so BitunixAdapter._extractArray() works without modification.
+// Handles:
+//   /api/bitunix/kline         — candlestick data
+//   /api/bitunix/tickers       — all futures ticker prices
+//   /api/bitunix/trading-pairs — all tradeable symbols
 
 const BITUNIX_BASE = 'https://fapi.bitunix.com';
 
-// Allowed origins — add your custom domain here if you have one
+const UPSTREAM_HEADERS = {
+  'Accept':     'application/json',
+  'User-Agent': 'Mozilla/5.0 (compatible; CloudflareWorker/1.0)',
+  'Origin':     'https://fapi.bitunix.com',
+};
+
+// Accept requests from both the old and new Pages domains
 const ALLOWED_ORIGINS = [
+  'https://tema-scanner.pages.dev',
   'https://tema-scanner-ac.pages.dev',
-  // 'https://your-custom-domain.com',
 ];
 
 function corsHeaders(request) {
@@ -31,10 +33,7 @@ function corsHeaders(request) {
 function jsonResponse(data, status = 200, request) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: {
-      'Content-Type': 'application/json',
-      ...corsHeaders(request),
-    },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(request) },
   });
 }
 
@@ -45,86 +44,58 @@ function errorResponse(message, status = 500, request) {
 export async function onRequestGet(context) {
   const { request } = context;
   const url = new URL(request.url);
-
-  // ── Route dispatch ──────────────────────────────────────────────────────
-  const path = url.pathname; // e.g. /api/bitunix/kline
+  const path = url.pathname;
 
   try {
-    if (path === '/api/bitunix/kline') {
+    if (path.endsWith('/kline')) {
       return await handleKline(url, request);
     }
-    if (path === '/api/bitunix/tickers') {
+    if (path.endsWith('/tickers')) {
       return await handleTickers(request);
     }
-    if (path === '/api/bitunix/trading-pairs') {
+    if (path.endsWith('/trading-pairs')) {
       return await handleTradingPairs(request);
     }
     return errorResponse('Unknown route: ' + path, 404, request);
   } catch (err) {
-    console.error('[bitunix.js] unhandled error:', err.message);
+    console.error('[bitunix] error:', err.message);
     return errorResponse('Proxy error: ' + err.message, 502, request);
   }
 }
 
-// Handle pre-flight CORS requests
 export async function onRequestOptions(context) {
-  return new Response(null, {
-    status: 204,
-    headers: corsHeaders(context.request),
-  });
+  return new Response(null, { status: 204, headers: corsHeaders(context.request) });
 }
 
-// ── /api/bitunix/kline ──────────────────────────────────────────────────────
-// Accepts the same query params the adapter already sends:
-//   symbol, interval, limit, type, endTime (optional)
-// Proxies to: GET /api/v1/futures/market/kline
 async function handleKline(url, request) {
-  const params = new URLSearchParams();
-
   const symbol   = url.searchParams.get('symbol');
   const interval = url.searchParams.get('interval');
   const limit    = url.searchParams.get('limit') || '200';
   const type     = url.searchParams.get('type')  || 'LAST_PRICE';
   const endTime  = url.searchParams.get('endTime');
 
-  if (!symbol)   return errorResponse('Missing required param: symbol',   400, request);
-  if (!interval) return errorResponse('Missing required param: interval', 400, request);
+  if (!symbol)   return errorResponse('Missing param: symbol',   400, request);
+  if (!interval) return errorResponse('Missing param: interval', 400, request);
 
-  params.set('symbol',   symbol);
-  params.set('interval', interval);
-  params.set('limit',    limit);
-  params.set('type',     type);
+  const params = new URLSearchParams({ symbol, interval, limit, type });
   if (endTime) params.set('endTime', endTime);
 
   const upstream = `${BITUNIX_BASE}/api/v1/futures/market/kline?${params}`;
-  const res = await fetch(upstream, { headers: { 'Accept': 'application/json' } });
+  const res = await fetch(upstream, { headers: UPSTREAM_HEADERS });
   if (!res.ok) return errorResponse(`Bitunix kline HTTP ${res.status}`, 502, request);
-
-  const data = await res.json();
-  return jsonResponse(data, 200, request);
+  return jsonResponse(await res.json(), 200, request);
 }
 
-// ── /api/bitunix/tickers ────────────────────────────────────────────────────
-// Fetches all futures tickers.
-// Proxies to: GET /api/v1/futures/market/tickers
 async function handleTickers(request) {
   const upstream = `${BITUNIX_BASE}/api/v1/futures/market/tickers`;
-  const res = await fetch(upstream, { headers: { 'Accept': 'application/json' } });
+  const res = await fetch(upstream, { headers: UPSTREAM_HEADERS });
   if (!res.ok) return errorResponse(`Bitunix tickers HTTP ${res.status}`, 502, request);
-
-  const data = await res.json();
-  return jsonResponse(data, 200, request);
+  return jsonResponse(await res.json(), 200, request);
 }
 
-// ── /api/bitunix/trading-pairs ──────────────────────────────────────────────
-// Fetches all trading pairs for symbol validation.
-// Proxies to: GET /api/v1/futures/market/trading_pairs  (or /symbols)
 async function handleTradingPairs(request) {
-  // Try the standard endpoint; fall back to /symbols if needed
   const upstream = `${BITUNIX_BASE}/api/v1/futures/market/trading_pairs`;
-  const res = await fetch(upstream, { headers: { 'Accept': 'application/json' } });
+  const res = await fetch(upstream, { headers: UPSTREAM_HEADERS });
   if (!res.ok) return errorResponse(`Bitunix trading-pairs HTTP ${res.status}`, 502, request);
-
-  const data = await res.json();
-  return jsonResponse(data, 200, request);
+  return jsonResponse(await res.json(), 200, request);
 }
