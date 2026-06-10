@@ -812,6 +812,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       <span id="tdLastSync" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></span>
+      <span id="tdStaleIndicator" style="display:none;font-size:11px;font-weight:600;color:var(--amber-text);font-family:var(--mono);">⚠ prices stale</span>
       <button onclick="exportTrades()" style="font-size:12px;padding:6px 11px;">&#8595; Export</button>
     </div>
   </div>
@@ -1998,7 +1999,7 @@ const BinanceAdapter = {
 // \u2500\u2500 BitunixAdapter \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 const BitunixAdapter = {
 
-  _proxy:     'https://api.temadesk.com/api/bitunix', // VPS proxy
+  _proxy:     '/api/bitunix', // Cloudflare Pages Function proxy
   _klimit:    200,           // hard exchange cap per request
   _priceType: 'LAST_PRICE', // LAST_PRICE | MARK_PRICE
 
@@ -2334,7 +2335,13 @@ function _enqueue(url, opts){
       // Safety valve — if queue grows absurdly large, warn and drop oldest entries
       console.warn(`[Queue] queue depth ${_queue.length} — dropping oldest`);
       const dropped = _queue.splice(0, _queue.length - 20);
-      dropped.forEach(({reject:r}) => r(new Error('Request dropped — queue overflow')));
+      dropped.forEach(({url:dUrl, reject:r}) => {
+        if(dUrl && dUrl.includes('/tickers')){
+          _tickerDiag.dropCount++;
+          console.error(`[TickerDiag] DROPPED — ticker request dropped by queue overflow dropCount=${_tickerDiag.dropCount}`);
+        }
+        r(new Error('Request dropped — queue overflow'));
+      });
     }
     _scheduleDispatch();
   });
@@ -2369,7 +2376,15 @@ async function _executeRequest(url, opts, retryNum=0){
 // Public entry point — deduplicates identical in-flight requests, then queues.
 async function apiFetch(url, opts={}){
   // If identical request already queued/running, reuse its Promise
-  if(_apiFlight[url]) return _apiFlight[url];
+  const isTicker = url.includes('/tickers');
+  if(_apiFlight[url]){
+    if(isTicker){
+      _tickerDiag.dedupCount++;
+      console.log(`[TickerDiag] DEDUP — reusing in-flight ticker request dedupCount=${_tickerDiag.dedupCount}`);
+    }
+    return _apiFlight[url];
+  }
+  if(isTicker) console.log(`[TickerDiag] ENQUEUE — adding ticker to queue queueDepth=${_queue.length}`);
   const promise = _enqueue(url, opts).finally(() => { delete _apiFlight[url]; });
   _apiFlight[url] = promise;
   return promise;
@@ -4965,6 +4980,16 @@ const TRADE_DESK_REFRESH_MS = 30000; // 30 seconds
 let tradeDeskTimer  = null;
 let _tdRefreshBusy  = false;
 
+// ── Ticker freshness diagnostics (temporary) ──────────────────────────────
+let _tickerDiag = {
+  lastFetchAt:    null,   // Date.now() of last successful ticker fetch
+  lastPriceCount: 0,      // number of symbols returned
+  lastSource:     null,   // 'upstream' or 'cache-hit' (from console log pattern)
+  dropCount:      0,      // times ticker request was dropped by queue
+  dedupCount:     0,      // times ticker request was deduped
+  skipCount:      0,      // times _tdLightweightRefresh skipped due to empty prices
+};
+
 function _tdUpdateTimestamp(){
   const el = document.getElementById('tdLastSync');
   if(el){
@@ -4972,6 +4997,21 @@ function _tdUpdateTimestamp(){
     const hms = now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
     el.textContent = 'Last sync: ' + hms;
   }
+  // Hide stale indicator on successful update
+  const stale = document.getElementById('tdStaleIndicator');
+  if(stale) stale.style.display = 'none';
+}
+
+function _tdUpdateStaleIndicator(){
+  // Show stale indicator if last successful fetch was >30s ago
+  const stale = document.getElementById('tdStaleIndicator');
+  if(!stale) return;
+  if(!_tickerDiag.lastFetchAt){
+    stale.style.display = 'none';
+    return;
+  }
+  const ageMs = Date.now() - _tickerDiag.lastFetchAt;
+  stale.style.display = ageMs > 30000 ? 'inline' : 'none';
 }
 
 async function _tdLightweightRefresh(){
@@ -4988,7 +5028,30 @@ async function _tdLightweightRefresh(){
     const symbols = [...new Set([...active, ...watches].map(j=>j.symbol))];
     if(!symbols.length){ _tdRefreshBusy=false; return; }
 
+    // ── DIAG: log ticker request timing ──────────────────────────────────
+    const _diagT0 = Date.now();
+    const _diagQueueDepth = _queue.length;
+    const _diagInFlight = !!_apiFlight[`${BitunixAdapter._proxy}/tickers`];
+    console.log(`[TickerDiag] REQUEST — queueDepth=${_diagQueueDepth} inFlight=${_diagInFlight} symbols=${symbols.join(',')}`);
+
     const prices = await fetchTickerPrices(symbols);
+
+    const _diagPriceCount = Object.keys(prices).length;
+    const _diagElapsed = Date.now() - _diagT0;
+
+    // ── DIAG: log result ──────────────────────────────────────────────────
+    if(_diagPriceCount === 0){
+      _tickerDiag.skipCount++;
+      _tdUpdateStaleIndicator();
+      console.warn(`[TickerDiag] EMPTY PRICES — prices={} — skipping re-render — skipCount=${_tickerDiag.skipCount} elapsed=${_diagElapsed}ms`);
+      _tdRefreshBusy = false;
+      return;
+    }
+
+    _tickerDiag.lastFetchAt    = Date.now();
+    _tickerDiag.lastPriceCount = _diagPriceCount;
+    const _diagAgeMs = _tickerDiag.lastFetchAt ? (Date.now() - _tickerDiag.lastFetchAt) : null;
+    console.log(`[TickerDiag] SUCCESS — priceCount=${_diagPriceCount}/${symbols.length} elapsed=${_diagElapsed}ms ageSinceLastMs=${_diagAgeMs}`);
 
     // Update currentScanData price so downstream renderers see fresh price
     Object.entries(prices).forEach(([sym,px])=>{
@@ -5019,6 +5082,7 @@ async function _tdLightweightRefresh(){
     updateLivePnL();
 
     _tdUpdateTimestamp();
+    _tdUpdateStaleIndicator();
     if(DEBUG_MODE) console.log('[TradeDeskRefresh] prices updated for', symbols.join(','));
   }catch(e){
     console.warn('[TradeDeskRefresh] price fetch failed:', e.message);
