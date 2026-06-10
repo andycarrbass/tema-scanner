@@ -766,7 +766,8 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <option value="1d">1D</option>
     </select>
     <div class="htf-note" id="htfNote">HTF: 1D</div>
-    <button id="refreshBtn" onclick="globalRefresh()">⟳ Refresh</button>
+    <button id="refreshBtn" onclick="globalRefresh()">⟳ Re-scan</button>
+    <button id="livePriceBtn" onclick="triggerLivePriceUpdate()" style="display:none;">↻ Update Live Prices</button>
     <span style="font-size:11px;color:var(--text3);padding:0 4px;" id="exchangeLabel">Binance data</span>
     <span id="syncStatus" style="font-size:11px;color:var(--green-text);padding:0 4px;"></span>
   </div>
@@ -785,6 +786,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 <div id="tab-scanner" class="tab-panel active">
   <div class="summary" id="summary"></div>
   <div class="status-row"><span id="status"></span><span id="lastUpdated"></span></div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--text3);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+    <span id="scannerLastScan"></span>
+    <span id="scannerLivePriceTime"></span>
+    <span>Signals use last closed candle</span>
+  </div>
   <div class="grid" id="grid"></div>
 </div>
 
@@ -6024,7 +6030,7 @@ async function globalRefresh(){
     await _timingRefresh();
     _tdUpdateTimestamp();
     if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
-    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Refresh'; }, 1500);
+    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
     console.log('[Global Refresh] complete');
     return;
   }
@@ -6038,7 +6044,7 @@ async function globalRefresh(){
     updateTradeCount();
     updateJournalCount();
     if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
-    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Refresh'; }, 1500);
+    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
     console.log('[Global Refresh] complete');
     return;
   }
@@ -6195,6 +6201,12 @@ async function runScan(){
   const t=nowTime();
   document.getElementById('lastUpdated').textContent=`Updated ${t}`;
   document.getElementById('footerTime').textContent=`Last scan ${t}`;
+  // Update scanner info bar
+  const _scanLastEl = document.getElementById('scannerLastScan');
+  if(_scanLastEl) _scanLastEl.textContent = 'Last scan: ' + t;
+  // Show live price button now that we have scan data to update
+  const _lpBtn = document.getElementById('livePriceBtn');
+  if(_lpBtn) _lpBtn.style.display = '';
 
   // ── Update diagnostics bar ─────────────────────────────────────────────
   (function(){
@@ -6227,19 +6239,18 @@ async function runScan(){
     if(DEBUG_MODE) console.log('[Confluence BG] startup scan scheduled after runScan');
     setTimeout(()=>runConfluenceScan({background:true}), 1500);
   }
-  // Refresh scanner card prices with live ticker — display only, no signal recalc.
-  // Delayed 3s so the scan queue has fully drained before this single batch request.
+  // Auto-update scanner prices with live ticker after scan queue drains
   setTimeout(_scannerTickerRefresh, 3000);
 }
 
 // ── Scanner live ticker refresh ───────────────────────────────────────────
-// Runs once after runScan() completes. Fetches all pair prices in a single
-// request and updates the displayed price on each scanner card.
-// Display-only — does NOT affect signal logic, candle calculations, or scores.
-// currentScanData[sym].price is updated so Trade Desk P&L stays consistent.
+// Called by "Update Live Prices" button and automatically after runScan().
+// Fetches all pair prices in a single request — display only.
+// Does NOT affect signal logic, candle data, scores, or any calculations.
+// currentScanData[sym].price updated so Trade Desk P&L stays consistent.
 async function _scannerTickerRefresh(){
   if(!PAIRS.length) return;
-  // Guard: if queue is still busy, retry once after another 2s rather than overflow it
+  // Queue guard — wait until queue is clear to avoid overflow
   if(_queue.length > 0 || _active > 0){
     setTimeout(_scannerTickerRefresh, 2000);
     return;
@@ -6256,17 +6267,32 @@ async function _scannerTickerRefresh(){
   PAIRS.forEach(sym => {
     const px = prices[sym];
     if(!px || !isFinite(px)) return;
-
     // Update cached scan data — keeps Trade Desk P&L consistent
     if(currentScanData[sym]) currentScanData[sym].price = px;
-
-    // Update visible price span on scanner card only — no re-render
+    // Update visible price span on scanner card only — no re-render, no recalc
     const card = document.getElementById('c-'+sym);
     if(!card) return;
     const priceEl = card.querySelector('.price');
     if(priceEl) priceEl.textContent = fmt(px);
   });
+
+  // Update live price timestamp in scanner info bar
+  const _t = nowTime();
+  const _el = document.getElementById('scannerLivePriceTime');
+  if(_el) _el.textContent = 'Live price updated: ' + _t;
+
+  // Reset button state
+  const _btn = document.getElementById('livePriceBtn');
+  if(_btn){ _btn.textContent='✓ Updated'; setTimeout(()=>{ _btn.textContent='↻ Update Live Prices'; _btn.disabled=false; }, 1200); }
+
   if(DEBUG_MODE) console.log('[ScannerTicker] prices updated for', Object.keys(prices).length, 'pairs');
+}
+
+// Button handler — shows busy state, then runs refresh
+function triggerLivePriceUpdate(){
+  const btn = document.getElementById('livePriceBtn');
+  if(btn){ btn.textContent='Fetching…'; btn.disabled=true; }
+  _scannerTickerRefresh();
 }
 
 document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false; runScan(); });
