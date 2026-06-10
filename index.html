@@ -6074,7 +6074,8 @@ function showTab(name){
 }
 
 // ── Main scan ────────────────────────────────────────────────────────────
-let _scanRunning = false;
+let _scanRunning   = false;
+let _scanGeneration = 0;  // incremented on every runScan() call; used to discard stale renders
 
 async function runScan(){
   if(_scanRunning){
@@ -6082,6 +6083,7 @@ async function runScan(){
     return;
   }
   _scanRunning = true;
+  const _myGen = ++_scanGeneration; // capture this scan's generation
   closeLogChoice(); // ensure log-choice overlay is never stuck open across re-renders
   const tf=document.getElementById('tf').value;
   const htf=HTF[tf]||'1d';
@@ -6099,6 +6101,22 @@ async function runScan(){
   if(journal.length===0){
     try{ await Promise.race([loadFromSheets(), new Promise(r=>setTimeout(r,3000))]); }
     catch(e){ /* non-fatal — proceed with local journal */ }
+  }
+
+  // ── Generation guard ──────────────────────────────────────────────────
+  // A newer scan started while we were awaiting. Discard this scan silently.
+  // Do not paint cards, update currentScanData, update status, or schedule
+  // the live-price refresh. Category B side effects (journal, P&L, badges)
+  // still run — they are independent of scan generation.
+  if(_myGen !== _scanGeneration){
+    if(DEBUG_MODE) console.warn('[runScan] stale generation',_myGen,'— discarding render (current:',_scanGeneration,')');
+    btn.disabled=false;
+    _scanRunning=false;
+    updateLivePnL();
+    renderJournal();
+    updateJournalCount();
+    updateTradeCount();
+    return;
   }
   // Sort: active trades (5) → watching (4) → high conviction (3) → signals (2) → neutral (1) → errors (0)
   const indexed = results.map((r,i) => ({r, sym: PAIRS[i]}));
