@@ -786,7 +786,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 <div id="tab-scanner" class="tab-panel active">
   <div class="summary" id="summary"></div>
   <div class="status-row"><span id="status"></span><span id="lastUpdated"></span></div>
-  <div id="scannerStatusBar" style="display:none;font-size:11px;color:var(--text3);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);"></div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--text3);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);">
+    <span id="scannerLastScan"></span>
+    <span id="scannerLivePriceTime"></span>
+    <span>Signals use last closed candle</span>
+  </div>
   <div class="grid" id="grid"></div>
 </div>
 
@@ -6058,7 +6062,6 @@ function showTab(name){
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   const panel=document.getElementById('tab-'+name);
   if(panel) panel.classList.add('active');
-  if(name==='scanner')runScan();
   if(name==='settings')renderPairsList();
   if(name==='journal'){loadFromSheets().then(()=>{renderJournal();updateLivePnL();updateJournalCount();});}
   if(name==='trade'){loadFromSheets().then(()=>{renderTradeDesk();updateTradeDeskPnL();updateTradeCount();});startTradeDeskAutoRefresh();}
@@ -6197,10 +6200,9 @@ async function runScan(){
   const t=nowTime();
   document.getElementById('lastUpdated').textContent=`Updated ${t}`;
   document.getElementById('footerTime').textContent=`Last scan ${t}`;
-  // Record scan completion time for status bar signal age display
-  _scanLastMs = Date.now();
-  _scanLastTf = document.getElementById('tf').value;
-  _updateScannerStatusBar();
+  // Update scanner info bar
+  const _scanLastEl = document.getElementById('scannerLastScan');
+  if(_scanLastEl) _scanLastEl.textContent = 'Last scan: ' + t;
   // Show live price button now that we have scan data to update
   const _lpBtn = document.getElementById('livePriceBtn');
   if(_lpBtn) _lpBtn.style.display = '';
@@ -6273,9 +6275,10 @@ async function _scannerTickerRefresh(){
     if(priceEl) priceEl.textContent = fmt(px);
   });
 
-  // Record live price time and update status bar
-  _livePriceMs = Date.now();
-  _updateScannerStatusBar();
+  // Update live price timestamp in scanner info bar
+  const _t = nowTime();
+  const _el = document.getElementById('scannerLivePriceTime');
+  if(_el) _el.textContent = 'Live price updated: ' + _t;
 
   // Reset button state
   const _btn = document.getElementById('livePriceBtn');
@@ -6290,58 +6293,6 @@ function triggerLivePriceUpdate(){
   if(btn){ btn.textContent='Fetching…'; btn.disabled=true; }
   _scannerTickerRefresh();
 }
-
-// ── Scanner status bar ────────────────────────────────────────────────────
-// State variables — set by runScan() and _scannerTickerRefresh() only.
-// No effect on any calculations — display only.
-let _scanLastMs  = 0;    // ms timestamp of last runScan() completion
-let _scanLastTf  = '4h'; // timeframe active when last scan ran
-let _livePriceMs = 0;    // ms timestamp of last successful ticker refresh
-
-// Timeframe-aware signal age thresholds (minutes).
-// Keyed by TF string — add new entries here to support additional timeframes.
-const _SCAN_AGE_THRESHOLDS = {
-  '1h': { green: 15,  amber: 45  },
-  '4h': { green: 60,  amber: 180 },
-  '1d': { green: 240, amber: 720 },
-};
-
-function _updateScannerStatusBar(){
-  const bar = document.getElementById('scannerStatusBar');
-  if(!bar) return;
-  if(!_scanLastMs){ bar.style.display = 'none'; return; }
-
-  // Signal age
-  const ageMins = Math.floor((Date.now() - _scanLastMs) / 60000);
-  const ageStr  = ageMins === 0 ? 'just now'
-                : ageMins === 1 ? '1 min old'
-                : ageMins + ' min old';
-  const thresh  = _SCAN_AGE_THRESHOLDS[_scanLastTf] || _SCAN_AGE_THRESHOLDS['4h'];
-  const ageColor = ageMins < thresh.green ? 'var(--green-text)'
-                 : ageMins < thresh.amber ? 'var(--amber-text)'
-                 : 'var(--red-text)';
-
-  // Live price timestamp — only shown after first ticker refresh
-  const priceSegment = _livePriceMs
-    ? '<span style="margin:0 8px;color:var(--border3);">&middot;</span>'
-      + '<span>Prices: live @ '
-      + new Date(_livePriceMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
-      + '</span>'
-    : '';
-
-  bar.style.display = 'flex';
-  bar.style.alignItems = 'center';
-  bar.style.flexWrap = 'wrap';
-  bar.style.gap = '0';
-  bar.innerHTML =
-    '<span>Signals: <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span></span>'
-    + priceSegment
-    + '<span style="margin:0 8px;color:var(--border3);">&middot;</span>'
-    + '<span>Signals use closed candles</span>';
-}
-
-// Tick every 30 seconds to keep signal age current — zero API calls
-setInterval(_updateScannerStatusBar, 30000);
 
 document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false; runScan(); });
 
