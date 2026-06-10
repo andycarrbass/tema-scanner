@@ -6228,8 +6228,8 @@ async function runScan(){
     setTimeout(()=>runConfluenceScan({background:true}), 1500);
   }
   // Refresh scanner card prices with live ticker — display only, no signal recalc.
-  // Delayed 800ms so the scan queue has fully drained before this single batch request.
-  setTimeout(_scannerTickerRefresh, 800);
+  // Delayed 3s so the scan queue has fully drained before this single batch request.
+  setTimeout(_scannerTickerRefresh, 3000);
 }
 
 // ── Scanner live ticker refresh ───────────────────────────────────────────
@@ -6239,6 +6239,11 @@ async function runScan(){
 // currentScanData[sym].price is updated so Trade Desk P&L stays consistent.
 async function _scannerTickerRefresh(){
   if(!PAIRS.length) return;
+  // Guard: if queue is still busy, retry once after another 2s rather than overflow it
+  if(_queue.length > 0 || _active > 0){
+    setTimeout(_scannerTickerRefresh, 2000);
+    return;
+  }
   let prices;
   try{
     prices = await fetchTickerPrices(PAIRS);
