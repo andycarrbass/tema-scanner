@@ -6062,7 +6062,6 @@ function showTab(name){
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   const panel=document.getElementById('tab-'+name);
   if(panel) panel.classList.add('active');
-  if(name==='scanner')runScan();
   if(name==='settings')renderPairsList();
   if(name==='journal'){loadFromSheets().then(()=>{renderJournal();updateLivePnL();updateJournalCount();});}
   if(name==='trade'){loadFromSheets().then(()=>{renderTradeDesk();updateTradeDeskPnL();updateTradeCount();});startTradeDeskAutoRefresh();}
@@ -6288,7 +6287,7 @@ async function _scannerTickerRefresh(){
     const dir = openTrade.signal;
     const pnlPct = dir === 'short' ? ((entryPx - px) / entryPx * 100) : ((px - entryPx) / entryPx * 100);
     const riskPx = openTrade.stop != null ? Math.abs(entryPx - openTrade.stop) : null;
-    const pnlR   = riskPx ? (dir === 'short' ? (entryPx - px) / riskPx : (px - entryPx) / riskPx) : null;
+    const pnlR   = riskPx ? Math.round(pnlPct / 100 * entryPx / riskPx * 100) / 100 : null;
     const pnlColor = pnlPct > 0 ? 'var(--green-text)' : pnlPct < 0 ? 'var(--red-text)' : 'var(--text2)';
     const pnlStr = (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '%' + (pnlR !== null ? ' · ' + (pnlR >= 0 ? '+' : '') + pnlR.toFixed(2) + 'R' : '');
     pnlEl.style.color = pnlColor;
