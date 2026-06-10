@@ -30,6 +30,7 @@ h1{font-size:22px;font-weight:500;letter-spacing:-0.3px;}
 .subtitle{font-size:13px;color:var(--text3);margin-top:3px;}
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 select,button{font-size:13px;padding:7px 13px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text);cursor:pointer;font-family:inherit;}
+select{width:auto;min-width:0;}
 button:hover{background:var(--bg4);}
 button:disabled{opacity:0.35;cursor:not-allowed;}
 .htf-note{font-size:11px;color:var(--text3);padding:5px 10px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--bg2);}
@@ -749,6 +750,9 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   body{padding:18px 14px;}
   h1{font-size:18px;}
   .controls{gap:6px;}
+  .controls select{padding:7px 8px;}
+  .controls button{padding:7px 10px;}
+  #exchangeLabel{display:none;}
 }
 </style>
 </head>
@@ -767,7 +771,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     </select>
     <div class="htf-note" id="htfNote">HTF: 1D</div>
     <button id="refreshBtn" onclick="globalRefresh()">⟳ Re-scan</button>
-    <button id="livePriceBtn" onclick="triggerLivePriceUpdate()" style="display:none;">↻ Update Live Prices</button>
+    <button id="livePriceBtn" onclick="triggerLivePriceUpdate()" style="display:none;">⟳ Live $</button>
     <span style="font-size:11px;color:var(--text3);padding:0 4px;" id="exchangeLabel">Binance data</span>
     <span id="syncStatus" style="font-size:11px;color:var(--green-text);padding:0 4px;"></span>
   </div>
@@ -786,11 +790,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 <div id="tab-scanner" class="tab-panel active">
   <div class="summary" id="summary"></div>
   <div class="status-row"><span id="status"></span><span id="lastUpdated"></span></div>
-  <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:var(--text3);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid var(--border);">
-    <span id="scannerLastScan"></span>
-    <span id="scannerLivePriceTime"></span>
-    <span>Signals use last closed candle</span>
-  </div>
+  <div id="scannerStatusBar" style="display:none;font-size:11px;color:var(--text3);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);"></div>
   <div class="grid" id="grid"></div>
 </div>
 
@@ -6200,9 +6200,10 @@ async function runScan(){
   const t=nowTime();
   document.getElementById('lastUpdated').textContent=`Updated ${t}`;
   document.getElementById('footerTime').textContent=`Last scan ${t}`;
-  // Update scanner info bar
-  const _scanLastEl = document.getElementById('scannerLastScan');
-  if(_scanLastEl) _scanLastEl.textContent = 'Last scan: ' + t;
+  // Record scan completion time for status bar signal age display
+  _scanLastMs = Date.now();
+  _scanLastTf = document.getElementById('tf').value;
+  _updateScannerStatusBar();
   // Show live price button now that we have scan data to update
   const _lpBtn = document.getElementById('livePriceBtn');
   if(_lpBtn) _lpBtn.style.display = '';
@@ -6243,7 +6244,7 @@ async function runScan(){
 }
 
 // ── Scanner live ticker refresh ───────────────────────────────────────────
-// Called by "Update Live Prices" button and automatically after runScan().
+// Called by "⟳ Live $" button and automatically after runScan().
 // Fetches all pair prices in a single request — display only.
 // Does NOT affect signal logic, candle data, scores, or any calculations.
 // currentScanData[sym].price updated so Trade Desk P&L stays consistent.
@@ -6287,21 +6288,20 @@ async function _scannerTickerRefresh(){
     const dir = openTrade.signal;
     const pnlPct = dir === 'short' ? ((entryPx - px) / entryPx * 100) : ((px - entryPx) / entryPx * 100);
     const riskPx = openTrade.stop != null ? Math.abs(entryPx - openTrade.stop) : null;
-    const pnlR   = riskPx ? Math.round(pnlPct / 100 * entryPx / riskPx * 100) / 100 : null;
+    const pnlR   = riskPx ? (dir === 'short' ? (entryPx - px) / riskPx : (px - entryPx) / riskPx) : null;
     const pnlColor = pnlPct > 0 ? 'var(--green-text)' : pnlPct < 0 ? 'var(--red-text)' : 'var(--text2)';
     const pnlStr = (pnlPct >= 0 ? '+' : '') + pnlPct.toFixed(2) + '%' + (pnlR !== null ? ' · ' + (pnlR >= 0 ? '+' : '') + pnlR.toFixed(2) + 'R' : '');
     pnlEl.style.color = pnlColor;
     pnlEl.textContent = pnlStr;
   });
 
-  // Update live price timestamp in scanner info bar
-  const _t = nowTime();
-  const _el = document.getElementById('scannerLivePriceTime');
-  if(_el) _el.textContent = 'Live price updated: ' + _t;
+  // Record live price time and update status bar
+  _livePriceMs = Date.now();
+  _updateScannerStatusBar();
 
   // Reset button state
   const _btn = document.getElementById('livePriceBtn');
-  if(_btn){ _btn.textContent='✓ Updated'; setTimeout(()=>{ _btn.textContent='↻ Update Live Prices'; _btn.disabled=false; }, 1200); }
+  if(_btn){ _btn.textContent='✓ Updated'; setTimeout(()=>{ _btn.textContent='⟳ Live $'; _btn.disabled=false; }, 1200); }
 
   if(DEBUG_MODE) console.log('[ScannerTicker] prices updated for', Object.keys(prices).length, 'pairs');
 }
@@ -6312,6 +6312,54 @@ function triggerLivePriceUpdate(){
   if(btn){ btn.textContent='Fetching…'; btn.disabled=true; }
   _scannerTickerRefresh();
 }
+
+// ── Scanner status bar ────────────────────────────────────────────────────
+// State — set by runScan() and _scannerTickerRefresh() only. Display only.
+let _scanLastMs  = 0;
+let _scanLastTf  = '4h';
+let _livePriceMs = 0;
+
+// Timeframe-aware signal age thresholds (minutes).
+const _SCAN_AGE_THRESHOLDS = {
+  '1h': { green: 15,  amber: 45  },
+  '4h': { green: 60,  amber: 180 },
+  '1d': { green: 240, amber: 720 },
+};
+
+function _updateScannerStatusBar(){
+  const bar = document.getElementById('scannerStatusBar');
+  if(!bar) return;
+  if(!_scanLastMs){ bar.style.display='none'; return; }
+
+  const ageMins = Math.floor((Date.now() - _scanLastMs) / 60000);
+  const ageStr  = ageMins === 0 ? 'just now'
+                : ageMins === 1 ? '1 min old'
+                : ageMins + ' min old';
+  const thresh  = _SCAN_AGE_THRESHOLDS[_scanLastTf] || _SCAN_AGE_THRESHOLDS['4h'];
+  const ageColor = ageMins < thresh.green ? 'var(--green-text)'
+                 : ageMins < thresh.amber ? 'var(--amber-text)'
+                 : 'var(--red-text)';
+
+  const sep = '<span style="margin:0 8px;color:var(--border3);">&middot;</span>';
+  const priceSegment = _livePriceMs
+    ? sep + '<span>Prices: live @ '
+      + new Date(_livePriceMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
+      + '</span>'
+    : '';
+
+  // Line 1: dynamic status (signal age + live price timestamp)
+  // Line 2: static methodology note — always on its own line, secondary colour
+  bar.style.display = 'block';
+  bar.innerHTML =
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;margin-bottom:3px;">'
+      + '<span>Signals: <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span></span>'
+      + priceSegment
+    + '</div>'
+    + '<div style="color:var(--text3);">Signals use closed candles</div>';
+}
+
+// Tick every 30s to keep signal age current — zero API calls
+setInterval(_updateScannerStatusBar, 30000);
 
 document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false; runScan(); });
 
