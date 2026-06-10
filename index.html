@@ -6227,6 +6227,41 @@ async function runScan(){
     if(DEBUG_MODE) console.log('[Confluence BG] startup scan scheduled after runScan');
     setTimeout(()=>runConfluenceScan({background:true}), 1500);
   }
+  // Refresh scanner card prices with live ticker — display only, no signal recalc.
+  // Delayed 800ms so the scan queue has fully drained before this single batch request.
+  setTimeout(_scannerTickerRefresh, 800);
+}
+
+// ── Scanner live ticker refresh ───────────────────────────────────────────
+// Runs once after runScan() completes. Fetches all pair prices in a single
+// request and updates the displayed price on each scanner card.
+// Display-only — does NOT affect signal logic, candle calculations, or scores.
+// currentScanData[sym].price is updated so Trade Desk P&L stays consistent.
+async function _scannerTickerRefresh(){
+  if(!PAIRS.length) return;
+  let prices;
+  try{
+    prices = await fetchTickerPrices(PAIRS);
+  }catch(e){
+    if(DEBUG_MODE) console.warn('[ScannerTicker] fetch failed:', e.message);
+    return;
+  }
+  if(!prices || !Object.keys(prices).length) return;
+
+  PAIRS.forEach(sym => {
+    const px = prices[sym];
+    if(!px || !isFinite(px)) return;
+
+    // Update cached scan data — keeps Trade Desk P&L consistent
+    if(currentScanData[sym]) currentScanData[sym].price = px;
+
+    // Update visible price span on scanner card only — no re-render
+    const card = document.getElementById('c-'+sym);
+    if(!card) return;
+    const priceEl = card.querySelector('.price');
+    if(priceEl) priceEl.textContent = fmt(px);
+  });
+  if(DEBUG_MODE) console.log('[ScannerTicker] prices updated for', Object.keys(prices).length, 'pairs');
 }
 
 document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false; runScan(); });
