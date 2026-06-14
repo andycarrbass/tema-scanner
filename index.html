@@ -4078,7 +4078,7 @@ function openAnalysisPanel(symbol){
     _tcHtml='<div class="ap-section">'
       +'<div class="ap-section-title">'+_htfLabel+' Trend Context</div>'
       +'<div class="ap-row"><span>State</span><span style="color:'+htfTrendContext.color+';font-weight:600;">'+htfTrendContext.icon+' '+htfTrendContext.text+'</span></div>'
-      +'<div class="ap-row"><span>Regime</span><span style="color:'+(_isB?'var(--red-text)':'var(--green-text)')+';">'
+      +'<div class="ap-row"><span>SMA200 Position</span><span style="color:'+(_isB?'var(--red-text)':'var(--green-text)')+';">'
         +(_isB?'Below '+_htfLabel+' SMA200 \u2014 bearish':'Above '+_htfLabel+' SMA200 \u2014 bullish')+'</span></div>'
       +'<div class="ap-row"><span>TEMA momentum</span><span style="color:'+(htfWidening?'var(--green-text)':'var(--amber-text)')+';">'
         +(_isB?'Bearish':'Bullish')+' \u00b7 '+(htfWidening?'widening':'converging')+'</span></div>'
@@ -4098,7 +4098,7 @@ function openAnalysisPanel(symbol){
     var _rDir=d.regime.direction;
     var _rColor=_rDir==='bearish'?'var(--red-text)':_rDir==='bullish'?'var(--green-text)':'var(--text3)';
     var _rLadder=d.regime.ladder!=null?' · Ladder '+d.regime.ladder:'';
-    _regimeHtml='<div class="ap-row"><span>Regime</span><span style="color:'+_rColor+';font-weight:600;">'+d.regime.label+_rLadder+'</span></div>';
+    _regimeHtml='<div class="ap-row"><span>TDAS Regime</span><span style="color:'+_rColor+';font-weight:600;">'+d.regime.label+_rLadder+'</span></div>';
   }
 
   body.innerHTML = `
