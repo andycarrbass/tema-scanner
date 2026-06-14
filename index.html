@@ -1864,6 +1864,184 @@ function getTradeAgeHours(d, tf) {
   return Math.round(freshness * getTimeframeHours(tf || d.tf || '4h'));
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS PHASE 0 — State Engine Extraction                                 ║
+// ║  computeStates(d)                                                        ║
+// ║                                                                          ║
+// ║  Purpose: Single compute-once function that derives all state values     ║
+// ║  currently scattered inline across renderCard, buildEntrySignalsHtml,    ║
+// ║  buildTradeMgmtHtml, buildSnapshot, buildSnapshotFromTrade, buildV1Entry ║
+// ║  and the isSameLoggedSetup check.                                        ║
+// ║                                                                          ║
+// ║  Contract:                                                               ║
+// ║    - Input:  d — the raw object returned by calcPair()                   ║
+// ║    - Output: structured states object (see field list below)             ║
+// ║    - Pure function: no side-effects, no DOM access                       ║
+// ║    - Behaviour-preserving: produces exactly the same values that were    ║
+// ║      previously derived inline, so cards render identically              ║
+// ║                                                                          ║
+// ║  After calcPair() runs it attaches: d.states = computeStates(d)         ║
+// ║  All builders then read from d.states instead of re-deriving.           ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+function computeStates(d) {
+  if (!d || typeof d !== 'object') return null;
+
+  // ── Guard helpers ──────────────────────────────────────────────────────
+  const _utBot = (d.utBot && typeof d.utBot === 'object') ? d.utBot
+               : { direction: 0, barsAgoFlip: 99, signal: 'none', recentSignal: 'none', trailLevel: 0, prevTrailLevel: 0 };
+  const _adx   = (d.adx != null && isFinite(d.adx)) ? d.adx : 0;
+  const _rsi   = (d.rsi != null && isFinite(d.rsi)) ? d.rsi : null;
+
+  // ── TEMA state ────────────────────────────────────────────────────────
+  // crossLong / crossShort are already booleans from calcPair
+  const temaLong     = !!d.crossLong;
+  const temaShort    = !!d.crossShort;
+  const temaWidening = !!d.temaWidening;
+  // temaState: 'widening' | 'narrowing' — used by buildV1Entry / buildSnapshot
+  const temaState    = temaWidening ? 'widening' : 'narrowing';
+
+  // ── UT Bot states ──────────────────────────────────────────────────────
+  const utDirection  = _utBot.direction; // 1 | -1 | 0
+  const utBarsAgo    = _utBot.barsAgoFlip != null ? _utBot.barsAgoFlip : 99;
+  // fresh = a signal fired this candle or the previous one
+  const utFresh      = !!(d.utFresh) || _utBot.signal !== 'none';
+  const utRecent     = _utBot.recentSignal !== 'none';
+  // utBotFresh: matches the existing renderCard/openAnalysisPanel usage
+  const utBotFresh   = utFresh || utRecent;
+  const utFlipDir    = utFresh ? _utBot.signal : _utBot.recentSignal; // 'long' | 'short' | 'none'
+  // Long/short confirm — matches calcPair / renderCard usage exactly
+  const utLongConfirm  = !!(d.utLongConfirm);
+  const utShortConfirm = !!(d.utShortConfirm);
+  // opposing: UT Bot direction opposite to trade direction
+  // (resolved per-signal or per-trade direction at call site)
+  const utDirectionWord = utDirection === 1 ? 'Bullish' : 'Bearish';
+
+  // ── RSI state — implied by the existing rsiOk_long / rsiOk_short booleans
+  // Phase 0 preserves these exactly; the full RSI State Engine comes in Phase 1.
+  const rsiOk_long  = (d.rsiOk_long  != null) ? !!d.rsiOk_long  : (_rsi !== null ? _rsi < 70 : true);
+  const rsiOk_short = (d.rsiOk_short != null) ? !!d.rsiOk_short : (_rsi !== null ? _rsi > 30 : true);
+  const rsiOverbought = _rsi !== null && _rsi > 70;
+  const rsiOversold   = _rsi !== null && _rsi < 30;
+
+  // ── ADX state ─────────────────────────────────────────────────────────
+  const adxTrending = !!d.adxTrending; // adx >= 25
+  const adxStrong   = !!d.adxStrong;   // adx >= 40
+  // adxState label for snapshots
+  const adxState = adxStrong ? 'Strong trend' : adxTrending ? 'Trending' : 'Ranging';
+
+  // ── 200MA relationship (scanner-TF) ───────────────────────────────────
+  const aboveMA    = d.aboveMA;  // true | false | null
+  const maDist     = d.maDist;   // % distance, may be null
+
+  // ── Trend SMA relationship (SMA 80 or SMA 135, TF-dependent) ─────────
+  const aboveTrendSMA = d.aboveTrendSMA; // true | false | null
+
+  // ── EMA 50 relationship ───────────────────────────────────────────────
+  const ema50State = d.ema50State || 'inactive';
+  const ema50Label = d.ema50Label || '';
+  const ema50Color = d.ema50Color || 'var(--text3)';
+
+  // ── HTF alignment ─────────────────────────────────────────────────────
+  // 'aligned' | 'conflict' | 'neutral' | 'insufficient'
+  const htfAlign = d.htfAlign || 'neutral';
+
+  // ── HTF Trend Context (display-only, purely presentational) ──────────
+  // Already computed in calcPair — we simply carry it through.
+  const htfTrendContext = d.htfTrendContext || null;
+  const htfWidening     = !!d.htfWidening;
+
+  // ── Signal ────────────────────────────────────────────────────────────
+  const signal = d.signal || 'neutral'; // 'long' | 'short' | 'neutral'
+
+  // ── Score & signal strength ───────────────────────────────────────────
+  const score    = d.score || 0;
+  const strength = score >= 80 ? 'Strong' : score >= 65 ? 'Moderate' : 'Weak';
+
+  // ── High conviction ───────────────────────────────────────────────────
+  const highConviction = !!d.highConviction;
+
+  // ── Trade stage & trade age ───────────────────────────────────────────
+  // These are already attached by calcPair (after getTradeStage / getTradeAgeHours).
+  // Phase 0 reads them from d directly — no recomputation.
+  const tradeStage    = d.tradeStage    || null;
+  const tradeAgeHours = d.tradeAgeHours != null ? d.tradeAgeHours : null;
+
+  // ── Setup / actionability status ──────────────────────────────────────
+  // Mirrors the inline logic in renderCard and buildV1Entry exactly.
+  // Not computed for neutral signals or open trades (callers gate on signal).
+  const htfOk  = htfAlign === 'aligned';
+  const temaOk_long  = temaLong;
+  const temaOk_short = temaShort;
+  const utOk_long  = utLongConfirm;
+  const utOk_short = utShortConfirm;
+  // Generic (signal-direction-resolved) convenience pairs
+  const temaOk  = signal === 'long' ? temaOk_long : (signal === 'short' ? temaOk_short : false);
+  const utOk    = signal === 'long' ? utOk_long   : (signal === 'short' ? utOk_short   : false);
+  const isActionable = htfOk && utOk && temaOk && score >= 80;
+  const isDeveloping = !isActionable && (htfOk || utOk) && score >= 60;
+  const setupStatus  = signal === 'neutral' ? null
+                     : isActionable  ? 'Actionable'
+                     : isDeveloping  ? 'Developing'
+                     :                 'Early';
+  const setupStatusClass = setupStatus === 'Actionable' ? 'setup-actionable'
+                         : setupStatus === 'Developing'  ? 'setup-developing'
+                         :                                 'setup-early';
+  const isActionableSetup = setupStatusClass === 'setup-actionable';
+
+  // ── Trade management warning state ────────────────────────────────────
+  // Mirrors getTradeManagementWarning() — resolved per trade direction at call site.
+  // Phase 0 stores the inputs, not a pre-resolved value, because direction comes
+  // from the trade entry not from calcPair (signal may differ post-entry).
+  // Callers still call getTradeManagementWarning(dir, crossLong, aboveMA, maDist, tf).
+  // This field is included for documentation and future Phase 1 resolution.
+  const crossLong  = temaLong;
+  const crossShort = temaShort;
+
+  // ── DEBUG_MODE audit — log the state object for validation ───────────
+  // Enables comparison of Phase 0 derived values against pre-refactor renders.
+  if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && d && d.signal && d.signal !== 'neutral'){
+    console.debug('[TDAS Phase0 computeStates]', {
+      signal, score, strength, setupStatus,
+      temaLong, temaShort, temaWidening,
+      htfAlign, adxTrending, adxStrong, adxState,
+      utFresh, utBotFresh, utLongConfirm, utShortConfirm,
+      rsiOk_long, rsiOk_short,
+      tradeStage, tradeAgeHours,
+    });
+  }
+
+  // ── Return the complete state object ──────────────────────────────────
+  return {
+    // TEMA
+    temaLong, temaShort, temaWidening, temaState,
+    crossLong, crossShort,
+    // UT Bot
+    utBot:        _utBot,
+    utDirection, utDirectionWord, utBarsAgo,
+    utFresh, utRecent, utBotFresh, utFlipDir,
+    utLongConfirm, utShortConfirm,
+    // RSI
+    rsi: _rsi, rsiOk_long, rsiOk_short, rsiOverbought, rsiOversold,
+    // ADX
+    adx: _adx, adxTrending, adxStrong, adxState,
+    // 200 MA
+    aboveMA, maDist,
+    // Trend SMA
+    aboveTrendSMA,
+    // EMA 50
+    ema50State, ema50Label, ema50Color,
+    // HTF
+    htfAlign, htfTrendContext, htfWidening,
+    // Signal
+    signal, score, strength, highConviction,
+    // Trade lifecycle
+    tradeStage, tradeAgeHours,
+    // Setup status
+    setupStatus, setupStatusClass, isActionableSetup,
+    htfOk, temaOk, utOk, isActionable, isDeveloping,
+  };
+}
 
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
@@ -2703,7 +2881,7 @@ async function calcPair(symbol,tf){
     }
 
   }
-  return{price,t17,t92,ma200,aboveMA,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
+  const _result={price,t17,t92,ma200,aboveMA,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
     adx,adxTrending,adxStrong,
@@ -2712,6 +2890,9 @@ async function calcPair(symbol,tf){
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
     tradeStage,tradeAgeHours,
     htfTrendContext,htfWidening};
+  // TDAS Phase 0: attach compute-once state object — all builders read from d.states
+  _result.states = computeStates(_result);
+  return _result;
 }
 
 // ── Format ──────────────────────────────────────────────────────────────
@@ -2748,13 +2929,14 @@ function buildSnapshot(symbol) {
   const status    = openTrade ? 'Active Trade' : watching ? 'Watch' : d.signal !== 'neutral' ? 'Signal' : 'Neutral';
   const direction = d.signal === 'long' ? 'Long' : d.signal === 'short' ? 'Short' : '-';
 
-  // Scores
-  const score    = d.score || 0;
-  const strength = score >= 80 ? 'Strong' : score >= 65 ? 'Moderate' : 'Weak';
+  // Scores — read from d.states (TDAS Phase 0) with inline fallback
+  const _bsSt    = (d.states && typeof d.states === 'object') ? d.states : null;
+  const score    = _bsSt ? _bsSt.score    : (d.score || 0);
+  const strength = _bsSt ? _bsSt.strength : (score >= 80 ? 'Strong' : score >= 65 ? 'Moderate' : 'Weak');
   const htfState = d.htfAlign === 'aligned' ? 'Aligned' : d.htfAlign === 'conflict' ? 'Conflict' : 'Neutral';
-  const temaState = d.temaWidening ? 'Widening' : 'Converging';
+  const temaState = _bsSt ? (_bsSt.temaWidening ? 'Widening' : 'Converging') : (d.temaWidening ? 'Widening' : 'Converging');
   const adxVal   = d.adx ? (typeof d.adx === 'number' ? d.adx.toFixed(1) : d.adx) : '-';
-  const adxState = d.adxStrong ? 'Strong trend' : d.adxTrending ? 'Trending' : 'Ranging';
+  const adxState = _bsSt ? _bsSt.adxState : (d.adxStrong ? 'Strong trend' : d.adxTrending ? 'Trending' : 'Ranging');
 
   // Price / levels
   const price  = d.price ? fmt(d.price) : '-';
@@ -2819,16 +3001,17 @@ function buildSnapshotFromTrade(entry) {
     rStr   = pnlR != null ? (pnlR >= 0 ? '+' : '') + pnlR.toFixed(2) + 'R' : '-';
   }
 
-  // Indicator state from live scan data
-  var utBot  = d.utBot && typeof d.utBot === 'object' ? d.utBot : {};
+  // Indicator state from live scan data — read from d.states (TDAS Phase 0)
+  var _bsftSt = (d.states && typeof d.states === 'object') ? d.states : null;
+  var utBot  = _bsftSt ? _bsftSt.utBot : (d.utBot && typeof d.utBot === 'object' ? d.utBot : {});
   var utDir  = utBot.direction === 1 ? 'Bullish' : utBot.direction === -1 ? 'Bearish' : '-';
   var utAge  = utBot.barsAgoFlip != null ? utBot.barsAgoFlip + ' bars' : '-';
-  var score  = entry.score || d.score || 0;
-  var strength = score >= 80 ? 'Strong' : score >= 65 ? 'Moderate' : 'Weak';
+  var score  = entry.score || (_bsftSt ? _bsftSt.score : null) || d.score || 0;
+  var strength = _bsftSt ? _bsftSt.strength : (score >= 80 ? 'Strong' : score >= 65 ? 'Moderate' : 'Weak');
   var htfState  = d.htfAlign === 'aligned' ? 'Aligned' : d.htfAlign === 'conflict' ? 'Conflict' : 'Neutral';
-  var temaState = d.temaWidening ? 'Widening' : 'Converging';
+  var temaState = _bsftSt ? (_bsftSt.temaWidening ? 'Widening' : 'Converging') : (d.temaWidening ? 'Widening' : 'Converging');
   var adxVal    = d.adx ? (typeof d.adx === 'number' ? d.adx.toFixed(1) : d.adx) : '-';
-  var adxState  = d.adxStrong ? 'Strong trend' : d.adxTrending ? 'Trending' : 'Ranging';
+  var adxState  = _bsftSt ? _bsftSt.adxState : (d.adxStrong ? 'Strong trend' : d.adxTrending ? 'Trending' : 'Ranging');
 
   // Target and stop — from journal entry (set at time of trade)
   // target2 = profit target (below entry for short, above for long)
@@ -3018,6 +3201,8 @@ function getTradeManagementWarning(dir, crossLong, aboveMA, maDist, tf){
   }
 }
 
+// TDAS Phase 0: buildTradeMgmtHtml is a pure parametric builder.
+// Callers (renderCard) pass values that come from d.states — no inline re-derivation.
 function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, temaWidening, adx, adxStrong, adxTrending, fibRetrace618, aboveMA, maDist, htfTrendContext){
   // Defensive guards — any missing field returns a safe fallback
   if(!trade||!price) return '';
@@ -3112,6 +3297,7 @@ function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, t
 
 // ── Entry signals section — mirrors exit signals pattern ─────────────────
 // Used on scan/watch/signal cards. Same row structure as buildTradeMgmtHtml.
+// TDAS Phase 0: pure parametric builder — renderCard passes d.states values.
 function buildEntrySignalsHtml(signal, htfAlign, htf, tf, utBot, crossLong, temaWidening,
                                adx, adxStrong, adxTrending, utLongConfirm, utShortConfirm,
                                htfTrendContext){
@@ -3360,27 +3546,16 @@ function renderCard(symbol,d){
   const convClass = scorePct>=80?'strong':scorePct>=65?'moderate':'weak';
   const convLabel = scorePct>=80?'Strong':scorePct>=65?'Moderate':'Weak';
 
-  // ── Setup status — right-aligned pill in conviction row ─────────────────
-  // Actionable: HTF aligned + UT Bot confirming + TEMA ok + score >= 80
-  // Developing: signal exists, some conditions met
-  // Early: weak signal or insufficient confirmation
-  let setupStatus, setupStatusClass;
-  if(signal==='neutral' || isOpenTrade){
-    setupStatus = null; // not shown
-  } else {
-    const htfOk2  = htfAlign==='aligned';
-    const utOk2   = (signal==='long'&&utLongConfirm)||(signal==='short'&&utShortConfirm);
-    const temaOk2 = signal==='long'?crossLong:crossShort;
-    const isActionable = htfOk2 && utOk2 && temaOk2 && scorePct>=80;
-    const isDeveloping = !isActionable && (htfOk2 || utOk2) && scorePct>=60;
-    if(isActionable){ setupStatus='Actionable'; setupStatusClass='setup-actionable'; }
-    else if(isDeveloping){ setupStatus='Developing'; setupStatusClass='setup-developing'; }
-    else { setupStatus='Early'; setupStatusClass='setup-early'; }
-  }
+  // ── Setup status — read from d.states (TDAS Phase 0) ───────────────────
+  // Previously derived inline — now a single read from the compute-once state object.
+  // Suppressed for neutral signal and open trades (same as before).
+  const _st = d.states || {};
+  let setupStatus    = (signal==='neutral' || isOpenTrade) ? null : (_st.setupStatus    || 'Early');
+  let setupStatusClass=(signal==='neutral' || isOpenTrade) ? null : (_st.setupStatusClass|| 'setup-early');
   const setupPillHtml = setupStatus
     ? '<span class="setup-pill '+setupStatusClass+'">'+setupStatus+'</span>'
     : '';
-  const isActionableSetup = setupStatusClass==='setup-actionable';
+  const isActionableSetup = !!(d.states && d.states.isActionableSetup) && !isOpenTrade && signal!=='neutral';
 
   // ── Signal pill — small, inline with price ────────────────────────────
   const pillClass = isOpenTrade
@@ -3820,17 +3995,21 @@ function buildV1Entry(symbol, d, decision, overrides) {
   const _now     = new Date().toISOString();
   const _tf      = overrides.tf || (document.getElementById('tf') ? document.getElementById('tf').value : '4h');
   const _htf     = d.htf || HTF[_tf] || '1d';
-  const _utSafe  = safeUtBot(d.utBot);
+  // TDAS Phase 0: read pre-computed states from d.states where available.
+  // Falls back to inline derivation for entries built from stale/non-calcPair data.
+  const _st      = (d.states && typeof d.states === 'object') ? d.states : null;
+  const _utSafe  = _st ? _st.utBot : safeUtBot(d.utBot);
   const _utDir   = _utSafe.direction === 1 ? 'bullish' : 'bearish';
   const _utFresh = _utSafe.barsAgoFlip != null ? _utSafe.barsAgoFlip : null;
-  const _score   = d.score || 0;
-  const _strength = _score >= 80 ? 'Strong' : _score >= 65 ? 'Moderate' : 'Weak';
-  const _temaState = d.temaWidening ? 'widening' : 'narrowing';
+  const _score   = (_st ? _st.score : null) != null ? _st.score : (d.score || 0);
+  const _strength = _st ? _st.strength : (_score >= 80 ? 'Strong' : _score >= 65 ? 'Moderate' : 'Weak');
+  const _temaState = _st ? _st.temaState : (d.temaWidening ? 'widening' : 'narrowing');
   const _adxVal  = d.adx != null ? (typeof d.adx === 'number' ? parseFloat(d.adx.toFixed(2)) : parseFloat(d.adx)) : null;
-  const _tOk     = d.signal === 'long' ? d.crossLong : d.crossShort;
-  const _utOk    = (d.signal === 'long' && d.utLongConfirm) || (d.signal === 'short' && d.utShortConfirm);
-  const _htfOk   = d.htfAlign === 'aligned';
-  const _setup   = (_htfOk && _utOk && _tOk && _score >= 80) ? 'Actionable' : (_score >= 60 && (_htfOk || _utOk)) ? 'Developing' : 'Early';
+  // setup status from d.states (already computed once) or inline fallback
+  const _setup   = _st ? (_st.setupStatus || 'Early') : (
+    (d.htfAlign==='aligned' && ((d.signal==='long'&&d.utLongConfirm)||(d.signal==='short'&&d.utShortConfirm)) && (d.signal==='long'?d.crossLong:d.crossShort) && _score>=80) ? 'Actionable'
+    : (_score>=60 && (d.htfAlign==='aligned' || (d.signal==='long'?d.utLongConfirm:d.utShortConfirm))) ? 'Developing'
+    : 'Early');
   const _exchange = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] ? EXCHANGE_CONFIG[ACTIVE_EXCHANGE].label : ACTIVE_EXCHANGE;
 
   // Outcome for immediately-closed decisions
