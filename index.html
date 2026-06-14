@@ -2043,6 +2043,225 @@ function computeStates(d) {
   };
 }
 
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS PHASE 1 — Regime Engine                                           ║
+// ║  classifyRegime(states)                                                  ║
+// ║                                                                          ║
+// ║  Purpose: Classify current market structure into one of the 10           ║
+// ║  directional regime states defined in EVALUATION_ENGINE.md §8, plus     ║
+// ║  NEUTRAL for insufficient / ambiguous data.                              ║
+// ║                                                                          ║
+// ║  Contract:                                                               ║
+// ║    - Input:  states — the object produced by computeStates()             ║
+// ║    - Output: regime object { key, label, direction, ladder }             ║
+// ║    - Pure function: no side-effects, no DOM access                       ║
+// ║    - Consumes ONLY d.states — no independent indicator re-derivation     ║
+// ║                                                                          ║
+// ║  After calcPair() attaches d.states it then attaches:                   ║
+// ║    d.regime = classifyRegime(d.states)                                   ║
+// ║  Stored in journal as trendRegime. Surfaced in analysis panel + DEBUG.   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── 10 directional regime states + NEUTRAL fallback ───────────────────────
+// NEUTRAL is not part of the directional ladder; it is a data-quality guard.
+const REGIME_STATES = {
+  BEARISH_REGIME:         'Bearish Regime',
+  BEARISH_CONSOLIDATION:  'Bearish Regime Consolidation',
+  BEARISH_CHALLENGE:      'Bearish Regime Challenge',
+  BEARISH_UNDER_PRESSURE: 'Bearish Regime Under Pressure',
+  BULLISH_TRANSITION:     'Bullish Regime Transition',
+  BULLISH_REGIME:         'Bullish Regime',
+  BULLISH_CONSOLIDATION:  'Bullish Regime Consolidation',
+  BULLISH_CHALLENGE:      'Bullish Regime Challenge',
+  BULLISH_UNDER_PRESSURE: 'Bullish Regime Under Pressure',
+  BEARISH_TRANSITION:     'Bearish Regime Transition',
+  NEUTRAL:                'Neutral / Insufficient Data',
+};
+
+// Proximity threshold: how close price must be to the 200MA (% distance)
+// to qualify as "under pressure". Externally named so it can be tuned.
+const REGIME_MA_PRESSURE_PCT = 2.0;
+
+function classifyRegime(states) {
+  // Guard: states must exist and be a proper object
+  if (!states || typeof states !== 'object') {
+    return { key: 'NEUTRAL', label: REGIME_STATES.NEUTRAL, direction: 'neutral', ladder: null };
+  }
+
+  // ── Primary inputs from d.states — no re-derivation ───────────────────
+  const aboveMA        = states.aboveMA;        // true | false | null
+  const maDist         = states.maDist;         // % distance from 200MA, may be null
+  const crossLong      = states.crossLong;      // TEMA 17 > TEMA 92
+  const crossShort     = states.crossShort;     // TEMA 17 < TEMA 92
+  const temaWidening   = states.temaWidening;   // separation growing
+  const adxTrending    = states.adxTrending;    // ADX >= 25
+  const utLongConfirm  = states.utLongConfirm;  // UT Bot bullish + confirming
+  const utShortConfirm = states.utShortConfirm; // UT Bot bearish + confirming
+  const rsi            = states.rsi;            // raw RSI value, may be null
+  const aboveTrendSMA  = states.aboveTrendSMA;  // price vs SMA80/135
+  const htfTcKey       = states.htfTrendContext ? states.htfTrendContext.key : null;
+
+  // ── Data-quality guard: NEUTRAL ────────────────────────────────────────
+  // aboveMA === null means SMA200 is not computable (insufficient closed bars).
+  // htfAlign is intentionally NOT used as a primary input — it is signal-relative.
+  if (aboveMA === null || aboveMA === undefined) {
+    return { key: 'NEUTRAL', label: REGIME_STATES.NEUTRAL, direction: 'neutral', ladder: null };
+  }
+
+  // ── Convenience: RSI above/below 50 for Transition/Consolidation checks ─
+  // rsiOk_long / rsiOk_short only test >30 / <70 — mid-level requires raw rsi.
+  const rsiAbove50 = rsi !== null ? rsi > 50 : false;
+  const rsiBelow50 = rsi !== null ? rsi < 50 : false;
+
+  // ── Proximity to 200MA for "Under Pressure" detection ─────────────────
+  const maDistAbs   = maDist !== null ? Math.abs(maDist) : null;
+  const nearMA      = maDistAbs !== null && maDistAbs <= REGIME_MA_PRESSURE_PCT;
+
+  // ══════════════════════════════════════════════════════════════════════
+  // BEARISH SIDE (price below 200MA)
+  // ══════════════════════════════════════════════════════════════════════
+  if (!aboveMA) {
+
+    // BULLISH_TRANSITION (bearish→bullish): price just accepted above 200MA
+    // — this branch handles the case where the raw aboveMA just flipped true
+    // but we are in this block because aboveMA is false. Not applicable here.
+    // (Handled in the bullish block below.)
+
+    // BEARISH_UNDER_PRESSURE
+    // Price below 200MA but attacking it: close to it from below, UT Buy
+    // active, price above trend SMA (SMA80/135), RSI supportive.
+    if (nearMA && utLongConfirm && aboveTrendSMA === true) {
+      return {
+        key:       'BEARISH_UNDER_PRESSURE',
+        label:     REGIME_STATES.BEARISH_UNDER_PRESSURE,
+        direction: 'bearish',
+        ladder:    4,
+      };
+    }
+
+    // BEARISH_CHALLENGE
+    // Price below 200MA, bullish evidence building but not yet at the door:
+    // TEMA crossed bullish (crossLong) OR price reclaimed trend SMA, and RSI
+    // is recovering (above 50), but no active UT Buy confirmation yet, or not
+    // close enough to 200MA for "Under Pressure".
+    // htfTrendContext 'mixed-bearish' key is a corroborating signal.
+    const htfMixedBearish = htfTcKey === 'mixed-bearish';
+    if (crossLong && (rsiAbove50 || aboveTrendSMA === true || htfMixedBearish)) {
+      return {
+        key:       'BEARISH_CHALLENGE',
+        label:     REGIME_STATES.BEARISH_CHALLENGE,
+        direction: 'bearish',
+        ladder:    3,
+      };
+    }
+
+    // BEARISH_CONSOLIDATION
+    // Price below 200MA, selling paused: ADX weakening or TEMA crossed against
+    // the trend (crossLong = bearish counter-trend cross), but no bullish UT
+    // confirmation and no meaningful SMA challenge.
+    if (!adxTrending || crossLong) {
+      return {
+        key:       'BEARISH_CONSOLIDATION',
+        label:     REGIME_STATES.BEARISH_CONSOLIDATION,
+        direction: 'bearish',
+        ladder:    2,
+      };
+    }
+
+    // BEARISH_REGIME (default below-200MA state)
+    return {
+      key:       'BEARISH_REGIME',
+      label:     REGIME_STATES.BEARISH_REGIME,
+      direction: 'bearish',
+      ladder:    1,
+    };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // BULLISH SIDE (price above 200MA)
+  // ══════════════════════════════════════════════════════════════════════
+
+  // BULLISH_TRANSITION
+  // Price recently accepted above 200MA: crossLong true, UT Buy confirming,
+  // RSI holding above 50. htfTrendContext may still show 'mixed-bearish'
+  // (HTF candles lag), so we don't gate on it here.
+  // Key distinguisher from BULLISH_REGIME: ADX not yet trending or widening
+  // just started — structure is establishing, not established.
+  if (crossLong && utLongConfirm && rsiAbove50 && !adxTrending) {
+    return {
+      key:       'BULLISH_TRANSITION',
+      label:     REGIME_STATES.BULLISH_TRANSITION,
+      direction: 'bullish',
+      ladder:    5,
+    };
+  }
+
+  // BEARISH_TRANSITION (bullish→bearish): price accepted below 200MA after
+  // being above it — handled in the bearish block above as aboveMA===false.
+  // The mirror case here (price above 200MA with strong bearish signals) is
+  // BULLISH_UNDER_PRESSURE, not BEARISH_TRANSITION.
+
+  // BULLISH_UNDER_PRESSURE
+  // Price above 200MA but close to losing it: near the 200MA from above,
+  // UT Sell active, price below trend SMA.
+  if (nearMA && utShortConfirm && aboveTrendSMA === false) {
+    return {
+      key:       'BULLISH_UNDER_PRESSURE',
+      label:     REGIME_STATES.BULLISH_UNDER_PRESSURE,
+      direction: 'bullish',
+      ladder:    9,
+    };
+  }
+
+  // BEARISH_TRANSITION (while still above 200MA)
+  // Strong bearish evidence building above 200MA: TEMA crossed bearish
+  // (crossShort), UT Sell confirming, RSI below 50, trend SMA lost.
+  // Price is above 200MA but all momentum is bearish — transition imminent.
+  if (crossShort && utShortConfirm && rsiBelow50 && aboveTrendSMA === false) {
+    return {
+      key:       'BEARISH_TRANSITION',
+      label:     REGIME_STATES.BEARISH_TRANSITION,
+      direction: 'bullish',   // still above 200MA structurally, but shifting
+      ladder:    10,
+    };
+  }
+
+  // BULLISH_CHALLENGE
+  // Price above 200MA but bearish evidence emerging: TEMA crossed bearish
+  // (crossShort) OR trend SMA lost, RSI weakening (below 50), but not yet
+  // meeting the full BEARISH_TRANSITION criteria.
+  const htfMixedBullish = htfTcKey === 'mixed-bullish';
+  if (crossShort && (rsiBelow50 || aboveTrendSMA === false || htfMixedBullish)) {
+    return {
+      key:       'BULLISH_CHALLENGE',
+      label:     REGIME_STATES.BULLISH_CHALLENGE,
+      direction: 'bullish',
+      ladder:    8,
+    };
+  }
+
+  // BULLISH_CONSOLIDATION
+  // Price above 200MA, momentum pausing: ADX weakening or TEMA crossed
+  // against the trend (crossShort), but no UT Sell confirmation.
+  if (!adxTrending || crossShort) {
+    return {
+      key:       'BULLISH_CONSOLIDATION',
+      label:     REGIME_STATES.BULLISH_CONSOLIDATION,
+      direction: 'bullish',
+      ladder:    7,
+    };
+  }
+
+  // BULLISH_REGIME (default above-200MA state)
+  return {
+    key:       'BULLISH_REGIME',
+    label:     REGIME_STATES.BULLISH_REGIME,
+    direction: 'bullish',
+    ladder:    6,
+  };
+}
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -2892,6 +3111,29 @@ async function calcPair(symbol,tf){
     htfTrendContext,htfWidening};
   // TDAS Phase 0: attach compute-once state object — all builders read from d.states
   _result.states = computeStates(_result);
+  // TDAS Phase 1: classify market regime from Phase-0 states — pure, no re-derivation
+  _result.regime = classifyRegime(_result.states);
+  if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE){
+    console.debug('[TDAS Phase1 regime]', _result.symbol||'', {
+      key:       _result.regime.key,
+      label:     _result.regime.label,
+      direction: _result.regime.direction,
+      ladder:    _result.regime.ladder,
+      inputs: {
+        aboveMA:        _result.states.aboveMA,
+        maDist:         _result.states.maDist != null ? parseFloat(_result.states.maDist.toFixed(2)) : null,
+        crossLong:      _result.states.crossLong,
+        crossShort:     _result.states.crossShort,
+        temaWidening:   _result.states.temaWidening,
+        adxTrending:    _result.states.adxTrending,
+        utLongConfirm:  _result.states.utLongConfirm,
+        utShortConfirm: _result.states.utShortConfirm,
+        rsi:            _result.states.rsi != null ? parseFloat(_result.states.rsi.toFixed(1)) : null,
+        aboveTrendSMA:  _result.states.aboveTrendSMA,
+        htfTcKey:       _result.states.htfTrendContext ? _result.states.htfTrendContext.key : null,
+      },
+    });
+  }
   return _result;
 }
 
@@ -2966,6 +3208,7 @@ function buildSnapshot(symbol) {
     'UT freshSignal: '  + (utBot.signal||'none') + '   UT recentSignal: ' + (utBot.recentSignal||'none'),
     'UT Trail Level: '  + fmt(utBot.trailLevel) + '   UT Prev Trail: ' + fmt(utBot.prevTrailLevel),
     'ADX Value: ' + adxVal + '   ADX State: ' + adxState,
+    'Regime: '        + (d.regime ? d.regime.label : '-'),
     'Trade Stage: '   + (d.tradeStage || getTradeStage(d, d.tf) || '-'),
     'Trade Age: '     + (d.tradeAgeHours != null ? d.tradeAgeHours + ' hours' : getTradeAgeHours(d, d.tf) != null ? getTradeAgeHours(d, d.tf) + ' hours' : '-'),
     '',
@@ -3038,6 +3281,7 @@ function buildSnapshotFromTrade(entry) {
     'HTF Alignment: ' + htfState + '   TEMA State: ' + temaState,
     'UT Direction: '  + utDir + '   UT Freshness: ' + utAge,
     'ADX Value: '     + adxVal + '   ADX State: ' + adxState,
+    'Regime: '        + (d.regime ? d.regime.label : '-'),
     'Trade Stage: '   + (d.tradeStage || getTradeStage(d, entry.tf) || '-'),
     'Trade Age: '     + (d.tradeAgeHours != null ? d.tradeAgeHours + ' hours' : getTradeAgeHours(d, entry.tf) != null ? getTradeAgeHours(d, entry.tf) + ' hours' : '-'),
     '',
@@ -3847,6 +4091,16 @@ function openAnalysisPanel(symbol){
       +'</div>';
   }
 
+  // TDAS Phase 1: pre-compute regime row for analysis panel — string concat,
+  // no nested backtick. Reads from d.regime (attached by calcPair via classifyRegime).
+  var _regimeHtml = '';
+  if(d.regime){
+    var _rDir=d.regime.direction;
+    var _rColor=_rDir==='bearish'?'var(--red-text)':_rDir==='bullish'?'var(--green-text)':'var(--text3)';
+    var _rLadder=d.regime.ladder!=null?' · Ladder '+d.regime.ladder:'';
+    _regimeHtml='<div class="ap-row"><span>Regime</span><span style="color:'+_rColor+';font-weight:600;">'+d.regime.label+_rLadder+'</span></div>';
+  }
+
   body.innerHTML = `
     <!-- Signal summary -->
     <div class="ap-section">
@@ -3857,7 +4111,7 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>
     </div>
 
-    ${_tcHtml}
+    ${_tcHtml + _regimeHtml}
 
     <!-- Indicator checklist -->
     <div class="ap-section">
@@ -4093,10 +4347,10 @@ function buildV1Entry(symbol, d, decision, overrides) {
     // apply correct field mappings per version.
     schemaVersion: 1,
 
-    // trendRegime: reserved for future Analytics — Bull / Bear / Neutral.
-    // Will be derived from: price vs 200 MA, 200 MA slope, HTF direction.
-    // Null for all V3 entries — column is reserved so no migration is needed later.
-    trendRegime: null,
+    // trendRegime: populated by Phase 1 Regime Engine (classifyRegime).
+    // Reads from d.regime attached by calcPair — no re-derivation.
+    // Null for pre-Phase-1 entries (column was reserved for this exact purpose).
+    trendRegime: (d.regime && d.regime.label) ? d.regime.label : null,
   };
 
   // Transitional aliases for legacy UI renderers.
