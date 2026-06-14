@@ -3473,8 +3473,9 @@ function renderCard(symbol,d){
   const adxWarn=signal!=='neutral'&&!adxTrending?`<div class="warn-strip">⚠ ADX ${adx} — market ranging, crossover reliability reduced</div>`:'';
 
   // UT Bot event strips — fresh or recent flip only — use guarded _utBot
-  const utBotFresh = utFresh || _utBot.recentSignal!=='none';
-  const utBotFlipDir = utFresh ? _utBot.signal : _utBot.recentSignal;
+  // TDAS Phase 0 cleanup: read from d.states instead of re-deriving locally
+  const utBotFresh   = !!(d.states && d.states.utBotFresh);
+  const utBotFlipDir = (d.states && d.states.utFlipDir) || 'none';
   const utBotConfirmStrip = utBotFresh && (
     (signal==='long'  && utBotFlipDir==='long')  ||
     (signal==='short' && utBotFlipDir==='short') ||
