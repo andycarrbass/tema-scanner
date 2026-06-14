@@ -2118,10 +2118,27 @@ function classifyRegime(states) {
   const maDistAbs   = maDist !== null ? Math.abs(maDist) : null;
   const nearMA      = maDistAbs !== null && maDistAbs <= REGIME_MA_PRESSURE_PCT;
 
+  // ── HTF structure override — governing principle ───────────────────────
+  // HTF governs regime direction; scanner-TF refines the rung within that regime.
+  // When htfTrendContext.key unambiguously establishes the HTF regime direction,
+  // that overrides the scanner-TF aboveMA gate so execution enters the correct
+  // side of the ladder even when the scanner-TF SMA200 disagrees.
+  //
+  // Example: ETH 4H price above 4H SMA200, but 1D context = 'mixed-bearish'
+  // (counter-trend rally inside bearish regime). Without this override, aboveMA=true
+  // sends classification into the bullish block — wrong. With it, the bearish block
+  // is entered and the scanner-TF states resolve the correct rung (e.g. BEARISH_CHALLENGE).
+  //
+  // htfTcKey=null (insufficient HTF data) leaves the aboveMA gate unchanged.
+  const _htfBearish = htfTcKey === 'bearish' || htfTcKey === 'bearish-weak' || htfTcKey === 'mixed-bearish';
+  const _htfBullish = htfTcKey === 'bullish' || htfTcKey === 'bullish-weak' || htfTcKey === 'mixed-bullish';
+  // resolvedBearishSide: true → enter bearish block, false → enter bullish block
+  const resolvedBearishSide = _htfBearish ? true : _htfBullish ? false : !aboveMA;
+
   // ══════════════════════════════════════════════════════════════════════
-  // BEARISH SIDE (price below 200MA)
+  // BEARISH SIDE (HTF structure bearish, or price below scanner-TF 200MA)
   // ══════════════════════════════════════════════════════════════════════
-  if (!aboveMA) {
+  if (resolvedBearishSide) {
 
     // BULLISH_TRANSITION (bearish→bullish): price just accepted above 200MA
     // — this branch handles the case where the raw aboveMA just flipped true
@@ -2179,7 +2196,7 @@ function classifyRegime(states) {
   }
 
   // ══════════════════════════════════════════════════════════════════════
-  // BULLISH SIDE (price above 200MA)
+  // BULLISH SIDE (HTF structure bullish, or price above scanner-TF 200MA)
   // ══════════════════════════════════════════════════════════════════════
 
   // BULLISH_TRANSITION
