@@ -4091,14 +4091,16 @@ function openAnalysisPanel(symbol){
       +'</div>';
   }
 
-  // TDAS Phase 1: pre-compute regime row for analysis panel — string concat,
-  // no nested backtick. Reads from d.regime (attached by calcPair via classifyRegime).
-  var _regimeHtml = '';
+  // TDAS Phase 1: build regime row and stitch INSIDE the _tcHtml ap-section
+  // so it renders within the HTF Trend Context box, not outside it.
+  // _tcHtml closes with '</div>' — we insert the regime row before that closing tag.
   if(d.regime){
     var _rDir=d.regime.direction;
     var _rColor=_rDir==='bearish'?'var(--red-text)':_rDir==='bullish'?'var(--green-text)':'var(--text3)';
     var _rLadder=d.regime.ladder!=null?' · Ladder '+d.regime.ladder:'';
-    _regimeHtml='<div class="ap-row"><span>TDAS Regime</span><span style="color:'+_rColor+';font-weight:600;">'+d.regime.label+_rLadder+'</span></div>';
+    var _regimeRow='<div class="ap-row"><span>TDAS Regime</span><span style="color:'+_rColor+';font-weight:600;">'+d.regime.label+_rLadder+'</span></div>';
+    // Insert before the closing </div> of the ap-section container
+    _tcHtml=_tcHtml.slice(0,-6)+_regimeRow+'</div>';
   }
 
   body.innerHTML = `
@@ -4111,7 +4113,7 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>
     </div>
 
-    ${_tcHtml + _regimeHtml}
+    ${_tcHtml}
 
     <!-- Indicator checklist -->
     <div class="ap-section">
