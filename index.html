@@ -2279,6 +2279,222 @@ function classifyRegime(states) {
   };
 }
 
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS PHASE 1.5 — Evaluation Engine                                     ║
+// ║  evaluateSetup(d)                                                        ║
+// ║                                                                          ║
+// ║  Purpose: Convert Phase-0 states + Phase-1 regime into a structured     ║
+// ║  evaluation object that answers:                                         ║
+// ║    • Is this setup worth attention?                                      ║
+// ║    • Is the signal aligned with the regime?                              ║
+// ║    • Is HTF supportive or conflicting?                                   ║
+// ║    • Is this high probability?                                           ║
+// ║    • What is the action bias?                                            ║
+// ║                                                                          ║
+// ║  Contract:                                                               ║
+// ║    - Input:  d — the _result object from calcPair (has d.states,        ║
+// ║              d.regime, d.signal, d.score)                               ║
+// ║    - Output: evaluation object — see field list below                    ║
+// ║    - Pure function: no side-effects, no DOM access                       ║
+// ║    - Consumes ONLY d.states and d.regime — no re-derivation             ║
+// ║                                                                          ║
+// ║  Pipeline position (after calcPair assembles _result):                  ║
+// ║    computeStates(d)       → d.states      [Phase 0]                     ║
+// ║    classifyRegime(states) → d.regime      [Phase 1]                     ║
+// ║    evaluateSetup(d)       → d.evaluation  [Phase 1.5]                   ║
+// ║    classifyLifecycle(...) → d.lifecycle   [Phase 2, future]             ║
+// ║                                                                          ║
+// ║  Active-trade fields (tradeQuality, exitPressure, thesisIntact)         ║
+// ║  are reserved null — populated by Phase 2 classifyLifecycle() when      ║
+// ║  a journal entry is in scope. evaluateSetup() is entry/setup only.      ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── Action bias vocabulary ────────────────────────────────────────────────
+// Consumed by Phase 2 Lifecycle and Phase 4 Advisory. Not advisory itself.
+const ACTION_BIAS = {
+  STRONG_LONG:    'STRONG_LONG',
+  CONSIDER_LONG:  'CONSIDER_LONG',
+  WATCH_LONG:     'WATCH_LONG',
+  STRONG_SHORT:   'STRONG_SHORT',
+  CONSIDER_SHORT: 'CONSIDER_SHORT',
+  WATCH_SHORT:    'WATCH_SHORT',
+  AVOID:          'AVOID',
+  NO_SETUP:       'NO_SETUP',
+};
+
+function evaluateSetup(d) {
+  // Guard: d must have states and regime (both attached by calcPair before this call)
+  if (!d || !d.states || !d.regime) {
+    return {
+      setupQuality: 'NONE', tradeBias: 'NEUTRAL', actionBias: ACTION_BIAS.NO_SETUP,
+      highProbability: false, score: 0,
+      signalRegimeAligned: false, htfSupportive: false, regimeDirection: 'neutral',
+      confirms: { tema: false, utBot: false, htf: false, adx: false, rsi: false, regime: false, aboveMA: false },
+      reasons: [], warnings: [], blockers: [],
+      tradeQuality: null, exitPressure: null, thesisIntact: null,
+    };
+  }
+
+  const st  = d.states;
+  const reg = d.regime;
+  const sig = d.signal  || 'neutral';
+  const sc  = d.score   || 0;
+
+  // ── Step 1: Establish trade bias ────────────────────────────────────────
+  const tradeBias = sig === 'long' ? 'LONG' : sig === 'short' ? 'SHORT' : 'NEUTRAL';
+
+  // Early exit for neutral signal — no setup to evaluate
+  if (tradeBias === 'NEUTRAL') {
+    return {
+      setupQuality: 'NONE', tradeBias: 'NEUTRAL', actionBias: ACTION_BIAS.NO_SETUP,
+      highProbability: false, score: sc,
+      signalRegimeAligned: false, htfSupportive: false, regimeDirection: reg.direction,
+      confirms: { tema: false, utBot: false, htf: false, adx: false, rsi: false, regime: false, aboveMA: false },
+      reasons: [], warnings: ['No active signal'], blockers: [],
+      tradeQuality: null, exitPressure: null, thesisIntact: null,
+    };
+  }
+
+  // ── Step 2: Signal-regime alignment ────────────────────────────────────
+  const regimeDirection     = reg.direction; // 'bearish' | 'bullish' | 'neutral'
+  const signalRegimeAligned =
+    (tradeBias === 'SHORT' && regimeDirection === 'bearish') ||
+    (tradeBias === 'LONG'  && regimeDirection === 'bullish');
+  const regimeOpposed =
+    (tradeBias === 'SHORT' && regimeDirection === 'bullish') ||
+    (tradeBias === 'LONG'  && regimeDirection === 'bearish');
+
+  // ── Step 3: Evaluate confirming factors from d.states only ─────────────
+  const cTema   = tradeBias === 'LONG' ? !!st.crossLong      : !!st.crossShort;
+  const cUtBot  = tradeBias === 'LONG' ? !!st.utLongConfirm  : !!st.utShortConfirm;
+  const cHtf    = st.htfAlign === 'aligned';
+  const cAdx    = !!st.adxTrending;
+  const cRsi    = tradeBias === 'LONG' ? !!st.rsiOk_long     : !!st.rsiOk_short;
+  const cRegime = signalRegimeAligned;
+  // aboveMA is contextual — informational, not gating
+  const cAboveMA = tradeBias === 'LONG' ? st.aboveMA === true : st.aboveMA === false;
+
+  const confirms = {
+    tema: cTema, utBot: cUtBot, htf: cHtf, adx: cAdx,
+    rsi: cRsi, regime: cRegime, aboveMA: cAboveMA,
+  };
+
+  // HTF supportive: aligned, or at minimum not in conflict
+  const htfSupportive = st.htfAlign === 'aligned' || st.htfAlign === 'neutral';
+
+  // ── Step 4: Count core confirms and assign setupQuality ────────────────
+  const coreConfirms = [cTema, cUtBot, cHtf, cAdx, cRsi, cRegime];
+  const confirmCount = coreConfirms.filter(Boolean).length;
+
+  // Regime opposition caps quality at LOW regardless of other confirms
+  let setupQuality;
+  if (regimeOpposed || reg.key === 'NEUTRAL') {
+    setupQuality = 'LOW';
+  } else if (confirmCount >= 5) {
+    setupQuality = 'HIGH';
+  } else if (confirmCount >= 3) {
+    setupQuality = 'MODERATE';
+  } else if (confirmCount >= 1) {
+    setupQuality = 'LOW';
+  } else {
+    setupQuality = 'NONE';
+  }
+
+  // ── Step 5: High probability flag ──────────────────────────────────────
+  // More conservative than existing highConviction (score-only).
+  // Requires quality stack: HIGH quality + regime aligned + score >= 75 +
+  // HTF aligned + at least one momentum confirm (UT or TEMA).
+  const highProbability = (
+    setupQuality === 'HIGH' &&
+    signalRegimeAligned &&
+    sc >= 75 &&
+    cHtf &&
+    (cUtBot || cTema)
+  );
+
+  // ── Step 6: Action bias ─────────────────────────────────────────────────
+  const sfx = tradeBias === 'LONG' ? '_LONG' : '_SHORT';
+  let actionBias;
+  if (setupQuality === 'NONE') {
+    actionBias = ACTION_BIAS.NO_SETUP;
+  } else if (regimeOpposed) {
+    actionBias = ACTION_BIAS.AVOID;
+  } else if (highProbability || setupQuality === 'HIGH') {
+    actionBias = ACTION_BIAS['STRONG' + sfx];
+  } else if (setupQuality === 'MODERATE') {
+    actionBias = ACTION_BIAS['CONSIDER' + sfx];
+  } else {
+    actionBias = ACTION_BIAS['WATCH' + sfx];
+  }
+
+  // ── Step 7: Narrative arrays ─────────────────────────────────────────────
+  const reasons  = [];
+  const warnings = [];
+  const blockers = [];
+
+  // Reasons — positive confirming evidence
+  if (cRegime)  reasons.push('Regime aligned: ' + reg.label);
+  if (cTema)    reasons.push('TEMA ' + (tradeBias === 'LONG' ? 'bullish' : 'bearish') + ' confirmed');
+  if (cUtBot)   reasons.push('UT Bot confirming ' + (tradeBias === 'LONG' ? 'long' : 'short'));
+  if (cHtf)     reasons.push('HTF aligned');
+  if (cAdx)     reasons.push('ADX trending (' + (st.adx != null ? parseFloat(st.adx.toFixed(1)) : '?') + ')');
+  if (cRsi)     reasons.push('RSI supportive');
+  if (cAboveMA) reasons.push('Price ' + (tradeBias === 'LONG' ? 'above' : 'below') + ' scanner-TF 200MA');
+
+  // Warnings — present but not disqualifying
+  if (!cTema)    warnings.push('TEMA not yet confirmed');
+  if (!cAdx)     warnings.push('ADX ranging — reduced trend reliability');
+  if (st.htfAlign === 'neutral')  warnings.push('HTF neutral — no directional tailwind');
+  if (st.htfAlign === 'conflict') warnings.push('HTF conflicting — reduced confidence');
+  if (!signalRegimeAligned && !regimeOpposed) {
+    // Neutral regime — not opposed, not aligned
+    warnings.push('Regime neutral — no structural confirmation (' + reg.label + ')');
+  }
+  // RSI exhaustion warning (approaching extreme in signal direction)
+  if (tradeBias === 'SHORT' && st.rsi !== null && st.rsi < 35) {
+    warnings.push('RSI approaching oversold — momentum may be stretched');
+  }
+  if (tradeBias === 'LONG' && st.rsi !== null && st.rsi > 65) {
+    warnings.push('RSI approaching overbought — momentum may be stretched');
+  }
+
+  // Blockers — quality-capping conditions
+  if (regimeOpposed) {
+    blockers.push('Regime opposed: ' + reg.label + ' conflicts with ' + tradeBias + ' signal');
+  }
+  if (reg.key === 'NEUTRAL') {
+    blockers.push('Insufficient regime data — classification not possible');
+  }
+  // UT Bot opposing (direction opposite to signal even without fresh signal)
+  const utOpposes =
+    (tradeBias === 'LONG'  && st.utBot && st.utBot.direction === -1 && st.utShortConfirm) ||
+    (tradeBias === 'SHORT' && st.utBot && st.utBot.direction ===  1 && st.utLongConfirm);
+  if (utOpposes) {
+    blockers.push('UT Bot actively opposing ' + tradeBias + ' signal');
+  }
+
+  // ── Debug log ───────────────────────────────────────────────────────────
+  if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && tradeBias !== 'NEUTRAL') {
+    console.debug('[TDAS Phase1.5 evaluateSetup]', {
+      signal: sig, score: sc,
+      tradeBias, setupQuality, actionBias, highProbability,
+      signalRegimeAligned, regimeOpposed, regimeDirection,
+      confirmCount, confirms,
+      reasons, warnings, blockers,
+    });
+  }
+
+  return {
+    setupQuality, tradeBias, actionBias, highProbability, score: sc,
+    signalRegimeAligned, htfSupportive, regimeDirection,
+    confirms,
+    reasons, warnings, blockers,
+    // Active-trade fields — reserved null until Phase 2 classifyLifecycle()
+    tradeQuality: null, exitPressure: null, thesisIntact: null,
+  };
+}
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -3130,6 +3346,8 @@ async function calcPair(symbol,tf){
   _result.states = computeStates(_result);
   // TDAS Phase 1: classify market regime from Phase-0 states — pure, no re-derivation
   _result.regime = classifyRegime(_result.states);
+  // TDAS Phase 1.5: evaluate setup quality from states + regime — pure, no re-derivation
+  _result.evaluation = evaluateSetup(_result);
   if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE){
     console.debug('[TDAS Phase1 regime]', _result.symbol||'', {
       key:       _result.regime.key,
@@ -4108,6 +4326,67 @@ function openAnalysisPanel(symbol){
       +'</div>';
   }
 
+  // TDAS Phase 1.5: pre-compute Evaluation section — string concat, no nested backtick.
+  // Reads from d.evaluation (attached by calcPair via evaluateSetup).
+  // Injected between Signal Summary and HTF Trend Context in the panel body.
+  var _evalHtml = '';
+  if(d.evaluation && d.evaluation.tradeBias !== 'NEUTRAL'){
+    var _ev = d.evaluation;
+    var _sqColor = _ev.setupQuality==='HIGH'?'var(--green-text)'
+                 : _ev.setupQuality==='MODERATE'?'var(--amber-text)'
+                 : 'var(--red-text)';
+    var _abColor = _ev.actionBias.startsWith('STRONG')?'var(--green-text)'
+                 : _ev.actionBias.startsWith('CONSIDER')?'var(--amber-text)'
+                 : _ev.actionBias==='AVOID'?'var(--red-text)'
+                 : 'var(--text3)';
+    var _raColor = _ev.signalRegimeAligned?'var(--green-text)':'var(--red-text)';
+    var _raText  = _ev.signalRegimeAligned?'Yes ✓':'No ✗';
+    var _hpText  = _ev.highProbability?'Yes ⭐':'No';
+    var _hpColor = _ev.highProbability?'var(--green-text)':'var(--text3)';
+    // Reasons row — joined, truncated for display
+    var _reasonStr = _ev.reasons.length ? _ev.reasons.join(' · ') : '—';
+    // Warnings row — shown only if present
+    var _warnRows = '';
+    if(_ev.warnings.length){
+      _warnRows='<div class="ap-row" style="align-items:flex-start;">'
+        +'<span style="color:var(--amber-text);">⚠ Caution</span>'
+        +'<span style="color:var(--amber-text);font-size:11px;text-align:right;">'+_ev.warnings.join('<br>')+'</span></div>';
+    }
+    // Blockers row — shown only if present
+    var _blockRows = '';
+    if(_ev.blockers.length){
+      _blockRows='<div class="ap-row" style="align-items:flex-start;">'
+        +'<span style="color:var(--red-text);">⛔ Blocker</span>'
+        +'<span style="color:var(--red-text);font-size:11px;text-align:right;">'+_ev.blockers.join('<br>')+'</span></div>';
+    }
+    _evalHtml='<div class="ap-section">'
+      +'<div class="ap-section-title">Evaluation</div>'
+      +'<div class="ap-row"><span>Setup quality</span><span style="color:'+_sqColor+';font-weight:600;">'+_ev.setupQuality+'</span></div>'
+      +'<div class="ap-row"><span>Action bias</span><span style="color:'+_abColor+';font-weight:600;">'+_ev.actionBias.replace(/_/g,' ')+'</span></div>'
+      +'<div class="ap-row"><span>High probability</span><span style="color:'+_hpColor+';">'+_hpText+'</span></div>'
+      +'<div class="ap-row"><span>Regime aligned</span><span style="color:'+_raColor+';">'+_raText+'</span></div>'
+      +'<div class="ap-row"><span>Confirms</span><span style="color:var(--text3);font-size:11px;">'+_ev.confirms.tema?'✓ TEMA':'✗ TEMA';
+    // build confirm badges inline
+    var _cbadges=[];
+    if(_ev.confirms.tema)  _cbadges.push('✓ TEMA');  else _cbadges.push('✗ TEMA');
+    if(_ev.confirms.utBot) _cbadges.push('✓ UT');    else _cbadges.push('✗ UT');
+    if(_ev.confirms.htf)   _cbadges.push('✓ HTF');   else _cbadges.push('✗ HTF');
+    if(_ev.confirms.adx)   _cbadges.push('✓ ADX');   else _cbadges.push('✗ ADX');
+    if(_ev.confirms.rsi)   _cbadges.push('✓ RSI');   else _cbadges.push('✗ RSI');
+    if(_ev.confirms.regime)_cbadges.push('✓ Regime');else _cbadges.push('✗ Regime');
+    _evalHtml='<div class="ap-section">'
+      +'<div class="ap-section-title">Evaluation</div>'
+      +'<div class="ap-row"><span>Setup quality</span><span style="color:'+_sqColor+';font-weight:600;">'+_ev.setupQuality+'</span></div>'
+      +'<div class="ap-row"><span>Action bias</span><span style="color:'+_abColor+';font-weight:600;">'+_ev.actionBias.replace(/_/g,' ')+'</span></div>'
+      +'<div class="ap-row"><span>High probability</span><span style="color:'+_hpColor+';">'+_hpText+'</span></div>'
+      +'<div class="ap-row"><span>Regime aligned</span><span style="color:'+_raColor+';">'+_raText+'</span></div>'
+      +'<div class="ap-row" style="align-items:flex-start;"><span>Confirms</span><span style="color:var(--text3);font-size:11px;text-align:right;">'+_cbadges.join(' · ')+'</span></div>'
+      +(_ev.reasons.length?'<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--text3);">Reasons</span><span style="color:var(--text3);font-size:11px;text-align:right;">'+_ev.reasons.join('<br>')+'</span></div>':'')
+      +_warnRows
+      +_blockRows
+      +'</div>';
+  }
+
   // TDAS Phase 1: build regime row and stitch INSIDE the _tcHtml ap-section
   // so it renders within the HTF Trend Context box, not outside it.
   // _tcHtml closes with '</div>' — we insert the regime row before that closing tag.
@@ -4129,6 +4408,8 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span>HTF alignment</span><span style="color:${htfAlign==='aligned'?'var(--green-text)':htfAlign==='conflict'?'var(--red-text)':'var(--text3)'};">${htfAlign==='aligned'?'Aligned ✓':htfAlign==='conflict'?'Conflict ✗':htfAlign==='insufficient'?'Insufficient data':'Neutral —'}</span></div>
       <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>
     </div>
+
+    ${_evalHtml}
 
     ${_tcHtml}
 
