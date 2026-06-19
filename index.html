@@ -4277,6 +4277,12 @@ function toggleDetail(symbol){
 function openAnalysisPanel(symbol){
   const d = currentScanData[symbol];
   if(!d) return;
+  // TDAS Phase 1.5 — late-binding fallback: compute d.evaluation if absent.
+  // Handles stale currentScanData entries produced before Phase 1.5 was deployed,
+  // or any path that stores a calcPair result without going through the full pipeline.
+  if(!d.evaluation && typeof evaluateSetup === 'function' && d.states && d.regime){
+    d.evaluation = evaluateSetup(d);
+  }
   const overlay = document.getElementById('analysisOverlay');
   const panel   = document.getElementById('analysisPanel');
   const title   = document.getElementById('apTitle');
@@ -4359,13 +4365,7 @@ function openAnalysisPanel(symbol){
         +'<span style="color:var(--red-text);">⛔ Blocker</span>'
         +'<span style="color:var(--red-text);font-size:11px;text-align:right;">'+_ev.blockers.join('<br>')+'</span></div>';
     }
-    _evalHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">Evaluation</div>'
-      +'<div class="ap-row"><span>Setup quality</span><span style="color:'+_sqColor+';font-weight:600;">'+_ev.setupQuality+'</span></div>'
-      +'<div class="ap-row"><span>Action bias</span><span style="color:'+_abColor+';font-weight:600;">'+_ev.actionBias.replace(/_/g,' ')+'</span></div>'
-      +'<div class="ap-row"><span>High probability</span><span style="color:'+_hpColor+';">'+_hpText+'</span></div>'
-      +'<div class="ap-row"><span>Regime aligned</span><span style="color:'+_raColor+';">'+_raText+'</span></div>'
-      +'<div class="ap-row"><span>Confirms</span><span style="color:var(--text3);font-size:11px;">'+_ev.confirms.tema?'✓ TEMA':'✗ TEMA';
+
     // build confirm badges inline
     var _cbadges=[];
     if(_ev.confirms.tema)  _cbadges.push('✓ TEMA');  else _cbadges.push('✗ TEMA');
