@@ -2367,7 +2367,15 @@ function evaluateSetup(d) {
 
   // ── Step 3: Evaluate confirming factors from d.states only ─────────────
   const cTema   = tradeBias === 'LONG' ? !!st.crossLong      : !!st.crossShort;
-  const cUtBot  = tradeBias === 'LONG' ? !!st.utLongConfirm  : !!st.utShortConfirm;
+  // cUtBot: UT Bot direction currently supports the trade direction.
+  // Uses direction only — not utLongConfirm/utShortConfirm — because those
+  // require a fresh/recent crossover event (correct for signal scoring, too
+  // strict for setup quality confirmation). An Active UT state (direction
+  // established, crossover older than 3 bars) is a valid confirming condition.
+  // utLongConfirm / utShortConfirm in calcPair() are unchanged.
+  const cUtBot  = tradeBias === 'LONG'
+    ? !!(st.utBot && st.utBot.direction === 1)
+    : !!(st.utBot && st.utBot.direction === -1);
   const cHtf    = st.htfAlign === 'aligned';
   const cAdx    = !!st.adxTrending;
   const cRsi    = tradeBias === 'LONG' ? !!st.rsiOk_long     : !!st.rsiOk_short;
