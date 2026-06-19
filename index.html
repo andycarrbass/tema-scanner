@@ -2503,6 +2503,240 @@ function evaluateSetup(d) {
   };
 }
 
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS PHASE 2 — Lifecycle Engine                                        ║
+// ║  classifyLifecycle(d)                                                    ║
+// ║                                                                          ║
+// ║  Purpose: Classify where a setup or trade currently sits in its          ║
+// ║  lifecycle. This is a state classification layer only — it does not      ║
+// ║  generate advisory text and is not the Advisory Engine.                  ║
+// ║                                                                          ║
+// ║  Contract:                                                               ║
+// ║    - Input:  d — the _result object from calcPair (has d.states,        ║
+// ║              d.regime, d.evaluation, d.signal, d.score,                 ║
+// ║              d.highConviction)                                           ║
+// ║    - Output: { state, stage, confidence, reasons }                       ║
+// ║    - Pure function: no side-effects, no DOM access                       ║
+// ║    - Reads journal[] global for open/closed trade lookup only            ║
+// ║                                                                          ║
+// ║  Pipeline position:                                                      ║
+// ║    computeStates(d)       → d.states      [Phase 0]                     ║
+// ║    classifyRegime(states) → d.regime      [Phase 1]                     ║
+// ║    evaluateSetup(d)       → d.evaluation  [Phase 1.5]                   ║
+// ║    classifyLifecycle(d)   → d.lifecycle   [Phase 2]                     ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── Lifecycle state vocabulary ─────────────────────────────────────────────
+const LIFECYCLE_STATES = {
+  // Entry-side
+  NO_ACTION:      'NO_ACTION',
+  WATCH:          'WATCH',
+  HIGH_PROBABILITY: 'HIGH_PROBABILITY',
+  CONSIDER_HALF:  'CONSIDER_HALF',
+  CONFIRMED:      'CONFIRMED',
+  // Trade-side
+  ACTIVE:         'ACTIVE',
+  HOLD:           'HOLD',
+  REDUCE:         'REDUCE',
+  PREPARE_EXIT:   'PREPARE_EXIT',
+  CLOSE:          'CLOSE',
+  // Terminal
+  CLOSED:         'CLOSED',
+  JOURNALLED:     'JOURNALLED',
+};
+
+// ── resolveJournalEntry(symbol) ───────────────────────────────────────────
+// Single impure lookup helper. The ONLY function in the lifecycle pipeline
+// that reads the global journal[] array. Isolated here so classifyLifecycle
+// can remain a pure function.
+// Returns: { openTrade, openWatch, closedEntry } — each null if not found.
+//   openTrade   — decision==='took', no outcome (active open trade)
+//   openWatch   — decision==='watching', no outcome (active watch)
+//   closedEntry — most recent entry with an outcome (closed trade)
+function resolveJournalEntry(symbol) {
+  let openTrade = null, openWatch = null, closedEntry = null;
+  if (!symbol || typeof journal === 'undefined' || !Array.isArray(journal)) {
+    return { openTrade, openWatch, closedEntry };
+  }
+  for (let i = journal.length - 1; i >= 0; i--) {
+    const e = journal[i];
+    if (!e || e.symbol !== symbol) continue;
+    if (e.decision === 'took'      && !e.outcome && !openTrade)   openTrade   = e;
+    if (e.decision === 'watching'  && !e.outcome && !openWatch)   openWatch   = e;
+    if (e.outcome                                && !closedEntry) closedEntry = e;
+  }
+  return { openTrade, openWatch, closedEntry };
+}
+
+function classifyLifecycle(d, entry) {
+  // Guard: must have signal and evaluation to classify
+  if (!d || !d.evaluation) {
+    return { state: LIFECYCLE_STATES.NO_ACTION, stage: 'discovery', confidence: 'LOW', reasons: ['Insufficient data'] };
+  }
+
+  const ev  = d.evaluation;
+  const sig = d.signal  || 'neutral';
+  const sc  = d.score   || 0;
+  const hc  = !!d.highConviction;
+  const reg = d.regime  || { direction: 'neutral', key: 'NEUTRAL' };
+  const st  = d.states  || {};
+
+  // ── Step 1: Destructure resolved journal entry (passed in — pure) ─────────
+  // entry is the result of resolveJournalEntry(symbol) called at each call site.
+  // classifyLifecycle does not read globals — all journal state arrives via entry.
+  const _entry     = entry || {};
+  const openTrade  = _entry.openTrade  || null;
+  const openWatch  = _entry.openWatch  || null;
+  const closedEntry= _entry.closedEntry|| null;
+
+  // ── Step 2: Terminal states ─────────────────────────────────────────────
+  // Closed entries — check before everything else
+  if (closedEntry && !openTrade && !openWatch) {
+    // If the entry has been archived (journalled flag or just closed)
+    const state = closedEntry.journalled ? LIFECYCLE_STATES.JOURNALLED : LIFECYCLE_STATES.CLOSED;
+    return {
+      state, stage: 'terminal', confidence: 'HIGH',
+      reasons: [state === LIFECYCLE_STATES.JOURNALLED ? 'Trade archived in journal' : 'Trade closed'],
+    };
+  }
+
+  // ── Step 3: Trade-side states (open trade exists) ───────────────────────
+  if (openTrade) {
+    const tradeDir  = openTrade.direction || openTrade.signal || null;
+    const reasons   = [];
+
+    // CLOSE — thesis fully invalidated
+    // Opposing UT Bot direction to the trade direction
+    const utOpposes = tradeDir === 'long'
+      ? (st.utBot && st.utBot.direction === -1 && !!st.utShortConfirm)
+      : tradeDir === 'short'
+        ? (st.utBot && st.utBot.direction === 1 && !!st.utLongConfirm)
+        : false;
+    // Regime now fully opposed (not just challenging)
+    const regimeFullyOpposed = tradeDir === 'long'
+      ? (reg.key === 'BEARISH_REGIME' || reg.key === 'BEARISH_TRANSITION')
+      : tradeDir === 'short'
+        ? (reg.key === 'BULLISH_REGIME' || reg.key === 'BULLISH_TRANSITION')
+        : false;
+
+    if (utOpposes || regimeFullyOpposed) {
+      if (utOpposes)          reasons.push('UT Bot actively opposing trade direction');
+      if (regimeFullyOpposed) reasons.push('Regime fully transitioned against trade');
+      return { state: LIFECYCLE_STATES.CLOSE, stage: 'active', confidence: 'HIGH', reasons };
+    }
+
+    // PREPARE_EXIT — significant deterioration
+    // Regime now challenging or under pressure against the trade
+    const regimeChallenging = tradeDir === 'long'
+      ? (reg.key === 'BULLISH_CHALLENGE' || reg.key === 'BULLISH_UNDER_PRESSURE')
+      : tradeDir === 'short'
+        ? (reg.key === 'BEARISH_CHALLENGE' || reg.key === 'BEARISH_UNDER_PRESSURE')
+        : false;
+    // TEMA crossed against trade direction
+    const temaCrossedAgainst = tradeDir === 'long'
+      ? !!st.crossShort
+      : tradeDir === 'short'
+        ? !!st.crossLong
+        : false;
+    // Multiple confirms lost — evaluation quality dropped to LOW or NONE
+    const evalDeteriorated = ev.setupQuality === 'LOW' || ev.setupQuality === 'NONE';
+
+    if (regimeChallenging || (temaCrossedAgainst && evalDeteriorated)) {
+      if (regimeChallenging)                   reasons.push('Regime challenging trade direction');
+      if (temaCrossedAgainst)                  reasons.push('TEMA crossed against trade direction');
+      if (evalDeteriorated)                    reasons.push('Evaluation quality deteriorated');
+      return { state: LIFECYCLE_STATES.PREPARE_EXIT, stage: 'active', confidence: 'MODERATE', reasons };
+    }
+
+    // REDUCE — early deterioration
+    // TEMA converging (narrowing) after being widening, or single confirm lost
+    const temaConverging = !st.temaWidening && temaCrossedAgainst;
+    const evalWeakening  = ev.setupQuality === 'MODERATE' && !ev.signalRegimeAligned;
+
+    if (temaConverging || evalWeakening) {
+      if (temaConverging) reasons.push('TEMA converging — momentum softening');
+      if (evalWeakening)  reasons.push('Evaluation weakening — regime misalignment');
+      return { state: LIFECYCLE_STATES.REDUCE, stage: 'active', confidence: 'MODERATE', reasons };
+    }
+
+    // HOLD — thesis intact
+    // Regime aligned or neutral (not actively opposing), evaluation still supportive
+    const thesisIntact = !regimeChallenging && !regimeFullyOpposed && !temaCrossedAgainst;
+
+    if (thesisIntact) {
+      reasons.push('Trade thesis intact');
+      if (ev.setupQuality === 'HIGH')     reasons.push('Evaluation quality HIGH');
+      if (ev.signalRegimeAligned)         reasons.push('Regime remains aligned');
+      return { state: LIFECYCLE_STATES.HOLD, stage: 'active', confidence: 'HIGH', reasons };
+    }
+
+    // ACTIVE — open trade, insufficient live data to classify further
+    return {
+      state: LIFECYCLE_STATES.ACTIVE, stage: 'active', confidence: 'LOW',
+      reasons: ['Open trade — awaiting scan data for thesis assessment'],
+    };
+  }
+
+  // ── Step 4: Watch state (open watch entry exists) ───────────────────────
+  if (openWatch) {
+    return {
+      state: LIFECYCLE_STATES.WATCH, stage: 'discovery', confidence: 'MODERATE',
+      reasons: ['Active watch entry exists for this symbol'],
+    };
+  }
+
+  // ── Step 5: Entry-side states (scanner card, no journal entry) ──────────
+  if (sig === 'neutral') {
+    return {
+      state: LIFECYCLE_STATES.NO_ACTION, stage: 'discovery', confidence: 'HIGH',
+      reasons: ['No directional signal'],
+    };
+  }
+
+  const reasons = [];
+
+  // CONFIRMED — full stack alignment
+  // Strong setup quality + high probability flag + regime aligned + score threshold
+  if (ev.setupQuality === 'HIGH' && ev.highProbability && ev.signalRegimeAligned && sc >= 75) {
+    reasons.push('Setup quality HIGH');
+    reasons.push('High probability flag active');
+    reasons.push('Regime aligned: ' + reg.label);
+    if (sc >= 80) reasons.push('Score ' + sc + '%');
+    return { state: LIFECYCLE_STATES.CONFIRMED, stage: 'opportunity', confidence: 'HIGH', reasons };
+  }
+
+  // HIGH_PROBABILITY — evaluation HP flag true (may not have full confirm stack)
+  if (ev.highProbability) {
+    reasons.push('High probability flag active');
+    if (ev.setupQuality === 'HIGH') reasons.push('Setup quality HIGH');
+    reasons.push('Score ' + sc + '%');
+    return { state: LIFECYCLE_STATES.HIGH_PROBABILITY, stage: 'opportunity', confidence: 'HIGH', reasons };
+  }
+
+  // CONSIDER_HALF — strong directional evidence, not all confirms present
+  // MODERATE quality + regime aligned + (highConviction or score >= 65)
+  if (ev.setupQuality === 'MODERATE' && ev.signalRegimeAligned && (hc || sc >= 65)) {
+    reasons.push('Setup quality MODERATE');
+    reasons.push('Regime aligned: ' + reg.label);
+    if (hc) reasons.push('High conviction flag');
+    reasons.push('Partial confirmation — initial participation may be appropriate');
+    return { state: LIFECYCLE_STATES.CONSIDER_HALF, stage: 'opportunity', confidence: 'MODERATE', reasons };
+  }
+
+  // WATCH — directional bias present, setup quality insufficient
+  if (ev.setupQuality === 'LOW' || (ev.setupQuality === 'MODERATE' && !ev.signalRegimeAligned)) {
+    reasons.push('Directional bias present');
+    reasons.push('Setup quality: ' + ev.setupQuality);
+    if (!ev.signalRegimeAligned) reasons.push('Regime not aligned with signal');
+    return { state: LIFECYCLE_STATES.WATCH, stage: 'discovery', confidence: 'LOW', reasons };
+  }
+
+  // NO_ACTION — signal present but evidence insufficient
+  reasons.push('Signal present but insufficient confirming evidence');
+  return { state: LIFECYCLE_STATES.NO_ACTION, stage: 'discovery', confidence: 'LOW', reasons };
+}
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -3356,7 +3590,11 @@ async function calcPair(symbol,tf){
   _result.regime = classifyRegime(_result.states);
   // TDAS Phase 1.5: evaluate setup quality from states + regime — pure, no re-derivation
   _result.evaluation = evaluateSetup(_result);
+  // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
+  // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
+  _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
   if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE){
+    console.debug('[TDAS Phase2 lifecycle]', _result.symbol||'', _result.lifecycle);
     console.debug('[TDAS Phase1 regime]', _result.symbol||'', {
       key:       _result.regime.key,
       label:     _result.regime.label,
@@ -4291,6 +4529,11 @@ function openAnalysisPanel(symbol){
   if(!d.evaluation && typeof evaluateSetup === 'function' && d.states && d.regime){
     d.evaluation = evaluateSetup(d);
   }
+  // TDAS Phase 2 — late-binding fallback: compute d.lifecycle if absent.
+  // Passes resolveJournalEntry(symbol) so classifyLifecycle stays pure.
+  if(!d.lifecycle && typeof classifyLifecycle === 'function' && d.evaluation){
+    d.lifecycle = classifyLifecycle(d, resolveJournalEntry(symbol));
+  }
   const overlay = document.getElementById('analysisOverlay');
   const panel   = document.getElementById('analysisPanel');
   const title   = document.getElementById('apTitle');
@@ -4337,6 +4580,27 @@ function openAnalysisPanel(symbol){
     _tcHtml='<div class="ap-section">'
       +'<div class="ap-section-title">'+_htfLabel+' Trend Context</div>'
       +'<div class="ap-row"><span style="color:var(--text3);">Insufficient '+_htfLabel+' candle history to determine trend context (need \u2265200 closed bars for SMA200)</span></div>'
+      +'</div>';
+  }
+
+  // TDAS Phase 2: pre-compute Lifecycle row — always shown when lifecycle present.
+  // Separate from _evalHtml so it renders even for neutral-signal pairs (e.g. ACTIVE trade).
+  var _lifecycleHtml = '';
+  if(d.lifecycle){
+    var _lc      = d.lifecycle;
+    var _lcColor = _lc.stage==='opportunity'?'var(--green-text)'
+                 : _lc.stage==='active'?'var(--blue-text)'
+                 : _lc.stage==='terminal'?'var(--text3)'
+                 : 'var(--amber-text)';
+    if(_lc.state==='CLOSE'||_lc.state==='PREPARE_EXIT') _lcColor='var(--red-text)';
+    if(_lc.state==='REDUCE') _lcColor='var(--amber-text)';
+    if(_lc.state==='CONFIRMED'||_lc.state==='HIGH_PROBABILITY') _lcColor='var(--green-text)';
+    _lifecycleHtml='<div class="ap-section">'
+      +'<div class="ap-section-title">Lifecycle</div>'
+      +'<div class="ap-row"><span>State</span><span style="color:'+_lcColor+';font-weight:600;">'+_lc.state.replace(/_/g,' ')+'</span></div>'
+      +'<div class="ap-row"><span>Stage</span><span style="color:var(--text2);">'+_lc.stage+'</span></div>'
+      +'<div class="ap-row"><span>Confidence</span><span style="color:var(--text2);">'+_lc.confidence+'</span></div>'
+      +(_lc.reasons&&_lc.reasons.length?'<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--text3);">Reasons</span><span style="color:var(--text3);font-size:11px;text-align:right;">'+_lc.reasons.join('<br>')+'</span></div>':'')
       +'</div>';
   }
 
@@ -4416,6 +4680,8 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span>HTF alignment</span><span style="color:${htfAlign==='aligned'?'var(--green-text)':htfAlign==='conflict'?'var(--red-text)':'var(--text3)'};">${htfAlign==='aligned'?'Aligned ✓':htfAlign==='conflict'?'Conflict ✗':htfAlign==='insufficient'?'Insufficient data':'Neutral —'}</span></div>
       <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>
     </div>
+
+    ${_lifecycleHtml}
 
     ${_evalHtml}
 
