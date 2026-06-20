@@ -1706,153 +1706,181 @@ function calcRSI(closes,p=14){
 }
 function calcATR(h,l,c,p=14){const trs=[];for(let i=1;i<c.length;i++)trs.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])));return sma(trs,p);}
 
-// UT Bot Alert — QuantNomad version, Key Value 4, ATR Period 10
+// UT Bot Alert — exact JS port of TradingView Pine Script v4 UT Bot Alerts
+// Source: QuantNomad "UT Bot Alerts" (Key Value 4, ATR Period 10, h=false)
 // Optional: pass (times, debugSymbol) to enable DEBUG_MODE per-bar logging.
+//
+// Fix applied vs previous version:
+//   OLD: used a pre-built atrArr[] with index offset of (atrPeriod-1) bars,
+//        causing nLoss to be computed from future ATR values (lookahead error).
+//        The last (atrPeriod-1) bars also fell back to the final atrArr entry
+//        due to out-of-bounds access — worst divergence on the most recent bars.
+//   NEW: RMA carried forward as a scalar, updated at bar i BEFORE computing
+//        nLoss at bar i. Exact Pine series evaluation order. No offset, no
+//        lookahead, no out-of-bounds. Matches Pine's per-bar atr(period)[i].
 function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10,times=null,debugSymbol=null){
   const n=closes.length;
-  // Step 1: calculate ATR for each bar using Wilder smoothing (RMA)
-  const trs=[];
-  for(let i=1;i<n;i++) trs.push(Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1])));
-  // RMA (Wilder smoothing) = EMA with alpha=1/period
-  const atrArr=[];
-  let rma=trs.slice(0,atrPeriod).reduce((a,b)=>a+b,0)/atrPeriod;
-  atrArr.push(rma);
-  for(let i=atrPeriod;i<trs.length;i++){rma=rma*(atrPeriod-1)/atrPeriod+trs[i]/atrPeriod;atrArr.push(rma);}
-  // Align: atrArr[i] corresponds to closes[i+1] (since trs starts at index 1)
-  // We need trailing stop from bar 1 onwards
-  const trailStop=new Array(n).fill(0);
-  let dir=1; // 1=long trail, -1=short trail
-  trailStop[1]=closes[1]-keyVal*atrArr[0];
-  for(let i=2;i<n;i++){
-    const atr=atrArr[i-1]||atrArr[atrArr.length-1];
-    const nLoss=keyVal*atr;
-    const prev=trailStop[i-1];
-    const c=closes[i],pc=closes[i-1];
-    if(c>prev&&pc>prev) trailStop[i]=Math.max(prev,c-nLoss);
-    else if(c<prev&&pc<prev) trailStop[i]=Math.min(prev,c+nLoss);
-    else if(c>prev) trailStop[i]=c-nLoss;
-    else trailStop[i]=c+nLoss;
+
+  // ── Step 1: Per-bar True Range ──────────────────────────────────────────
+  // trs[i] = TR of candle i (requires closes[i-1], so starts at i=1)
+  // trs[0] = 0 placeholder; array is candle-aligned (trs[i] ↔ closes[i]).
+  const trs=new Array(n).fill(0);
+  for(let i=1;i<n;i++){
+    trs[i]=Math.max(
+      highs[i]-lows[i],
+      Math.abs(highs[i]-closes[i-1]),
+      Math.abs(lows[i] -closes[i-1])
+    );
   }
-  // Direction and signals
-  // Signal detection aligned to canonical Pine Script UT Bot:
-  //   buy  = close[1] <= trail[1] AND close > trail  (price crossed above trail)
-  //   sell = close[1] >= trail[1] AND close < trail  (price crossed below trail)
-  // This matches the Buy/Sell label events visible on TradingView charts.
-  // Direction (curDir) is tracked separately — unchanged from before.
+
+  // ── Step 2: Seed RMA with SMA of first atrPeriod TRs ───────────────────
+  // Pine seeds from bar 0 of full chart history; with 600 bars the RMA has
+  // long converged — SMA seed produces equivalent results after warmup.
+  // After this loop, rmaVal = ATR valid at bar atrPeriod (same as Pine).
+  let rmaVal=0;
+  for(let i=1;i<=atrPeriod;i++) rmaVal+=trs[i];
+  rmaVal/=atrPeriod;
+
+  // ── Step 3: Seed trail stop at bar atrPeriod ───────────────────────────
+  // Pine initialises xATRTrailingStop=0 and evaluates from bar 0.
+  // With 600 bars, seeding at atrPeriod gives equivalent converged results.
+  // Branch 3 applies (close > 0): trail = close - nLoss (bullish seed).
+  const trailStop=new Array(n).fill(0);
+  trailStop[atrPeriod]=closes[atrPeriod]-keyVal*rmaVal;
+
+  // ── Step 4: Single unified loop — ATR → nLoss → trail → signal ─────────
+  // Mirrors Pine's per-bar series evaluation order exactly:
+  //   1. xATR = atr(atrPeriod)          updated first at bar i
+  //   2. nLoss = keyValue * xATR         computed from same-bar ATR
+  //   3. xATRTrailingStop := iff(...)    trail updated using same-bar nLoss
+  //   4. buy / sell conditions           evaluated using updated trail
+  // No separate array, no index offset, no lookahead, no out-of-bounds.
   const signals=[];
-  let prevDir=closes[1]>trailStop[1]?1:-1;
-  let prevClose=closes[1];
-  for(let i=2;i<n;i++){
-    const curDir=closes[i]>trailStop[i]?1:-1;
+  let prevClose=closes[atrPeriod];
+
+  for(let i=atrPeriod+1;i<n;i++){
+    // 1+2: Update RMA then compute nLoss — same bar, same as Pine's atr()[i]
+    rmaVal=rmaVal*(atrPeriod-1)/atrPeriod+trs[i]/atrPeriod;
+    const nLoss=keyVal*rmaVal;
+
+    // 3: Trail stop — exact Pine xATRTrailingStop := iff(...) branches
+    const prev=trailStop[i-1];
+    const c=closes[i], pc=closes[i-1];
+    if     (c>prev&&pc>prev) trailStop[i]=Math.max(prev,c-nLoss); // branch 1
+    else if(c<prev&&pc<prev) trailStop[i]=Math.min(prev,c+nLoss); // branch 2
+    else if(c>prev)          trailStop[i]=c-nLoss;                 // branch 3
+    else                     trailStop[i]=c+nLoss;                 // branch 4
+
+    // 4: Signal detection — exact Pine buy/sell label conditions:
+    //   ema = ema(src,1) = close (EMA period 1 = identity)
+    //   above = crossover(ema, xATRTS)
+    //         = ema[1] < xATRTS[1] AND ema > xATRTS    (Pine crossover strict <)
+    //   below = crossover(xATRTS, ema)
+    //         = xATRTS[1] < ema[1] AND xATRTS > ema    (Pine crossover strict <)
+    //   buy  = src > xATRTS AND above
+    //        = close > trail[i] AND close[1] < trail[1] AND close > trail[i]
+    //        = close[1] < trail[1] AND close > trail[i]  (redundant term dropped)
+    //   sell = src < xATRTS AND below
+    //        = close < trail[i] AND trail[1] < close[1] AND trail[i] > close
+    //        = close[1] > trail[1] AND close < trail[i]  (redundant term dropped)
     let sig='none';
-    // Pine-style: price crossover of trail stop only
-    if(prevClose<=trailStop[i-1]&&closes[i]>trailStop[i]) sig='long';   // crossed above trail
-    if(prevClose>=trailStop[i-1]&&closes[i]<trailStop[i]) sig='short';  // crossed below trail
-    signals.push({bar:i,sig,dir:curDir,trail:trailStop[i],
-      // Store inputs needed for diagnostic logging
-      _c:closes[i],_pc:closes[i-1],_prevTrail:trailStop[i-1],
-      _atr:atrArr[i-1]||atrArr[atrArr.length-1],
+    if(prevClose<trailStop[i-1] && c>trailStop[i]) sig='long';   // Pine buy label
+    if(prevClose>trailStop[i-1] && c<trailStop[i]) sig='short';  // Pine sell label
+
+    signals.push({
+      bar:i, sig,
+      dir: c>trailStop[i]?1:-1,
+      trail:trailStop[i],
+      _c:c, _pc:pc,
+      _prevTrail:trailStop[i-1],
+      _atr:rmaVal,
       _t:times?times[i]:null
     });
-    prevDir=curDir;
-    prevClose=closes[i];
+    prevClose=c;
   }
-  // Current state
+
+  // ── Step 5: Derive current state ────────────────────────────────────────
   const last=signals[signals.length-1];
-  const prev=signals[signals.length-2];
-  // Fresh signal = fired on the last completed bar
+  const prevSig=signals[signals.length-2];
+
   const freshSignal=last.sig!=='none'?last.sig:'none';
-  // Recent signal = within last 3 bars (signal may have fired 1-2 bars ago)
+
   let recentSignal='none';
   for(let i=signals.length-1;i>=Math.max(0,signals.length-3);i--){
     if(signals[i].sig!=='none'){recentSignal=signals[i].sig;break;}
   }
-  // Count bars since last direction flip — scan backwards for most recent signal
-  let barsAgoFlip = signals.length; // default: older than our window
-  for(let i = signals.length - 1; i >= 0; i--){
-    if(signals[i].sig !== 'none'){
-      barsAgoFlip = signals.length - 1 - i;
-      break;
-    }
-  }
-  // Clamp to a sensible max so we never show undefined
-  if(typeof barsAgoFlip !== 'number' || isNaN(barsAgoFlip)) barsAgoFlip = 99;
 
-  // ── DIAGNOSTIC LOGGING (DEBUG_MODE only) ─────────────────────────────────
-  // Only fires when debugSymbol is passed from calcPair.
-  // Logs last 15 closed candles (per-bar detail) + last 30 signal events.
-  // Purpose: direct comparison against TradingView UT Bot Alerts 4/10 output.
-  if(typeof DEBUG_MODE!=='undefined' && DEBUG_MODE && debugSymbol){
+  let barsAgoFlip=signals.length;
+  for(let i=signals.length-1;i>=0;i--){
+    if(signals[i].sig!=='none'){barsAgoFlip=signals.length-1-i;break;}
+  }
+  if(typeof barsAgoFlip!=='number'||isNaN(barsAgoFlip)) barsAgoFlip=99;
+
+  // ── DIAGNOSTIC LOGGING (DEBUG_MODE only, LINKUSDT only) ──────────────────
+  // Retained until LINK/USDT 4H validated against TradingView. Remove after.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&debugSymbol){
     const f4=(v)=>v!=null&&isFinite(v)?v.toFixed(4):'—';
     const f2=(v)=>v!=null&&isFinite(v)?v.toFixed(2):'—';
     const ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16):'—';
 
-    // ── A: Last 15 candles — per-bar detail ──────────────────────────────
-    console.group('[UT Bot Diagnostic] '+debugSymbol+' — last 15 closed candles');
-    console.log('col: time | close | prevClose | trailStop | prevTrail | ATR | nLoss | dir | signal');
-    console.log('     (prevClose <= prevTrail AND close > trail) => buy crossover');
-    console.log('     (prevClose >= prevTrail AND close < trail) => sell crossover');
-    const startA = Math.max(0, signals.length-15);
-    for(let i=startA; i<signals.length; i++){
+    console.group('[UT Bot Diagnostic FIXED] '+debugSymbol+' — last 15 closed candles');
+    console.log('FIXED BUILD: ATR scalar inline, Pine-exact order. Look for [FIXED] tag.');
+    console.log('col: time | close | prevClose | trail | prevTrail | ATR | nLoss | dir | sig');
+    const startA=Math.max(0,signals.length-15);
+    for(let i=startA;i<signals.length;i++){
       const s=signals[i];
-      const nL=keyVal*(s._atr||0);
-      const buyCheck  = s._pc<=s._prevTrail && s._c>s.trail;
-      const sellCheck = s._pc>=s._prevTrail && s._c<s.trail;
+      const nL=keyVal*s._atr;
+      const bc=s._pc<s._prevTrail&&s._c>s.trail;
+      const sc=s._pc>s._prevTrail&&s._c<s.trail;
       console.log(
         (i===signals.length-1?'>>> ':'    ')+
-        ts(s._t)+' | '+
-        'c='+f2(s._c)+' pc='+f2(s._pc)+' | '+
-        'trail='+f2(s.trail)+' prevTrail='+f2(s._prevTrail)+' | '+
-        'ATR='+f4(s._atr)+' nLoss='+f2(nL)+' | '+
-        'dir='+(s.dir===1?'bull':'bear')+' | '+
-        'sig='+s.sig+
-        (buyCheck&&s.sig!=='long'?' ← BUY COND MET (sig missed?)':'')+
-        (sellCheck&&s.sig!=='short'?' ← SELL COND MET (sig missed?)':'')
+        ts(s._t)+' | c='+f2(s._c)+' pc='+f2(s._pc)+
+        ' | trail='+f2(s.trail)+' pt='+f2(s._prevTrail)+
+        ' | ATR='+f4(s._atr)+' nL='+f2(nL)+
+        ' | dir='+(s.dir===1?'bull':'bear')+' | sig='+s.sig+
+        (bc&&s.sig!=='long'?' ← BUY MET (missed?':'')+
+        (sc&&s.sig!=='short'?' ← SELL MET (missed?)':'')+
+        ' [FIXED]'
       );
     }
     console.groupEnd();
 
-    // ── B: All signal events in last 30 candles ──────────────────────────
-    console.group('[UT Bot Diagnostic] '+debugSymbol+' — signal events (last 30 bars)');
-    const startB = Math.max(0, signals.length-30);
-    let foundAny=false;
-    for(let i=startB; i<signals.length; i++){
+    console.group('[UT Bot Diagnostic FIXED] '+debugSymbol+' — signal events (last 30 bars)');
+    const startB=Math.max(0,signals.length-30);
+    let any=false;
+    for(let i=startB;i<signals.length;i++){
       const s=signals[i];
       if(s.sig!=='none'){
-        foundAny=true;
+        any=true;
         console.log(
           'SIG '+s.sig.toUpperCase()+
           ' | bar='+(signals.length-1-i)+' bars ago'+
           ' | '+ts(s._t)+
-          ' | c='+f2(s._c)+
-          ' | trail='+f2(s.trail)+
-          ' | prevC='+f2(s._pc)+
-          ' | prevTrail='+f2(s._prevTrail)
+          ' | c='+f2(s._c)+' trail='+f2(s.trail)+
+          ' | prevC='+f2(s._pc)+' prevTrail='+f2(s._prevTrail)
         );
       }
     }
-    if(!foundAny) console.log('No signal events found in last 30 bars');
-    console.log('--- barsAgoFlip='+barsAgoFlip+' | recentSignal='+recentSignal+' | freshSignal='+freshSignal+' | direction='+(last.dir===1?'bullish':'bearish'));
+    if(!any) console.log('No signals in last 30 bars');
+    console.log('--- barsAgoFlip='+barsAgoFlip+' recentSignal='+recentSignal+' freshSignal='+freshSignal+' dir='+(last.dir===1?'BULLISH':'BEARISH'));
     console.groupEnd();
 
-    // ── C: Summary for copy-paste comparison against TradingView ─────────
-    console.group('[UT Bot Diagnostic] '+debugSymbol+' — current state summary');
-    console.log('direction    :', last.dir===1?'BULLISH (1)':'BEARISH (-1)');
-    console.log('trailLevel   :', f2(last.trail));
-    console.log('prevTrailLevel:', f2(prev?prev.trail:last.trail));
-    console.log('freshSignal  :', freshSignal);
-    console.log('recentSignal :', recentSignal);
-    console.log('barsAgoFlip  :', barsAgoFlip);
-    console.log('total signals in window:', signals.filter(s=>s.sig!=='none').length);
+    console.group('[UT Bot Diagnostic FIXED] '+debugSymbol+' — current state');
+    console.log('direction    :',last.dir===1?'BULLISH (1)':'BEARISH (-1)');
+    console.log('trailLevel   :',f2(last.trail));
+    console.log('freshSignal  :',freshSignal);
+    console.log('recentSignal :',recentSignal);
+    console.log('barsAgoFlip  :',barsAgoFlip);
+    console.log('signals found:',signals.filter(s=>s.sig!=='none').length,'in last',signals.length,'bars');
     console.groupEnd();
   }
 
   return{
-    signal: freshSignal,
+    signal:        freshSignal,
     recentSignal,
-    direction: last.dir,
-    trailLevel: last.trail,
-    prevTrailLevel: prev ? prev.trail : last.trail,
+    direction:     last.dir,
+    trailLevel:    last.trail,
+    prevTrailLevel:prevSig?prevSig.trail:last.trail,
     barsAgoFlip
   };
 }
