@@ -3704,24 +3704,74 @@ async function calcPair(symbol,tf){
       _tr[10]=utCloses[10]-4*_rma;
       let _pc=utCloses[10];
       let _sigCount=0;
+      // Timestamps of the Buy and Sell bars we are forensically analysing
+      const _buyTs  ='2026-06-15 08:00';
+      const _sellTs ='2026-06-18 12:00';
+      let _inWindow=false, _buyIdx=-1, _sellIdx=-1;
+      // First pass: find indices of Buy and Sell bars by timestamp
       for(let _i=11;_i<_n;_i++){
-        _rma=_rma*9/10+_trs[_i]/10;
-        const _nL=4*_rma, _prev=_tr[_i-1], _c=utCloses[_i], _ppc=utCloses[_i-1];
-        if(_c>_prev&&_ppc>_prev) _tr[_i]=Math.max(_prev,_c-_nL);
-        else if(_c<_prev&&_ppc<_prev) _tr[_i]=Math.min(_prev,_c+_nL);
-        else if(_c>_prev) _tr[_i]=_c-_nL;
-        else _tr[_i]=_c+_nL;
-        let _sig='none';
-        if(_pc<_tr[_i-1]&&_c>_tr[_i]) _sig='LONG';
-        if(_pc>_tr[_i-1]&&_c<_tr[_i]) _sig='SHORT';
-        if(_sig!=='none'){
-          _sigCount++;
-          console.log('  SIG '+_sig+' | '+_ts(utTimes[_i])+' | c='+_f2(_c)+' | trail='+_f2(_tr[_i])+' | prevC='+_f2(_pc)+' | prevTrail='+_f2(_tr[_i-1]));
-        }
-        _pc=_c;
+        const _t=_ts(utTimes[_i]);
+        if(_t===_buyTs)  _buyIdx=_i;
+        if(_t===_sellTs) _sellIdx=_i;
       }
-      if(_sigCount===0) console.log('  NO signals found in '+_n+' bars');
-      console.log('  Total signals: '+_sigCount);
+      console.log('  Buy bar index: '+_buyIdx+'  Sell bar index: '+_sellIdx);
+      console.log('╠══ BAR-BY-BAR: Buy→Sell window ═══════════════════════════════════════╣');
+      console.log('  ts | close | high | low | ATR | nLoss | prevTrail | newTrail | branch | sig');
+      // Second pass: full calculation, emit every bar in [buyIdx-1 .. sellIdx]
+      let _rma2=0; for(let _i=1;_i<=10;_i++) _rma2+=_trs[_i]; _rma2/=10;
+      const _tr2=new Array(_n).fill(0);
+      _tr2[10]=utCloses[10]-4*_rma2;
+      let _pc2=utCloses[10];
+      for(let _i=11;_i<_n;_i++){
+        _rma2=_rma2*9/10+_trs[_i]/10;
+        const _nL2=4*_rma2, _prev2=_tr2[_i-1], _c2=utCloses[_i], _ppc2=utCloses[_i-1];
+        let _branch2;
+        if(_c2>_prev2&&_ppc2>_prev2){  _tr2[_i]=Math.max(_prev2,_c2-_nL2); _branch2='B1:max(prev,c-nL)'; }
+        else if(_c2<_prev2&&_ppc2<_prev2){ _tr2[_i]=Math.min(_prev2,_c2+_nL2); _branch2='B2:min(prev,c+nL)'; }
+        else if(_c2>_prev2){            _tr2[_i]=_c2-_nL2;                    _branch2='B3:c-nL'; }
+        else {                          _tr2[_i]=_c2+_nL2;                    _branch2='B4:c+nL'; }
+        let _sig2='—';
+        if(_pc2<_tr2[_i-1]&&_c2>_tr2[_i]) _sig2='LONG';
+        if(_pc2>_tr2[_i-1]&&_c2<_tr2[_i]) _sig2='SHORT';
+        // Emit every bar from one bar before Buy through Sell bar
+        if(_buyIdx>0 && _i>=_buyIdx-1 && _i<=_sellIdx){
+          console.log(
+            '  '+_ts(utTimes[_i])+
+            ' | c='+_f2(_c2)+
+            ' | h='+_f2(utHighs[_i])+
+            ' | l='+_f2(utLows[_i])+
+            ' | ATR='+utHighs[_i]!==null?_rma2.toFixed(6):'—'+
+            ' | nL='+_nL2.toFixed(4)+
+            ' | prevT='+_f2(_prev2)+
+            ' | newT='+_f2(_tr2[_i])+
+            ' | '+_branch2+
+            ' | '+_sig2
+          );
+        }
+        if(_sig2!=='—') _sigCount++;
+        _pc2=_c2;
+      }
+      console.log('╠══ FULL SIGNAL LIST ═══════════════════════════════════════════════════╣');
+      // Third pass: signal list only
+      let _rma3=0; for(let _i=1;_i<=10;_i++) _rma3+=_trs[_i]; _rma3/=10;
+      const _tr3=new Array(_n).fill(0);
+      _tr3[10]=utCloses[10]-4*_rma3;
+      let _pc3=utCloses[10], _sc3=0;
+      for(let _i=11;_i<_n;_i++){
+        _rma3=_rma3*9/10+_trs[_i]/10;
+        const _nL3=4*_rma3,_prev3=_tr3[_i-1],_c3=utCloses[_i],_ppc3=utCloses[_i-1];
+        if(_c3>_prev3&&_ppc3>_prev3) _tr3[_i]=Math.max(_prev3,_c3-_nL3);
+        else if(_c3<_prev3&&_ppc3<_prev3) _tr3[_i]=Math.min(_prev3,_c3+_nL3);
+        else if(_c3>_prev3) _tr3[_i]=_c3-_nL3;
+        else _tr3[_i]=_c3+_nL3;
+        let _sig3='none';
+        if(_pc3<_tr3[_i-1]&&_c3>_tr3[_i]) _sig3='LONG';
+        if(_pc3>_tr3[_i-1]&&_c3<_tr3[_i]) _sig3='SHORT';
+        if(_sig3!=='none'){ _sc3++; console.log('  SIG '+_sig3+' | '+_ts(utTimes[_i])+' | c='+_f2(_c3)+' | trail='+_f2(_tr3[_i])+' | prevC='+_f2(_pc3)+' | prevTrail='+_f2(_tr3[_i-1])); }
+        _pc3=_c3;
+      }
+      if(_sc3===0) console.log('  NO signals');
+      console.log('  Total signals: '+_sc3);
     })();
     console.log('╚══════════════════════════════════════════════════════════════════════╝');
   }
