@@ -3675,19 +3675,55 @@ async function calcPair(symbol,tf){
   // Gate confirm log on 4h — prevents 1h run from overwriting 4h diagnosis
   if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT'&&tf==='4h'){
     const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16):'—';
-    console.group('[UT Bot LINK CONFIRM] LINKUSDT '+tf);
-    console.log('warmup source   :', _utCacheStatus);
-    console.log('candles→calcUT  :', utHighs.length, '(closed bars passed into calcUTBot)');
-    console.log('first candle ts :', _ts(utTimes[0]));
-    console.log('last candle ts  :', _ts(utTimes[utTimes.length-1]));
-    console.log('main raw bars   :', raw.length, '(600-bar window, for reference)');
-    console.log('─────────────────────────────────────');
-    console.log('direction       :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
-    console.log('freshSignal     :', utBot.signal);
-    console.log('recentSignal    :', utBot.recentSignal);
-    console.log('barsAgoFlip     :', utBot.barsAgoFlip);
-    console.log('trailLevel      :', utBot.trailLevel!=null?utBot.trailLevel.toFixed(4):'—');
-    console.groupEnd();
+    const _f2=(v)=>v!=null&&isFinite(v)?v.toFixed(4):'—';
+    // ── Header: warmup and current state ───────────────────────────────────
+    console.log('╔══ [UT Bot LINK 4H CONFIRM] ══════════════════════════════════════════╗');
+    console.log('  warmup source   :', _utCacheStatus);
+    console.log('  candles→calcUT  :', utHighs.length);
+    console.log('  first candle ts :', _ts(utTimes[0]));
+    console.log('  last candle ts  :', _ts(utTimes[utTimes.length-1]));
+    console.log('  ──────────────────────────────────────────────────────────────────');
+    console.log('  direction       :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
+    console.log('  freshSignal     :', utBot.signal);
+    console.log('  recentSignal    :', utBot.recentSignal);
+    console.log('  barsAgoFlip     :', utBot.barsAgoFlip);
+    console.log('  trailLevel      :', utBot.trailLevel!=null?utBot.trailLevel.toFixed(4):'—');
+    console.log('╠══ FULL SIGNAL HISTORY (all signals in 1499-bar window) ══════════════╣');
+    console.log('  Format: TYPE | timestamp | close | trail | prevClose | prevTrail');
+    // Collect signals directly from utBot — re-derive by calling back into the
+    // closed arrays since calcUTBot doesn't return the raw signal list.
+    // Instead use the diagnostic group already fired inside calcUTBot above.
+    // This block adds a flat (non-collapsed) list for easy copy-paste.
+    // We iterate utCloses/utHighs/utLows to re-run a lightweight signal scan.
+    (function(){
+      const _n=utCloses.length;
+      const _trs=new Array(_n).fill(0);
+      for(let _i=1;_i<_n;_i++) _trs[_i]=Math.max(utHighs[_i]-utLows[_i],Math.abs(utHighs[_i]-utCloses[_i-1]),Math.abs(utLows[_i]-utCloses[_i-1]));
+      let _rma=0; for(let _i=1;_i<=10;_i++) _rma+=_trs[_i]; _rma/=10;
+      const _tr=new Array(_n).fill(0);
+      _tr[10]=utCloses[10]-4*_rma;
+      let _pc=utCloses[10];
+      let _sigCount=0;
+      for(let _i=11;_i<_n;_i++){
+        _rma=_rma*9/10+_trs[_i]/10;
+        const _nL=4*_rma, _prev=_tr[_i-1], _c=utCloses[_i], _ppc=utCloses[_i-1];
+        if(_c>_prev&&_ppc>_prev) _tr[_i]=Math.max(_prev,_c-_nL);
+        else if(_c<_prev&&_ppc<_prev) _tr[_i]=Math.min(_prev,_c+_nL);
+        else if(_c>_prev) _tr[_i]=_c-_nL;
+        else _tr[_i]=_c+_nL;
+        let _sig='none';
+        if(_pc<_tr[_i-1]&&_c>_tr[_i]) _sig='LONG';
+        if(_pc>_tr[_i-1]&&_c<_tr[_i]) _sig='SHORT';
+        if(_sig!=='none'){
+          _sigCount++;
+          console.log('  SIG '+_sig+' | '+_ts(utTimes[_i])+' | c='+_f2(_c)+' | trail='+_f2(_tr[_i])+' | prevC='+_f2(_pc)+' | prevTrail='+_f2(_tr[_i-1]));
+        }
+        _pc=_c;
+      }
+      if(_sigCount===0) console.log('  NO signals found in '+_n+' bars');
+      console.log('  Total signals: '+_sigCount);
+    })();
+    console.log('╚══════════════════════════════════════════════════════════════════════╝');
   }
 
   const utLongConfirm  = utBot.direction===1  && (utBot.recentSignal==='long'  || utBot.signal==='long');
