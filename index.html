@@ -3666,6 +3666,27 @@ async function calcPair(symbol,tf){
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
   const _utDebugSym=(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT')?symbol:null;
   const utBot=calcUTBot(utHighs,utLows,utCloses,4,10,utTimes,_utDebugSym);
+
+  // ── LINK-specific confirmation log — proves warmup path is active ─────────
+  // Answers: did 1500-bar data reach calcUTBot? Does UT state differ from old?
+  // Remove after LINK/TradingView validation is complete.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT'){
+    const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16):'—';
+    console.group('[UT Bot LINK CONFIRM] LINKUSDT '+tf);
+    console.log('warmup source   :', _utCacheStatus);
+    console.log('candles→calcUT  :', utHighs.length, '(closed bars passed into calcUTBot)');
+    console.log('first candle ts :', _ts(utTimes[0]));
+    console.log('last candle ts  :', _ts(utTimes[utTimes.length-1]));
+    console.log('main raw bars   :', raw.length, '(600-bar window, for reference)');
+    console.log('─────────────────────────────────────');
+    console.log('direction       :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
+    console.log('freshSignal     :', utBot.signal);
+    console.log('recentSignal    :', utBot.recentSignal);
+    console.log('barsAgoFlip     :', utBot.barsAgoFlip);
+    console.log('trailLevel      :', utBot.trailLevel!=null?utBot.trailLevel.toFixed(4):'—');
+    console.groupEnd();
+  }
+
   const utLongConfirm  = utBot.direction===1  && (utBot.recentSignal==='long'  || utBot.signal==='long');
   const utShortConfirm = utBot.direction===-1 && (utBot.recentSignal==='short' || utBot.signal==='short');
   const utFresh = utBot.signal!=='none';
