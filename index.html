@@ -1858,13 +1858,14 @@ function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10,times=null,debugSymbo
     }
     console.groupEnd();
 
-    console.group('[UT Bot Diagnostic FIXED] '+debugSymbol+' — signal events (last 30 bars)');
-    const startB=Math.max(0,signals.length-30);
-    let any=false;
-    for(let i=startB;i<signals.length;i++){
+    // Log ALL signal events in full history (barsAgoFlip=95 puts last signal
+    // outside the old 30-bar window — must scan full array to find it)
+    console.group('[UT Bot Diagnostic FIXED] '+debugSymbol+' — ALL signal events in '+signals.length+' bars');
+    let anyAll=false;
+    for(let i=0;i<signals.length;i++){
       const s=signals[i];
       if(s.sig!=='none'){
-        any=true;
+        anyAll=true;
         console.log(
           'SIG '+s.sig.toUpperCase()+
           ' | bar='+(signals.length-1-i)+' bars ago'+
@@ -1874,7 +1875,7 @@ function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10,times=null,debugSymbo
         );
       }
     }
-    if(!any) console.log('No signals in last 30 bars');
+    if(!anyAll) console.log('NO signals found in entire '+signals.length+'-bar window');
     console.log('--- barsAgoFlip='+barsAgoFlip+' recentSignal='+recentSignal+' freshSignal='+freshSignal+' dir='+(last.dir===1?'BULLISH':'BEARISH'));
     console.groupEnd();
 
@@ -3664,13 +3665,15 @@ async function calcPair(symbol,tf){
   // Pass times array for diagnostic logging; debugSymbol activates per-symbol detail.
   // Only LINK/USDT is logged when DEBUG_MODE is true — remove after validation is complete.
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
-  const _utDebugSym=(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT')?symbol:null;
+  // Gate diagnostic on 4h only — 1h calcPair also runs for LINK, causing confusion
+  const _utDebugSym=(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT'&&tf==='4h')?symbol:null;
   const utBot=calcUTBot(utHighs,utLows,utCloses,4,10,utTimes,_utDebugSym);
 
   // ── LINK-specific confirmation log — proves warmup path is active ─────────
   // Answers: did 1500-bar data reach calcUTBot? Does UT state differ from old?
   // Remove after LINK/TradingView validation is complete.
-  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT'){
+  // Gate confirm log on 4h — prevents 1h run from overwriting 4h diagnosis
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT'&&tf==='4h'){
     const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16):'—';
     console.group('[UT Bot LINK CONFIRM] LINKUSDT '+tf);
     console.log('warmup source   :', _utCacheStatus);
