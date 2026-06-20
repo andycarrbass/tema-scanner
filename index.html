@@ -1707,7 +1707,8 @@ function calcRSI(closes,p=14){
 function calcATR(h,l,c,p=14){const trs=[];for(let i=1;i<c.length;i++)trs.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])));return sma(trs,p);}
 
 // UT Bot Alert — QuantNomad version, Key Value 4, ATR Period 10
-function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10){
+// Optional: pass (times, debugSymbol) to enable DEBUG_MODE per-bar logging.
+function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10,times=null,debugSymbol=null){
   const n=closes.length;
   // Step 1: calculate ATR for each bar using Wilder smoothing (RMA)
   const trs=[];
@@ -1747,7 +1748,12 @@ function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10){
     // Pine-style: price crossover of trail stop only
     if(prevClose<=trailStop[i-1]&&closes[i]>trailStop[i]) sig='long';   // crossed above trail
     if(prevClose>=trailStop[i-1]&&closes[i]<trailStop[i]) sig='short';  // crossed below trail
-    signals.push({bar:i,sig,dir:curDir,trail:trailStop[i]});
+    signals.push({bar:i,sig,dir:curDir,trail:trailStop[i],
+      // Store inputs needed for diagnostic logging
+      _c:closes[i],_pc:closes[i-1],_prevTrail:trailStop[i-1],
+      _atr:atrArr[i-1]||atrArr[atrArr.length-1],
+      _t:times?times[i]:null
+    });
     prevDir=curDir;
     prevClose=closes[i];
   }
@@ -1771,6 +1777,75 @@ function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10){
   }
   // Clamp to a sensible max so we never show undefined
   if(typeof barsAgoFlip !== 'number' || isNaN(barsAgoFlip)) barsAgoFlip = 99;
+
+  // ── DIAGNOSTIC LOGGING (DEBUG_MODE only) ─────────────────────────────────
+  // Only fires when debugSymbol is passed from calcPair.
+  // Logs last 15 closed candles (per-bar detail) + last 30 signal events.
+  // Purpose: direct comparison against TradingView UT Bot Alerts 4/10 output.
+  if(typeof DEBUG_MODE!=='undefined' && DEBUG_MODE && debugSymbol){
+    const f4=(v)=>v!=null&&isFinite(v)?v.toFixed(4):'—';
+    const f2=(v)=>v!=null&&isFinite(v)?v.toFixed(2):'—';
+    const ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16):'—';
+
+    // ── A: Last 15 candles — per-bar detail ──────────────────────────────
+    console.group('[UT Bot Diagnostic] '+debugSymbol+' — last 15 closed candles');
+    console.log('col: time | close | prevClose | trailStop | prevTrail | ATR | nLoss | dir | signal');
+    console.log('     (prevClose <= prevTrail AND close > trail) => buy crossover');
+    console.log('     (prevClose >= prevTrail AND close < trail) => sell crossover');
+    const startA = Math.max(0, signals.length-15);
+    for(let i=startA; i<signals.length; i++){
+      const s=signals[i];
+      const nL=keyVal*(s._atr||0);
+      const buyCheck  = s._pc<=s._prevTrail && s._c>s.trail;
+      const sellCheck = s._pc>=s._prevTrail && s._c<s.trail;
+      console.log(
+        (i===signals.length-1?'>>> ':'    ')+
+        ts(s._t)+' | '+
+        'c='+f2(s._c)+' pc='+f2(s._pc)+' | '+
+        'trail='+f2(s.trail)+' prevTrail='+f2(s._prevTrail)+' | '+
+        'ATR='+f4(s._atr)+' nLoss='+f2(nL)+' | '+
+        'dir='+(s.dir===1?'bull':'bear')+' | '+
+        'sig='+s.sig+
+        (buyCheck&&s.sig!=='long'?' ← BUY COND MET (sig missed?)':'')+
+        (sellCheck&&s.sig!=='short'?' ← SELL COND MET (sig missed?)':'')
+      );
+    }
+    console.groupEnd();
+
+    // ── B: All signal events in last 30 candles ──────────────────────────
+    console.group('[UT Bot Diagnostic] '+debugSymbol+' — signal events (last 30 bars)');
+    const startB = Math.max(0, signals.length-30);
+    let foundAny=false;
+    for(let i=startB; i<signals.length; i++){
+      const s=signals[i];
+      if(s.sig!=='none'){
+        foundAny=true;
+        console.log(
+          'SIG '+s.sig.toUpperCase()+
+          ' | bar='+(signals.length-1-i)+' bars ago'+
+          ' | '+ts(s._t)+
+          ' | c='+f2(s._c)+
+          ' | trail='+f2(s.trail)+
+          ' | prevC='+f2(s._pc)+
+          ' | prevTrail='+f2(s._prevTrail)
+        );
+      }
+    }
+    if(!foundAny) console.log('No signal events found in last 30 bars');
+    console.log('--- barsAgoFlip='+barsAgoFlip+' | recentSignal='+recentSignal+' | freshSignal='+freshSignal+' | direction='+(last.dir===1?'bullish':'bearish'));
+    console.groupEnd();
+
+    // ── C: Summary for copy-paste comparison against TradingView ─────────
+    console.group('[UT Bot Diagnostic] '+debugSymbol+' — current state summary');
+    console.log('direction    :', last.dir===1?'BULLISH (1)':'BEARISH (-1)');
+    console.log('trailLevel   :', f2(last.trail));
+    console.log('prevTrailLevel:', f2(prev?prev.trail:last.trail));
+    console.log('freshSignal  :', freshSignal);
+    console.log('recentSignal :', recentSignal);
+    console.log('barsAgoFlip  :', barsAgoFlip);
+    console.log('total signals in window:', signals.filter(s=>s.sig!=='none').length);
+    console.groupEnd();
+  }
 
   return{
     signal: freshSignal,
@@ -3481,7 +3556,11 @@ async function calcPair(symbol,tf){
   const closedHighs=highs.slice(0,-1);
   const closedLows=lows.slice(0,-1);
   const closedCloses=closes.slice(0,-1);
-  const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10);
+  // Pass times array for diagnostic logging; debugSymbol activates per-symbol detail.
+  // Only LINK/USDT is logged when DEBUG_MODE is true — remove after diagnosis is complete.
+  const closedTimes=raw.slice(0,-1).map(k=>k.time);
+  const _utDebugSym=(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT')?symbol:null;
+  const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,_utDebugSym);
   const utLongConfirm  = utBot.direction===1  && (utBot.recentSignal==='long'  || utBot.signal==='long');
   const utShortConfirm = utBot.direction===-1 && (utBot.recentSignal==='short' || utBot.signal==='short');
   const utFresh = utBot.signal!=='none';
