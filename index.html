@@ -2444,7 +2444,9 @@ function evaluateSetup(d) {
   // Reasons — positive confirming evidence
   if (cRegime)  reasons.push('Regime aligned: ' + reg.label);
   if (cTema)    reasons.push('TEMA ' + (tradeBias === 'LONG' ? 'bullish' : 'bearish') + ' confirmed');
-  if (cUtBot)   reasons.push('UT Bot confirming ' + (tradeBias === 'LONG' ? 'long' : 'short'));
+  // UT Bot reason: direction-only wording — cUtBot is trail direction, not fresh signal.
+  // 'confirming' is intentionally avoided here to prevent implying a fresh crossover event.
+  if (cUtBot)   reasons.push('UT Bot direction: ' + (tradeBias === 'LONG' ? 'bullish' : 'bearish'));
   if (cHtf)     reasons.push('HTF aligned');
   if (cAdx)     reasons.push('ADX trending (' + (st.adx != null ? parseFloat(st.adx.toFixed(1)) : '?') + ')');
   if (cRsi)     reasons.push('RSI supportive');
@@ -2465,6 +2467,21 @@ function evaluateSetup(d) {
   }
   if (tradeBias === 'LONG' && st.rsi !== null && st.rsi > 65) {
     warnings.push('RSI approaching overbought — momentum may be stretched');
+  }
+
+  // UT Bot opposing recent signal warning
+  // utFlipDir is the most recent signal event direction (fresh or within 3 bars).
+  // If it opposes the trade bias, surface a visible warning — this is the LINK scenario:
+  // direction is bearish but a Buy signal just fired.
+  const _utFlipDir = st.utFlipDir || (st.utBot && st.utBot.recentSignal !== 'none' ? st.utBot.recentSignal : st.utBot && st.utBot.signal !== 'none' ? st.utBot.signal : 'none');
+  const _utRecentOpposes =
+    (tradeBias === 'SHORT' && _utFlipDir === 'long')  ||
+    (tradeBias === 'LONG'  && _utFlipDir === 'short');
+  if (_utRecentOpposes) {
+    warnings.push(
+      'Recent UT ' + (_utFlipDir === 'long' ? 'Buy' : 'Sell') + ' signal opposes '
+      + (tradeBias === 'SHORT' ? 'short' : 'long') + ' thesis — monitor'
+    );
   }
 
   // Blockers — quality-capping conditions
@@ -4723,8 +4740,8 @@ function openAnalysisPanel(symbol){
       <div class="ap-section-title">UT Bot Alert · KV 4 · ATR 10</div>
       <div class="ap-row"><span>Direction</span><span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span></div>
       <div class="ap-row"><span>Trail stop level</span><span>${fmt(_utBot.trailLevel)}</span></div>
-      <div class="ap-row"><span>Last signal</span><span style="color:${(_utBot.barsAgoFlip??99)===0?'var(--green-text)':(_utBot.barsAgoFlip??99)<=3?'var(--green-text)':(_utBot.barsAgoFlip??99)<=8?'var(--amber-text)':'var(--red-text)'};">${(_utBot.barsAgoFlip??99)===0?'This bar ⚡':(_utBot.barsAgoFlip??99)+' bars ago'}</span></div>
-      <div class="ap-row"><span>Agreement</span><span style="color:${(signal==='long'&&utLongConfirm)||(signal==='short'&&utShortConfirm)?'var(--green-text)':signal!=='neutral'?'var(--red-text)':'var(--text3)'};">${(signal==='long'&&utLongConfirm)?'Confirms long':(signal==='short'&&utShortConfirm)?'Confirms short':signal!=='neutral'?'Not confirming':'—'}</span></div>
+      <div class="ap-row"><span>Last signal event</span><span style="color:${(_utBot.barsAgoFlip??99)<=3?'var(--green-text)':(_utBot.barsAgoFlip??99)<=8?'var(--amber-text)':'var(--red-text)'};">${(()=>{const _sig=_utBot.signal!=='none'?_utBot.signal:_utBot.recentSignal!=='none'?_utBot.recentSignal:null;const _sigLabel=_sig==='long'?'Buy ▲':_sig==='short'?'Sell ▼':'None';const _age=_utBot.barsAgoFlip??99;return _age===0?_sigLabel+' ⚡ This bar':_sigLabel+' · '+_age+' bars ago';})()}</span></div>
+      <div class="ap-row"><span>Signal vs thesis</span><span style="color:${(signal==='long'&&utLongConfirm)||(signal==='short'&&utShortConfirm)?'var(--green-text)':(signal==='long'&&(_utBot.recentSignal==='short'||_utBot.signal==='short'))||(signal==='short'&&(_utBot.recentSignal==='long'||_utBot.signal==='long'))?'var(--amber-text)':signal!=='neutral'?'var(--text3)':'var(--text3)'}">${(signal==='long'&&utLongConfirm)?'✓ Confirms long — fresh Buy signal':(signal==='short'&&utShortConfirm)?'✓ Confirms short — fresh Sell signal':(signal==='short'&&(_utBot.recentSignal==='long'||_utBot.signal==='long'))?'⚠ Recent Buy opposes short thesis':(signal==='long'&&(_utBot.recentSignal==='short'||_utBot.signal==='short'))?'⚠ Recent Sell opposes long thesis':signal!=='neutral'?'Direction aligned — no recent confirming signal':'—'}</span></div>
       <div class="ap-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;">
         <span style="color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:0.4px;">Raw calculation inputs</span>
       </div>
