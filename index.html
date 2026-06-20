@@ -1676,6 +1676,19 @@ let selectedDecision = null;
 let selectedOutcome = null;
 let currentScanData = {};
 
+// ── UT Bot warmup candle cache ────────────────────────────────────────────
+// In-memory only (not persisted). Keyed by "symbol|tf".
+// Avoids re-fetching 1500 bars per pair on every scan after the first.
+// Structure per entry:
+//   candles     : Array of raw candle objects (1500 bars)
+//   fetchedAt   : Date.now() when originally fetched
+//   lastCandleTs: timestamp of the most recent candle at fetch time
+//   candleCount : candles.length
+// Invalidation: TTL (45 min) AND last-candle-timestamp change vs live raw.
+// If either fails, the full 1500-bar fetch is re-run and cache is refreshed.
+const _utWarmupCache = {};
+const _UT_CACHE_TTL_MS = 45 * 60 * 1000; // 45 minutes
+
 // ── Maths ───────────────────────────────────────────────────────────────
 function ema(data,p){const k=2/(p+1);let e=data[0];const o=[e];for(let i=1;i<data.length;i++){e=data[i]*k+e*(1-k);o.push(e);}return o;}
 function tema(data,p){const e1=ema(data,p),e2=ema(e1,p),e3=ema(e2,p);return e1.map((v,i)=>3*v-3*e2[i]+e3[i]);}
@@ -3580,15 +3593,79 @@ async function calcPair(symbol,tf){
   const highLiquidity=inLondon||inNY;
 
   // UT Bot (Key Value 4, ATR Period 10)
-  // Use only closed candles (exclude the last live/incomplete bar) to match TradingView behaviour
+  // ── Warmup window — cache-aware fetch ─────────────────────────────────────
+  // TradingView runs the UT Bot trail from the very first candle on the chart.
+  // TDAS's 600-bar window may seed the trail in the wrong polarity if it starts
+  // mid-trend. Fix: compute UT Bot on 1500 bars (≈250 days), giving the trail
+  // enough flips to converge to the correct polarity regardless of initial seed.
+  //
+  // Cost control: _utWarmupCache stores the 1500-bar fetch in memory per symbol+tf.
+  // Cache is valid while:
+  //   (a) Age < _UT_CACHE_TTL_MS (45 min), AND
+  //   (b) last candle timestamp matches the live raw fetch (no new candle closed).
+  // On a cache hit: zero extra HTTP requests. On a miss: 8 paginated requests.
+  // Falls back to the 600-bar main fetch if the warmup fetch fails entirely.
+  const _utCacheKey = symbol + '|' + tf;
+  const _utLiveLastTs = raw.length ? raw[raw.length-1].time : 0;
+  let rawUT = raw; // default fallback
+  let _utCacheStatus = 'miss'; // for DEBUG log
+
+  const _utCached = _utWarmupCache[_utCacheKey];
+  const _utCacheAge = _utCached ? (Date.now() - _utCached.fetchedAt) : Infinity;
+  const _utCacheValid = _utCached &&
+    _utCacheAge < _UT_CACHE_TTL_MS &&
+    _utCached.lastCandleTs === _utLiveLastTs;
+
+  if (_utCacheValid) {
+    // ── Cache HIT — reuse stored candles, no HTTP request ──────────────
+    rawUT = _utCached.candles;
+    _utCacheStatus = 'hit (age ' + Math.round(_utCacheAge/60000) + 'min, ' + rawUT.length + ' bars)';
+  } else {
+    // ── Cache MISS — fetch full warmup history ──────────────────────────
+    const UT_WARMUP_BARS = 1500;
+    try {
+      const rawUtFull = await fetchKlines(symbol, tf, UT_WARMUP_BARS);
+      if (rawUtFull && rawUtFull.length >= 100) {
+        rawUT = rawUtFull;
+        // Merge new candles onto existing cache if we have one (update rather than replace)
+        // Simple strategy: replace entirely with the fresh 1500-bar fetch.
+        _utWarmupCache[_utCacheKey] = {
+          candles:      rawUT,
+          fetchedAt:    Date.now(),
+          lastCandleTs: _utLiveLastTs,
+          candleCount:  rawUT.length,
+        };
+        _utCacheStatus = 'miss→fetched (' + rawUT.length + ' bars)';
+      } else {
+        _utCacheStatus = 'miss→short (' + ((rawUtFull&&rawUtFull.length)||0) + ' bars, using main 600)';
+        if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE){
+          console.warn('[UT Bot warmup] '+symbol+' '+tf+': only '+((rawUtFull&&rawUtFull.length)||0)+' bars available. Trail polarity may not match TradingView.');
+        }
+      }
+    } catch(e) {
+      _utCacheStatus = 'miss→fetch-error (' + e.message + ', using main 600)';
+      if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE){
+        console.warn('[UT Bot warmup] '+symbol+' '+tf+': extended fetch failed — '+e.message+'. Trail polarity may not match TradingView.');
+      }
+    }
+  }
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE){
+    console.debug('[UT Bot warmup] '+symbol+' '+tf+' | cache: '+_utCacheStatus);
+  }
+  // Use only closed candles from the warmup fetch (exclude live incomplete bar)
+  const utHighs =rawUT.slice(0,-1).map(k=>k.high);
+  const utLows  =rawUT.slice(0,-1).map(k=>k.low);
+  const utCloses=rawUT.slice(0,-1).map(k=>k.close);
+  const utTimes =rawUT.slice(0,-1).map(k=>k.time);
+  // closedHighs/Lows/Closes still used downstream for scoring checks (unchanged)
   const closedHighs=highs.slice(0,-1);
   const closedLows=lows.slice(0,-1);
   const closedCloses=closes.slice(0,-1);
   // Pass times array for diagnostic logging; debugSymbol activates per-symbol detail.
-  // Only LINK/USDT is logged when DEBUG_MODE is true — remove after diagnosis is complete.
+  // Only LINK/USDT is logged when DEBUG_MODE is true — remove after validation is complete.
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
   const _utDebugSym=(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='LINKUSDT')?symbol:null;
-  const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,_utDebugSym);
+  const utBot=calcUTBot(utHighs,utLows,utCloses,4,10,utTimes,_utDebugSym);
   const utLongConfirm  = utBot.direction===1  && (utBot.recentSignal==='long'  || utBot.signal==='long');
   const utShortConfirm = utBot.direction===-1 && (utBot.recentSignal==='short' || utBot.signal==='short');
   const utFresh = utBot.signal!=='none';
