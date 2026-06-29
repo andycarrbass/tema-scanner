@@ -3032,91 +3032,153 @@ function buildUTBotAuditRows(opens,highs,lows,closes,times,keyVal=4,atrPeriod=10
 
 // ── auditBitunixCandleSources ─────────────────────────────────────────────
 // DIAGNOSTIC ONLY — not called in production.
-// Fetches 4H candles for a symbol across all supported Bitunix price types
-// and prints OHLC values for the 15-25 June window for direct comparison
-// against TradingView. Extra API calls only when DEBUG_MODE=true.
+// Probe 4+5: fetches raw Bitunix responses for LAST_PRICE and MARK_PRICE,
+// logs the complete raw envelope and raw candle objects BEFORE normalisation,
+// and compares normalised OHLC against the TradingView confirmed target.
+// Extra API calls only when DEBUG_MODE=true.
 async function auditBitunixCandleSources(symbol, interval){
   const PROXY   = 'https://api.temadesk.com/api/bitunix';
   const KLIMIT  = 200;
-  const TYPES   = ['LAST_PRICE','MARK_PRICE','INDEX_PRICE'];
+  // INDEX_PRICE excluded — returns HTTP 400 (confirmed unsupported)
+  const TYPES   = ['LAST_PRICE','MARK_PRICE'];
   const WIN_S   = new Date('2026-06-15T00:00:00Z').getTime();
   const WIN_E   = new Date('2026-06-25T23:59:59Z').getTime();
-  const _f=(v,d=2)=>v!=null&&isFinite(v)?v.toFixed(d):'—';
+  const TARGET_TS_ETH  = '2026-06-15 12:00 UTC';
+  const LINK_KEYS = ['2026-06-15 08:00 UTC','2026-06-15 12:00 UTC','2026-06-18 12:00 UTC','2026-06-23 12:00 UTC'];
+  const TV_ETH = { o:1724.91, h:1848.76, l:1724.91, c:1804.12 };
+  const isEth = symbol==='ETHUSDT';
+  const _f=(v,d=4)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(d)):'—';
   const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
 
-  // TradingView confirmed OHLC targets for direct comparison
-  const TV_ETH = { t:'2026-06-15 12:00 UTC', o:1724.91, h:1848.76, l:1724.91, c:1804.12 };
-  const LINK_KEYS = ['2026-06-15 08:00 UTC','2026-06-15 12:00 UTC','2026-06-18 12:00 UTC','2026-06-23 12:00 UTC'];
-  const isEth = symbol==='ETHUSDT';
-
   console.log('');
-  console.log('══ BITUNIX CANDLE SOURCE AUDIT | '+symbol+' | '+interval.toUpperCase()+' ══════════════════════');
+  console.log('══ BITUNIX CANDLE SOURCE AUDIT | '+symbol+' | '+interval.toUpperCase()+' ══════════');
   if(isEth){
-    console.log('TradingView confirmed target:');
-    console.log(TV_ETH.t+' | O='+TV_ETH.o+' H='+TV_ETH.h+' L='+TV_ETH.l+' C='+TV_ETH.c);
-  } else {
-    console.log('LINK key candles: '+LINK_KEYS.join(', '));
+    console.log('TradingView target: '+TARGET_TS_ETH+' | O='+TV_ETH.o+' H='+TV_ETH.h+' L='+TV_ETH.l+' C='+TV_ETH.c);
   }
 
+  const rawSnapshots = {};   // type → raw target candle object
+  const normSnapshots = {};  // type → normalised target candle
   const summaryRows = [];
 
   for(const pType of TYPES){
     console.log('');
-    console.log('TYPE: '+pType);
-    let candles=[], error=null;
+    console.log('── TYPE: '+pType+' ──────────────────────────────────────────────────────────');
+
+    const params = new URLSearchParams({ symbol, interval, limit:String(KLIMIT), type:pType });
+    const url = PROXY+'/kline?'+params;
+    console.log('Frontend URL: '+url);
+
+    let rawEnvelope=null, arr=null, error=null;
+    try {
+      // Bypass apiFetch dedup — use raw fetch so we always get a fresh response
+      // and can inspect the complete envelope before any normalisation
+      const res = await fetch(url);
+      if(!res.ok) throw new Error('HTTP '+res.status+' '+res.statusText);
+      rawEnvelope = await res.json();
+    } catch(e){ error='fetch failed: '+e.message; }
+
+    if(error){
+      console.log('ERROR: '+error);
+      summaryRows.push({type:pType,match:'ERROR: '+error.slice(0,80)});
+      continue;
+    }
+
+    // ── Raw envelope inspection ───────────────────────────────────────────
+    console.log('Raw envelope top-level keys: '+Object.keys(rawEnvelope||{}).join(', '));
+    console.log('code: '+rawEnvelope?.code+'  msg: '+rawEnvelope?.msg);
+    if(rawEnvelope?.data){
+      const dk=Object.keys(rawEnvelope.data||{});
+      console.log('data keys: '+dk.join(', '));
+    }
+
+    // Extract candle array
     try{
-      // Fetch one page (200 candles = ~33 days at 4H) — covers 15-25 June window
-      const params = new URLSearchParams({ symbol, interval, limit:String(KLIMIT), type:pType });
-      const url = PROXY+'/kline?'+params;
-      const raw = await apiFetch(url);
-      // Extract using same logic as BitunixAdapter._extractArray
-      let arr=null;
-      if(Array.isArray(raw))               arr=raw;
-      else if(Array.isArray(raw?.data?.data))   arr=raw.data.data;
-      else if(Array.isArray(raw?.data?.list))   arr=raw.data.list;
-      else if(Array.isArray(raw?.data?.klines)) arr=raw.data.klines;
-      else if(Array.isArray(raw?.data?.items))  arr=raw.data.items;
-      else if(Array.isArray(raw?.data))         arr=raw.data;
-      else if(Array.isArray(raw?.result))        arr=raw.result;
-      else if(raw?.code&&raw.code!==0&&raw.code!=='0') throw new Error('API error code '+raw.code+': '+(raw.msg||raw.message||''));
-      else throw new Error('unrecognised response shape — keys: '+Object.keys(raw||{}).join(','));
-      candles = arr.map(normalizeCandle).filter(c=>c.time>=WIN_S&&c.time<=WIN_E);
+      if(Array.isArray(rawEnvelope))                    arr=rawEnvelope;
+      else if(Array.isArray(rawEnvelope?.data?.data))   arr=rawEnvelope.data.data;
+      else if(Array.isArray(rawEnvelope?.data?.list))   arr=rawEnvelope.data.list;
+      else if(Array.isArray(rawEnvelope?.data?.klines)) arr=rawEnvelope.data.klines;
+      else if(Array.isArray(rawEnvelope?.data?.items))  arr=rawEnvelope.data.items;
+      else if(Array.isArray(rawEnvelope?.data))         arr=rawEnvelope.data;
+      else if(Array.isArray(rawEnvelope?.result))       arr=rawEnvelope.result;
+      else{
+        const c=rawEnvelope?.code;
+        if(c&&c!==0&&c!=='0') throw new Error('API error '+c+': '+(rawEnvelope.msg||''));
+        throw new Error('unknown shape — data type: '+typeof rawEnvelope?.data);
+      }
     } catch(e){ error=e.message; }
 
     if(error){
-      console.log('  ERROR: '+error);
-      summaryRows.push({type:pType, match:'ERROR: '+error.slice(0,60)});
-      continue;
-    }
-    if(!candles.length){
-      console.log('  (no candles in window)');
-      summaryRows.push({type:pType, match:'NO DATA IN WINDOW'});
+      console.log('Array extract error: '+error);
+      summaryRows.push({type:pType,match:'EXTRACT ERROR: '+error.slice(0,60)});
       continue;
     }
 
-    // Print all candles in window
-    candles.forEach(c=>{
-      const ts=_ts(c.time);
-      let tag='';
-      if(isEth&&ts===TV_ETH.t){
-        const oM=Math.abs(c.open-TV_ETH.o)<0.02, hM=Math.abs(c.high-TV_ETH.h)<0.02;
-        const lM=Math.abs(c.low-TV_ETH.l)<0.02,  cM=Math.abs(c.close-TV_ETH.c)<0.02;
-        const matchCount=[oM,hM,lM,cM].filter(Boolean).length;
-        tag=' | '+(matchCount===4?'YES ✓':matchCount>=2?'PARTIAL ('+[oM&&'O',hM&&'H',lM&&'L',cM&&'C'].filter(Boolean).join('+')+')':`NO (${matchCount}/4 match)`);
-        summaryRows.push({type:pType, match:matchCount===4?'YES':matchCount>=2?'PARTIAL':'NO'});
+    // ── Print first raw candle to show field names from Bitunix ──────────
+    if(arr.length){
+      console.log('First raw candle (field names as returned by Bitunix):');
+      console.log(JSON.stringify(arr[0]).slice(0,300));
+    }
+
+    // ── Find target candle raw and normalised ─────────────────────────────
+    const normAll = arr.map(normalizeCandle);
+    const targetNorm = normAll.find(c=>_ts(c.time)===(isEth?TARGET_TS_ETH:LINK_KEYS[0]));
+    // For ETH: find the raw candle matching target time
+    let targetRaw = null;
+    if(isEth&&arr.length){
+      const targetTime = new Date(TARGET_TS_ETH.replace(' UTC',':00Z')).getTime();
+      targetRaw = arr.find(r=>{
+        const nc=normalizeCandle(r);
+        return Math.abs(nc.time-targetTime)<2*60*1000; // within 2 min
+      });
+    }
+
+    if(isEth){
+      console.log('');
+      console.log('Target candle raw object ('+TARGET_TS_ETH+'):');
+      console.log(targetRaw ? JSON.stringify(targetRaw) : '(not found in response)');
+      console.log('');
+      if(targetNorm){
+        const oM=Math.abs(targetNorm.open-TV_ETH.o)<0.10;
+        const hM=Math.abs(targetNorm.high-TV_ETH.h)<0.10;
+        const lM=Math.abs(targetNorm.low-TV_ETH.l)<0.10;
+        const cM=Math.abs(targetNorm.close-TV_ETH.c)<0.10;
+        const mc=[oM,hM,lM,cM].filter(Boolean).length;
+        const matchLabel=mc===4?'YES ✓':mc>=2?'PARTIAL':'NO';
+        console.log('Normalised: O='+_f(targetNorm.open)+' H='+_f(targetNorm.high)+' L='+_f(targetNorm.low)+' C='+_f(targetNorm.close));
+        console.log('Match vs TradingView: '+matchLabel+' ('+mc+'/4 fields within 0.10)');
+        summaryRows.push({type:pType,match:matchLabel});
+        rawSnapshots[pType]  = JSON.stringify(targetRaw);
+        normSnapshots[pType] = {o:targetNorm.open,h:targetNorm.high,l:targetNorm.low,c:targetNorm.close};
+      } else {
+        console.log('Target candle not found in normalised results');
+        summaryRows.push({type:pType,match:'NOT FOUND'});
       }
-      if(!isEth&&LINK_KEYS.includes(ts)) tag=' << KEY';
-      console.log('  '+ts+' | O='+_f(c.open,4)+' H='+_f(c.high,4)+' L='+_f(c.low,4)+' C='+_f(c.close,4)+tag);
-    });
-    if(!isEth) summaryRows.push({type:pType, match:'see above'});
+    } else {
+      // LINK: print all key candles
+      normAll.filter(c=>LINK_KEYS.includes(_ts(c.time))).forEach(c=>{
+        console.log('  '+_ts(c.time)+' | O='+_f(c.open)+' H='+_f(c.high)+' L='+_f(c.low)+' C='+_f(c.close));
+      });
+      summaryRows.push({type:pType,match:'see above'});
+    }
   }
 
-  // Summary table
-  if(isEth){
+  // ── Cross-type comparison (ETH only) ────────────────────────────────────
+  if(isEth && Object.keys(rawSnapshots).length===2){
     console.log('');
-    console.log(symbol+' target match summary (2026-06-15 12:00 candle):');
-    summaryRows.forEach(r=>console.log('  '+r.type.padEnd(12)+': '+r.match));
+    console.log('── Cross-type comparison ──────────────────────────────────────────────────');
+    const identical = rawSnapshots['LAST_PRICE']===rawSnapshots['MARK_PRICE'];
+    console.log('Raw responses identical?       '+(identical?'YES — proxy may not be forwarding type':'NO — responses differ'));
+    const n1=normSnapshots['LAST_PRICE'], n2=normSnapshots['MARK_PRICE'];
+    if(n1&&n2){
+      const normIdent=n1.o===n2.o&&n1.h===n2.h&&n1.l===n2.l&&n1.c===n2.c;
+      console.log('Normalised OHLC identical?     '+(normIdent?'YES':'NO'));
+    }
   }
+
+  // ── Summary ──────────────────────────────────────────────────────────────
+  console.log('');
+  console.log(symbol+' match summary vs TradingView:');
+  summaryRows.forEach(r=>console.log('  '+r.type.padEnd(14)+': '+r.match));
   console.log('');
 }
 
