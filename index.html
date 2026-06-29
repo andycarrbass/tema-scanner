@@ -2866,7 +2866,7 @@ function classifyLifecycle(d, entry) {
 // ── Diagnostic mode ─────────────────────────────────────────────────────
 // Set to true to re-enable UT Bot candle traces and per-signal forensic logs.
 // Must be false in production.
-const DEBUG_MODE = false;
+const DEBUG_MODE = true; // diagnostic build — disable before production deploy
 
 const ACTIVE_EXCHANGE = 'bitunix';
 
@@ -3591,6 +3591,81 @@ async function calcPair(symbol,tf){
   const closedCloses=closes.slice(0,-1);
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
   const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,null);
+
+  // ── DIAGNOSTIC: FULL vs SLICED comparison (DEBUG_MODE, ETH/LINK 4H only) ──
+  // Hypothesis: slice(0,-1) may be excluding the most recent valid closed candle,
+  // putting TDAS one bar behind TradingView. This block runs both modes and logs
+  // every signal from 1 May 2026 onward so we can compare directly against TV labels.
+  // Production utBot (SLICED) is unchanged — this is observation only.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&tf==='4h'&&
+     (symbol==='ETHUSDT'||symbol==='LINKUSDT')){
+    (function(){
+      const _CUT = new Date('2026-05-01T00:00:00Z').getTime();
+      const _ts  = (t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+      const _f4  = (v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+
+      function _runMode(label, _h, _l, _c, _t){
+        // Re-run calcUTBot with the given arrays (no debug output from inner call)
+        const _r = calcUTBot(_h, _l, _c, 4, 10, _t, null);
+        // Reconstruct signal list by re-running the same trail logic inline
+        // (calcUTBot doesn't expose the raw signal array — lightweight re-derive)
+        const n=_c.length;
+        const trs=new Array(n).fill(0);
+        for(let i=1;i<n;i++) trs[i]=Math.max(_h[i]-_l[i],Math.abs(_h[i]-_c[i-1]),Math.abs(_l[i]-_c[i-1]));
+        let rma=0; for(let i=1;i<=10;i++) rma+=trs[i]; rma/=10;
+        const tr=new Array(n).fill(0);
+        tr[10]=_c[10]-4*rma;
+        let pc=_c[10]; const sigs=[];
+        for(let i=11;i<n;i++){
+          rma=rma*9/10+trs[i]/10;
+          const nL=4*rma,prev=tr[i-1],c=_c[i],ppc=_c[i-1];
+          if(c>prev&&ppc>prev) tr[i]=Math.max(prev,c-nL);
+          else if(c<prev&&ppc<prev) tr[i]=Math.min(prev,c+nL);
+          else if(c>prev) tr[i]=c-nL;
+          else tr[i]=c+nL;
+          let sig='none';
+          if(pc<tr[i-1]&&c>tr[i]) sig='long';
+          if(pc>tr[i-1]&&c<tr[i]) sig='short';
+          if(sig!=='none') sigs.push({sig,t:_t?_t[i]:null,c,trail:tr[i],pc,pt:tr[i-1]});
+          pc=c;
+        }
+        // Header
+        console.log('┌─ '+symbol+' | '+label+
+          ' | bars='+n+
+          ' | first='+_ts(_t&&_t[0])+
+          ' | last='+_ts(_t&&_t[_t.length-1]));
+        console.log('│  dir='+((_r.direction===1)?'BULLISH':'BEARISH')+
+          ' | barsAgoFlip='+_r.barsAgoFlip+
+          ' | trail='+_f4(_r.trailLevel)+
+          ' | recentSig='+_r.recentSignal+
+          ' | freshSig='+_r.signal);
+        // Signal events from 1 May 2026
+        const recent=sigs.filter(s=>s.t&&s.t>=_CUT);
+        if(recent.length===0){
+          console.log('│  No signals from 1 May 2026 onward');
+        } else {
+          recent.forEach(s=>{
+            console.log('│  '+symbol+' '+label+
+              ' | '+_ts(s.t)+
+              ' | '+(s.sig==='long'?'BUY ':'SELL')+
+              ' | close='+_f4(s.c)+
+              ' | trail='+_f4(s.trail)+
+              ' | prevClose='+_f4(s.pc)+
+              ' | prevTrail='+_f4(s.pt));
+          });
+        }
+        console.log('└─ total signals from 1 May: '+recent.length);
+        return _r;
+      }
+
+      // Mode A — FULL (includes last candle, even if partially formed)
+      const allTimes=raw.map(k=>k.time);
+      _runMode('FULL   ', highs, lows, closes, allTimes);
+
+      // Mode B — SLICED (current production behaviour: excludes last candle)
+      _runMode('SLICED ', closedHighs, closedLows, closedCloses, closedTimes);
+    })();
+  }
 
   const utLongConfirm  = utBot.direction===1  && (utBot.recentSignal==='long'  || utBot.signal==='long');
   const utShortConfirm = utBot.direction===-1 && (utBot.recentSignal==='short' || utBot.signal==='short');
