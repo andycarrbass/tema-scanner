@@ -3030,6 +3030,96 @@ function buildUTBotAuditRows(opens,highs,lows,closes,times,keyVal=4,atrPeriod=10
   return rows;
 }
 
+// ── auditBitunixCandleSources ─────────────────────────────────────────────
+// DIAGNOSTIC ONLY — not called in production.
+// Fetches 4H candles for a symbol across all supported Bitunix price types
+// and prints OHLC values for the 15-25 June window for direct comparison
+// against TradingView. Extra API calls only when DEBUG_MODE=true.
+async function auditBitunixCandleSources(symbol, interval){
+  const PROXY   = 'https://api.temadesk.com/api/bitunix';
+  const KLIMIT  = 200;
+  const TYPES   = ['LAST_PRICE','MARK_PRICE','INDEX_PRICE'];
+  const WIN_S   = new Date('2026-06-15T00:00:00Z').getTime();
+  const WIN_E   = new Date('2026-06-25T23:59:59Z').getTime();
+  const _f=(v,d=2)=>v!=null&&isFinite(v)?v.toFixed(d):'—';
+  const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+
+  // TradingView confirmed OHLC targets for direct comparison
+  const TV_ETH = { t:'2026-06-15 12:00 UTC', o:1724.91, h:1848.76, l:1724.91, c:1804.12 };
+  const LINK_KEYS = ['2026-06-15 08:00 UTC','2026-06-15 12:00 UTC','2026-06-18 12:00 UTC','2026-06-23 12:00 UTC'];
+  const isEth = symbol==='ETHUSDT';
+
+  console.log('');
+  console.log('══ BITUNIX CANDLE SOURCE AUDIT | '+symbol+' | '+interval.toUpperCase()+' ══════════════════════');
+  if(isEth){
+    console.log('TradingView confirmed target:');
+    console.log(TV_ETH.t+' | O='+TV_ETH.o+' H='+TV_ETH.h+' L='+TV_ETH.l+' C='+TV_ETH.c);
+  } else {
+    console.log('LINK key candles: '+LINK_KEYS.join(', '));
+  }
+
+  const summaryRows = [];
+
+  for(const pType of TYPES){
+    console.log('');
+    console.log('TYPE: '+pType);
+    let candles=[], error=null;
+    try{
+      // Fetch one page (200 candles = ~33 days at 4H) — covers 15-25 June window
+      const params = new URLSearchParams({ symbol, interval, limit:String(KLIMIT), type:pType });
+      const url = PROXY+'/kline?'+params;
+      const raw = await apiFetch(url);
+      // Extract using same logic as BitunixAdapter._extractArray
+      let arr=null;
+      if(Array.isArray(raw))               arr=raw;
+      else if(Array.isArray(raw?.data?.data))   arr=raw.data.data;
+      else if(Array.isArray(raw?.data?.list))   arr=raw.data.list;
+      else if(Array.isArray(raw?.data?.klines)) arr=raw.data.klines;
+      else if(Array.isArray(raw?.data?.items))  arr=raw.data.items;
+      else if(Array.isArray(raw?.data))         arr=raw.data;
+      else if(Array.isArray(raw?.result))        arr=raw.result;
+      else if(raw?.code&&raw.code!==0&&raw.code!=='0') throw new Error('API error code '+raw.code+': '+(raw.msg||raw.message||''));
+      else throw new Error('unrecognised response shape — keys: '+Object.keys(raw||{}).join(','));
+      candles = arr.map(normalizeCandle).filter(c=>c.time>=WIN_S&&c.time<=WIN_E);
+    } catch(e){ error=e.message; }
+
+    if(error){
+      console.log('  ERROR: '+error);
+      summaryRows.push({type:pType, match:'ERROR: '+error.slice(0,60)});
+      continue;
+    }
+    if(!candles.length){
+      console.log('  (no candles in window)');
+      summaryRows.push({type:pType, match:'NO DATA IN WINDOW'});
+      continue;
+    }
+
+    // Print all candles in window
+    candles.forEach(c=>{
+      const ts=_ts(c.time);
+      let tag='';
+      if(isEth&&ts===TV_ETH.t){
+        const oM=Math.abs(c.open-TV_ETH.o)<0.02, hM=Math.abs(c.high-TV_ETH.h)<0.02;
+        const lM=Math.abs(c.low-TV_ETH.l)<0.02,  cM=Math.abs(c.close-TV_ETH.c)<0.02;
+        const matchCount=[oM,hM,lM,cM].filter(Boolean).length;
+        tag=' | '+(matchCount===4?'YES ✓':matchCount>=2?'PARTIAL ('+[oM&&'O',hM&&'H',lM&&'L',cM&&'C'].filter(Boolean).join('+')+')':`NO (${matchCount}/4 match)`);
+        summaryRows.push({type:pType, match:matchCount===4?'YES':matchCount>=2?'PARTIAL':'NO'});
+      }
+      if(!isEth&&LINK_KEYS.includes(ts)) tag=' << KEY';
+      console.log('  '+ts+' | O='+_f(c.open,4)+' H='+_f(c.high,4)+' L='+_f(c.low,4)+' C='+_f(c.close,4)+tag);
+    });
+    if(!isEth) summaryRows.push({type:pType, match:'see above'});
+  }
+
+  // Summary table
+  if(isEth){
+    console.log('');
+    console.log(symbol+' target match summary (2026-06-15 12:00 candle):');
+    summaryRows.forEach(r=>console.log('  '+r.type.padEnd(12)+': '+r.match));
+  }
+  console.log('');
+}
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -3833,6 +3923,10 @@ async function calcPair(symbol,tf){
       console.log('];');
       console.log('');
     })();
+
+    // ── Probe 4: Bitunix candle source audit (LAST_PRICE vs MARK_PRICE vs INDEX_PRICE) ──
+    // Extra API calls — DEBUG_MODE only. Production untouched.
+    auditBitunixCandleSources(symbol, tf).catch(e=>console.warn('[Probe4] '+symbol+': '+e.message));
   }
 
   const utLongConfirm  = utBot.direction===1  && (utBot.recentSignal==='long'  || utBot.signal==='long');
