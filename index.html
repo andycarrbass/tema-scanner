@@ -3189,9 +3189,9 @@ async function auditBitunixCandleSources(symbol, interval){
 // ── Diagnostic mode ─────────────────────────────────────────────────────
 // Set to true to re-enable UT Bot candle traces and per-signal forensic logs.
 // Must be false in production.
-const DEBUG_MODE = true; // diagnostic build — disable before production deploy
+const DEBUG_MODE = false;
 
-const ACTIVE_EXCHANGE = 'bitunix';
+const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
 
 // ── Normalised candle contract ────────────────────────────────────────────
 // Both adapters MUST return candles in this shape. calcPair() reads only
@@ -3267,6 +3267,16 @@ const EXCHANGE_CONFIG = {
     requiresPagination: true,
     priceType:        'LAST_PRICE',   // or 'MARK_PRICE' — change here globally
   },
+  split: {
+    // Signals: Binance candles  |  Prices: Bitunix live
+    // See SplitSourceAdapter for routing logic.
+    label:            'Binance/Bitunix',
+    signalSource:     'Binance',
+    priceSource:      'Bitunix',
+    executionVenue:   'Bitunix',
+    maxKlineLimit:    1000,           // Binance limit (no pagination needed)
+    requiresPagination: false,
+  },
 };
 
 // ── BinanceAdapter ────────────────────────────────────────────────────────
@@ -3313,6 +3323,50 @@ const BinanceAdapter = {
 
   name:        'BinanceAdapter',
   errorLabel: 'Binance',
+};
+
+
+// ── SplitSourceAdapter ────────────────────────────────────────────────────
+// Routes indicator/signal candles to Binance (for TradingView parity)
+// and live prices/tickers to Bitunix (for accurate P&L on the execution venue).
+//
+// Rationale (from UT Bot parity investigation, June 2026):
+//   Bitunix REST klines differ from TradingView Bitunix chart candles due to
+//   a LAST_PRICE vs MARK_PRICE divergence in the VPS proxy. Binance USDT
+//   candles match TradingView UT Bot labels on all tested pairs. This adapter
+//   restores signal parity while keeping Bitunix as the live price source.
+//
+// Symbol mapping: TDAS symbols (e.g. ETHUSDT) map 1:1 to Binance USDT-M.
+// If Binance rejects a symbol, the pair is skipped with a DEBUG warning.
+const SplitSourceAdapter = {
+
+  name:        'SplitSourceAdapter',
+  errorLabel:  'Binance/Bitunix',
+
+  // ── fetchKlines → Binance ──────────────────────────────────────────────
+  // Used for all indicator candles: TEMA, UT Bot, RSI, ADX, SMA200.
+  // Binance returns up to 1000 candles per request (no pagination needed).
+  async fetchKlines(symbol, interval, limit = 600) {
+    if(DEBUG_MODE) console.debug('[DataSource] '+symbol+' '+interval+' | signal candles: Binance');
+    try {
+      return await BinanceAdapter.fetchKlines(symbol, interval, limit);
+    } catch(e) {
+      if(DEBUG_MODE) console.warn('[DataSource] '+symbol+' '+interval+' | Binance klines unavailable ('+e.message+') — pair skipped for signal calculation');
+      throw e; // let calcPair handle the skip
+    }
+  },
+
+  // ── fetchTicker → Bitunix ─────────────────────────────────────────────
+  // Used for current price, live P&L, Trade Desk price display.
+  async fetchTicker(symbols) {
+    if(DEBUG_MODE) console.debug('[DataSource] live prices: Bitunix | symbols:', symbols.join(','));
+    return BitunixAdapter.fetchTicker(symbols);
+  },
+
+  // ── validateSymbol → Binance ──────────────────────────────────────────
+  async validateSymbol(symbol) {
+    return BinanceAdapter.validateSymbol(symbol);
+  },
 };
 
 // ── BitunixAdapter ────────────────────────────────────────────────────────
@@ -3587,6 +3641,7 @@ const BitunixAdapter = {
 // Returns the active adapter. All app code calls this — never an adapter directly.
 function getExchange() {
   if (ACTIVE_EXCHANGE === 'bitunix') return BitunixAdapter;
+  if (ACTIVE_EXCHANGE === 'split')   return SplitSourceAdapter;
   return BinanceAdapter; // default / safe fallback
 }
 
@@ -4164,7 +4219,10 @@ function buildSnapshot(symbol) {
   if (!d) return null;
 
   const tf_val   = document.getElementById('tf') ? document.getElementById('tf').value : '4H';
-  const exchange = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] ? EXCHANGE_CONFIG[ACTIVE_EXCHANGE].label : ACTIVE_EXCHANGE;
+  const _xcfg    = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
+  const exchange  = _xcfg.signalSource
+    ? 'Signal candles: '+_xcfg.signalSource+' | Live price: '+(_xcfg.priceSource||_xcfg.label)+' | Execution: '+(_xcfg.executionVenue||_xcfg.label)
+    : (_xcfg.label || ACTIVE_EXCHANGE);
   const label    = LABELS[symbol] || symbol;
 
   // Safe UT Bot fields
@@ -4234,7 +4292,10 @@ function buildSnapshot(symbol) {
 
 function buildSnapshotFromTrade(entry) {
   const d   = currentScanData[entry.symbol] || {};
-  const exchange = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] ? EXCHANGE_CONFIG[ACTIVE_EXCHANGE].label : ACTIVE_EXCHANGE;
+  const _xcfg    = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
+  const exchange  = _xcfg.signalSource
+    ? 'Signal candles: '+_xcfg.signalSource+' | Live price: '+(_xcfg.priceSource||_xcfg.label)+' | Execution: '+(_xcfg.executionVenue||_xcfg.label)
+    : (_xcfg.label || ACTIVE_EXCHANGE);
   const label    = LABELS[entry.symbol] || entry.symbol;
   const livePrice = d.price || null;
   const entryPx   = entry.actualEntry || entry.price;
@@ -5378,6 +5439,10 @@ function buildV1Entry(symbol, d, decision, overrides) {
     id:             overrides.id || Date.now(),
     symbol:         symbol,
     exchange:       _exchange,
+    // Data source metadata (added V4.2 — analytics can query signal vs price source)
+    signalSource:   (EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.signalSource  || _exchange),
+    priceSource:    (EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.priceSource   || _exchange),
+    executionVenue: (EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.executionVenue|| _exchange),
     tf:             _tf,
     htf:            _htf,
 
@@ -7885,8 +7950,12 @@ function _updateScannerStatusBar(){
                  : 'var(--red-text)';
 
   const sep = '<span style="margin:0 8px;color:var(--border3);">&middot;</span>';
+  // Source label adapts to active exchange configuration
+  const _cfg = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
+  const _sigSrc  = _cfg.signalSource  || _cfg.label || ACTIVE_EXCHANGE;
+  const _priceSrc = _cfg.priceSource  || _cfg.label || ACTIVE_EXCHANGE;
   const priceSegment = _livePriceMs
-    ? sep + '<span>Prices: live @ '
+    ? sep + '<span>Prices: '+_priceSrc+' live @ '
       + new Date(_livePriceMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
       + '</span>'
     : '';
@@ -7896,10 +7965,10 @@ function _updateScannerStatusBar(){
   bar.style.display = 'block';
   bar.innerHTML =
     '<div style="display:flex;align-items:center;flex-wrap:wrap;margin-bottom:3px;">'
-      + '<span>Signals: <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span></span>'
+      + '<span>Signals: '+_sigSrc+' candles, <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span></span>'
       + priceSegment
     + '</div>'
-    + '<div style="color:var(--text3);">Signals use closed candles</div>';
+    + '<div style="color:var(--text3);">Signals use closed '+_sigSrc+' candles &middot; Execution: '+(_cfg.executionVenue||_cfg.label||ACTIVE_EXCHANGE)+'</div>';
 }
 
 // Tick every 30s to keep signal age current — zero API calls
