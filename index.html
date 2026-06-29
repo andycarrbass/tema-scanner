@@ -2981,6 +2981,55 @@ function calcUTBotPineBootstrapDiagnostic(highs,lows,closes,keyVal=4,atrPeriod=1
 }
 
 
+// ── buildUTBotAuditRows ───────────────────────────────────────────────────
+// DIAGNOSTIC ONLY — not called in production.
+// Rebuilds the same trail/ATR calculation as calcUTBot() and returns
+// candle-aligned audit rows for the specified time window.
+// Used in Probe 3 to expose OHLC, TR, ATR, nLoss, trail, signal per bar.
+function buildUTBotAuditRows(opens,highs,lows,closes,times,keyVal=4,atrPeriod=10,windowStart=0,windowEnd=Infinity){
+  const n=closes.length;
+  // TR: candle-aligned (trs[0] unused, same as calcUTBot)
+  const trs=new Array(n).fill(0);
+  for(let i=1;i<n;i++){
+    trs[i]=Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1]));
+  }
+  // ATR RMA seeded with SMA of bars 1..atrPeriod (matches calcUTBot exactly)
+  let rma=0;
+  for(let i=1;i<=atrPeriod;i++) rma+=trs[i];
+  rma/=atrPeriod;
+  // Trail seeded at bar atrPeriod (matches calcUTBot exactly)
+  const trail=new Array(n).fill(0);
+  trail[atrPeriod]=closes[atrPeriod]-keyVal*rma;
+  let prevClose=closes[atrPeriod];
+  const rows=[];
+  for(let i=atrPeriod+1;i<n;i++){
+    rma=rma*(atrPeriod-1)/atrPeriod+trs[i]/atrPeriod;
+    const nLoss=keyVal*rma;
+    const prev=trail[i-1],c=closes[i],pc=closes[i-1];
+    if(c>prev&&pc>prev)       trail[i]=Math.max(prev,c-nLoss);
+    else if(c<prev&&pc<prev)  trail[i]=Math.min(prev,c+nLoss);
+    else if(c>prev)           trail[i]=c-nLoss;
+    else                      trail[i]=c+nLoss;
+    let sig='none';
+    if(prevClose<trail[i-1]&&c>trail[i]) sig='long';
+    if(prevClose>trail[i-1]&&c<trail[i]) sig='short';
+    const t=times?times[i]:null;
+    if(t===null||(t>=windowStart&&t<=windowEnd)){
+      rows.push({
+        time:t,
+        open:opens?opens[i]:null,
+        high:highs[i],low:lows[i],close:c,
+        prevClose,tr:trs[i],atr:rma,nLoss,
+        prevTrail:trail[i-1],trail:trail[i],
+        direction:c>trail[i]?1:-1,
+        signal:sig
+      });
+    }
+    prevClose=c;
+  }
+  return rows;
+}
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -3714,82 +3763,75 @@ async function calcPair(symbol,tf){
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
   const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,null);
 
-  // ── DIAGNOSTIC: CURRENT vs PINE_BOOTSTRAP (DEBUG_MODE, ETH/LINK 4H only) ─
-  // Probe 1 (FULL/SLICED) confirmed candle slicing is not the cause.
-  // Probe 2: compares current TDAS trail seeding vs Pine-style nz(prev,0) bootstrap.
-  // Production utBot is unchanged — diagnostic is observation only.
+  // ── DIAGNOSTIC PROBE 3: OHLC / ATR / Trail Audit (DEBUG_MODE, ETH/LINK 4H) ─
+  // Probes 1+2 ruled out candle slicing and trail initialisation.
+  // Probe 3: expose OHLC, TR, ATR, nLoss, trail per bar across the 15-25 Jun
+  // divergence window so raw values can be compared directly against TradingView.
+  // Production utBot is unchanged — diagnostic only, no extra API calls.
   if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&tf==='4h'&&
      (symbol==='ETHUSDT'||symbol==='LINKUSDT')){
     (function(){
-      const _CUT = new Date('2026-03-01T00:00:00Z').getTime();
-      const _ts  = (t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
-      const _f4  = (v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+      const _f  =(v,d=4)=>v!=null&&isFinite(v)?v.toFixed(d):'—';
+      const _ts =(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+      const WIN_S=new Date('2026-06-15T00:00:00Z').getTime();
+      const WIN_E=new Date('2026-06-25T23:59:59Z').getTime();
+      const SELL_ETH =['2026-06-23','2026-06-24'];
+      const SELL_LINK=['2026-06-22','2026-06-23'];
+      const isEth=symbol==='ETHUSDT';
+      const tvSell = isEth?'2026-06-24':'2026-06-23';
 
-      // TradingView reference for direct comparison
-      console.log('TV reference: ETHUSDT: BUY 2026-04-01, SELL 2026-04-29, BUY 2026-06-15, SELL 2026-06-24');
-      console.log('TV reference: LINKUSDT: BUY 2026-05-05, SELL 2026-05-16, BUY 2026-06-15, SELL 2026-06-23');
+      // TV targets
+      const tvBuy='2026-06-15';
+      const tdasBuy='2026-06-15 08:00';
+      const tdasSell='2026-06-18 12:00';
 
-      function _printMode(label, n, times, result, rawSigs){
-        console.log('┌─ '+symbol+' | '+label+
-          ' | bars='+n+
-          ' | first='+_ts(times&&times[0])+
-          ' | last='+_ts(times&&times[times.length-1]));
-        console.log('│  dir='+((result.direction===1)?'BULLISH':'BEARISH')+
-          ' | barsAgoFlip='+result.barsAgoFlip+
-          ' | trail='+_f4(result.trailLevel)+
-          ' | recentSig='+result.recentSignal+
-          ' | freshSig='+result.freshSignal);
-        console.log('│  signal events from 2026-03-01 onward:');
-        const recent=(rawSigs||[]).filter(s=>s.time&&s.time>=_CUT);
-        if(recent.length===0){
-          console.log('│  (none)');
-        } else {
-          recent.forEach(s=>{
-            console.log('│  '+_ts(s.time)+
-              ' | '+(s.sig==='long'?'BUY ':'SELL')+
-              ' | close='+_f4(s.close)+
-              ' | trail='+_f4(s.trail)+
-              ' | prevClose='+_f4(s.prevClose)+
-              ' | prevTrail='+_f4(s.prevTrail));
-          });
-        }
-        console.log('└─ total signals from 2026-03-01: '+recent.length);
-      }
+      // Build audit rows using the same logic as production calcUTBot
+      const opens =raw.map(k=>k.open);
+      const auditRows=buildUTBotAuditRows(
+        opens,closedHighs,closedLows,closedCloses,closedTimes,4,10,WIN_S,WIN_E);
 
-      // ── Mode A: CURRENT TDAS (re-derive signals inline, same logic as calcUTBot) ──
-      (function(){
-        const _c=closedCloses,_h=closedHighs,_l=closedLows,_t=closedTimes,n=_c.length;
-        const trs=new Array(n).fill(0);
-        for(let i=1;i<n;i++) trs[i]=Math.max(_h[i]-_l[i],Math.abs(_h[i]-_c[i-1]),Math.abs(_l[i]-_c[i-1]));
-        let rma=0; for(let i=1;i<=10;i++) rma+=trs[i]; rma/=10;
-        const tr=new Array(n).fill(0); tr[10]=_c[10]-4*rma;
-        let pc=_c[10]; const sigs=[];
-        for(let i=11;i<n;i++){
-          rma=rma*9/10+trs[i]/10;
-          const nL=4*rma,prev=tr[i-1],c=_c[i];
-          if(c>prev&&_c[i-1]>prev) tr[i]=Math.max(prev,c-nL);
-          else if(c<prev&&_c[i-1]<prev) tr[i]=Math.min(prev,c+nL);
-          else if(c>prev) tr[i]=c-nL;
-          else tr[i]=c+nL;
-          let sig='none';
-          if(pc<tr[i-1]&&c>tr[i]) sig='long';
-          if(pc>tr[i-1]&&c<tr[i]) sig='short';
-          if(sig!=='none') sigs.push({time:_t?_t[i]:null,sig,close:c,trail:tr[i],prevClose:pc,prevTrail:tr[i-1],atr:rma,nLoss:nL});
-          pc=c;
-        }
-        const r={direction:_c[n-1]>tr[n-1]?1:-1,trailLevel:tr[n-1],barsAgoFlip:utBot.barsAgoFlip,recentSignal:utBot.recentSignal,freshSignal:utBot.signal};
-        _printMode('CURRENT      ',n,_t,r,sigs);
-      })();
+      // ── Header ────────────────────────────────────────────────────────────
+      console.log('');
+      console.log('══ UT AUDIT | '+symbol+' | 4H | 2026-06-15 to 2026-06-25 ══════════════════');
+      console.log('TV target : BUY '+tvBuy+', SELL '+tvSell);
+      console.log('TDAS      : BUY '+tdasBuy+', SELL '+tdasSell+' (EARLY)');
+      console.log('cols: time UTC          | open    | high    | low     | close   | TR      | ATR     | nLoss   | prevTrail | trail   | dir  | sig');
 
-      // ── Mode B: PINE_BOOTSTRAP (nz(prev,0) from bar 0) ──────────────────────
-      (function(){
-        const _c=closedCloses,_h=closedHighs,_l=closedLows,_t=closedTimes,n=_c.length;
-        const pb=calcUTBotPineBootstrapDiagnostic(_h,_l,_c,4,10,_t);
-        _printMode('PINE_BOOTSTRAP',n,_t,
-          {direction:pb.direction,trailLevel:pb.trailLevel,barsAgoFlip:pb.barsAgoFlip,
-           recentSignal:pb.recentSignal,freshSignal:pb.freshSignal},
-          pb.signals);
-      })();
+      // ── Per-bar table ─────────────────────────────────────────────────────
+      auditRows.forEach(r=>{
+        const tStr=_ts(r.time);
+        const dStr=tStr.slice(0,10); // date part for comparison
+        let marker='';
+        if(tStr.includes(tdasBuy))   marker=' << TDAS/TV BUY MATCH';
+        if(tStr.includes(tdasSell))  marker=' << TDAS EARLY SELL';
+        const watchDays=isEth?SELL_ETH:SELL_LINK;
+        if(watchDays.some(d=>dStr===d)) marker+=' [TV SELL WINDOW]';
+        console.log(
+          tStr+' | '+
+          _f(r.open)+'  | '+
+          _f(r.high)+'  | '+
+          _f(r.low )+'  | '+
+          _f(r.close)+'  | '+
+          _f(r.tr)   +'  | '+
+          _f(r.atr,6)+'  | '+
+          _f(r.nLoss)+'  | '+
+          _f(r.prevTrail)+' | '+
+          _f(r.trail)+' | '+
+          (r.direction===1?'bull':'bear')+'  | '+
+          (r.signal==='long'?'BUY ':r.signal==='short'?'SELL':'—   ')+
+          marker
+        );
+      });
+
+      // ── Raw OHLC copy block ───────────────────────────────────────────────
+      console.log('');
+      console.log('── Raw OHLC (compare against TradingView Data Window) ────────────────────');
+      console.log(symbol+'_4H_OHLC_JUN15_25 = [');
+      auditRows.forEach(r=>{
+        console.log("  {t:'"+_ts(r.time)+"'"+", o:"+_f(r.open)+", h:"+_f(r.high)+", l:"+_f(r.low)+", c:"+_f(r.close)+"},");
+      });
+      console.log('];');
+      console.log('');
     })();
   }
 
