@@ -1819,7 +1819,7 @@ function calcUTBot(highs,lows,closes,keyVal=4,atrPeriod=10,times=null,debugSymbo
 
   // ── DIAGNOSTIC LOGGING (DEBUG_MODE only, LINKUSDT only) ──────────────────
   // Retained until LINK/USDT 4H validated against TradingView. Remove after.
-  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&debugSymbol){
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.legacyUtDiagnosticFixed&&debugSymbol){
     const f4=(v)=>v!=null&&isFinite(v)?v.toFixed(4):'—';
     const f2=(v)=>v!=null&&isFinite(v)?v.toFixed(2):'—';
     const ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16):'—';
@@ -2105,7 +2105,7 @@ function computeStates(d) {
 
   // ── DEBUG_MODE audit — log the state object for validation ───────────
   // Enables comparison of Phase 0 derived values against pre-refactor renders.
-  if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && d && d.signal && d.signal !== 'neutral'){
+  if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && DIAG.internalsAudit && d && d.signal && d.signal !== 'neutral'){
     console.debug('[TDAS Phase0 computeStates]', {
       signal, score, strength, setupStatus,
       temaLong, temaShort, temaWidening,
@@ -2605,7 +2605,7 @@ function evaluateSetup(d) {
   }
 
   // ── Debug log ───────────────────────────────────────────────────────────
-  if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && tradeBias !== 'NEUTRAL') {
+  if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && DIAG.internalsAudit && tradeBias !== 'NEUTRAL') {
     console.debug('[TDAS Phase1.5 evaluateSetup]', {
       signal: sig, score: sc,
       tradeBias, setupQuality, actionBias, highProbability,
@@ -3182,6 +3182,105 @@ async function auditBitunixCandleSources(symbol, interval){
   console.log('');
 }
 
+// ── calcUTBotPineExactDiagnostic ──────────────────────────────────────────
+// DIAGNOSTIC ONLY — does not replace production calcUTBot().
+// Implements TradingView Pine Script v4 UT Bot Alerts as literally as
+// possible: trail starts at 0.0 (Pine xATRTrailingStop=0.0), evaluated from
+// the start of the array using nz(prevTrail,0), NOT seeded at atrPeriod with
+// close-nLoss as production calcUTBot() does. ATR/RMA uses Pine-style timing
+// (na until atrPeriod bars exist, exactly mirroring atr(c) behaviour).
+// Tracks both strict-< (current production interpretation) and Pine-style
+// crossover semantics so any difference is visible directly in the output.
+function calcUTBotPineExactDiagnostic(highs,lows,closes,keyVal=4,atrPeriod=10,times=null){
+  const n=closes.length;
+  if(n<atrPeriod+2) return {direction:0,trailLevel:0,barsAgoFlip:99,freshSignal:'none',recentSignal:'none',signals:[]};
+
+  // TR: bar 0 has no previous close (Pine: tr() at bar 0 = high-low only)
+  const trs=new Array(n).fill(0);
+  trs[0]=highs[0]-lows[0];
+  for(let i=1;i<n;i++){
+    trs[i]=Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1]));
+  }
+
+  // ATR: na until atrPeriod bars of TR exist (Pine atr() behaviour)
+  const atrArr=new Array(n).fill(null);
+  let rma=0;
+  for(let i=0;i<atrPeriod;i++) rma+=trs[i];
+  rma/=atrPeriod;
+  atrArr[atrPeriod-1]=rma; // first valid ATR at index atrPeriod-1
+  for(let i=atrPeriod;i<n;i++){
+    rma=rma*(atrPeriod-1)/atrPeriod+trs[i]/atrPeriod;
+    atrArr[i]=rma;
+  }
+
+  // Trail: Pine xATRTrailingStop = 0.0, nz(prevTrail,0) — starts from bar 0,
+  // NOT seeded at atrPeriod. While ATR is na, nLoss is na/0 and trail holds 0.
+  const trail=new Array(n).fill(0);
+  const sigs=[];
+
+  for(let i=1;i<n;i++){
+    const atrVal=atrArr[i];
+    if(atrVal===null){ trail[i]=0; continue; } // ATR not yet valid — Pine na branch
+    const nLoss=keyVal*atrVal;
+    const prevT=trail[i-1]; // nz(xATRTrailingStop[1],0)
+    const src=closes[i], prevSrc=closes[i-1];
+
+    if(src>prevT && prevSrc>prevT)       trail[i]=Math.max(prevT, src-nLoss);
+    else if(src<prevT && prevSrc<prevT)  trail[i]=Math.min(prevT, src+nLoss);
+    else if(src>prevT)                   trail[i]=src-nLoss;
+    else                                  trail[i]=src+nLoss;
+
+    // Pine crossover semantics: ema(src,1)=src. crossover(a,b)=a[1]<b[1] AND a>b (strict on both sides).
+    // above = crossover(ema,trail) = src[1]<trail[1] AND src>trail
+    // below = crossover(trail,ema) = trail[1]<src[1] AND trail>src
+    const prevTrailForSig=trail[i-1];
+    const pineAbove = prevSrc<prevTrailForSig && src>trail[i];
+    const pineBelow = prevTrailForSig<prevSrc && trail[i]>src;
+    const buy  = src>trail[i] && pineAbove;
+    const sell = src<trail[i] && pineBelow;
+
+    // Also track strict-< production-style interpretation for explicit comparison
+    const prodSig = (prevSrc<prevTrailForSig && src>trail[i]) ? 'long'
+                  : (prevSrc>prevTrailForSig && src<trail[i]) ? 'short' : 'none';
+
+    let sig='none';
+    if(buy)  sig='long';
+    if(sell) sig='short';
+
+    if(sig!=='none'){
+      sigs.push({
+        time: times?times[i]:null, sig, close:src, trail:trail[i],
+        prevClose:prevSrc, prevTrail:prevTrailForSig, atr:atrVal, nLoss,
+        prodSigMatch: sig===prodSig
+      });
+    }
+  }
+
+  const lastTrail=trail[n-1];
+  const lastClose=closes[n-1];
+  const direction=lastClose>lastTrail?1:-1;
+
+  let barsAgoFlip=n;
+  if(sigs.length){
+    const lastSigTime=sigs[sigs.length-1].time;
+    const idx=times?times.indexOf(lastSigTime):-1;
+    if(idx>=0) barsAgoFlip=n-1-idx;
+  }
+  if(typeof barsAgoFlip!=='number'||isNaN(barsAgoFlip)) barsAgoFlip=99;
+
+  const recentCut=n-3;
+  let recentSignal='none', freshSignal='none';
+  for(let s=sigs.length-1;s>=0;s--){
+    const idx=times?times.indexOf(sigs[s].time):-1;
+    if(idx>=n-1) freshSignal=sigs[s].sig;
+    if(idx>=recentCut&&recentSignal==='none') recentSignal=sigs[s].sig;
+    if(idx<recentCut) break;
+  }
+
+  return {direction,trailLevel:lastTrail,barsAgoFlip,freshSignal,recentSignal,signals:sigs};
+}
+
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -3189,7 +3288,22 @@ async function auditBitunixCandleSources(symbol, interval){
 // ── Diagnostic mode ─────────────────────────────────────────────────────
 // Set to true to re-enable UT Bot candle traces and per-signal forensic logs.
 // Must be false in production.
-const DEBUG_MODE = true; // diagnostic build — SOL UT freshness audit — set back to false before production deploy
+const DEBUG_MODE = true; // diagnostic build — set back to false before production deploy
+
+// ── Diagnostic switchboard ────────────────────────────────────────────────
+// Gates individual DEBUG_MODE console blocks so only relevant diagnostics
+// print. Set DEBUG_MODE=true and flip individual flags below as needed.
+// All flags are no-ops when DEBUG_MODE=false (nothing logs regardless).
+const DIAG = {
+  rsiAudit:                 false,  // [RSI Audit] SMA vs Wilder comparison (every signal pair)
+  scoreAudit:                false,  // [Score Audit] score breakdown (every signal pair)
+  bitunixCandleSourceAudit:  false,  // BITUNIX CANDLE SOURCE AUDIT (LAST_PRICE/MARK_PRICE probe, ETH/LINK)
+  legacyUtAuditEthLink:      false,  // UT AUDIT | ETHUSDT/LINKUSDT | 4H | 2026-06-15 to 2026-06-25 (Probe 3)
+  legacyUtDiagnosticFixed:   false,  // [UT Bot Diagnostic FIXED] per-bar dump inside calcUTBot (debugSymbol arg)
+  internalsAudit:            false,  // [TDAS Phase0/1/1.5/2] computeStates/regime/evaluation/lifecycle internals
+  solUtPineParityAudit:      true,   // SOL UT BOT PARITY COMPARISON (CURRENT vs PINE_EXACT) — current focus
+  dataSourceAudit:           true,   // [DataSource] concise klines/ticker source confirmation
+};
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
 
@@ -3347,11 +3461,11 @@ const SplitSourceAdapter = {
   // Used for all indicator candles: TEMA, UT Bot, RSI, ADX, SMA200.
   // Binance returns up to 1000 candles per request (no pagination needed).
   async fetchKlines(symbol, interval, limit = 600) {
-    if(DEBUG_MODE) console.debug('[DataSource] '+symbol+' '+interval+' | signal candles: Binance');
+    if(DEBUG_MODE && DIAG.dataSourceAudit) console.debug('[DataSource] '+symbol+' '+interval+' | klines=Binance');
     try {
       return await BinanceAdapter.fetchKlines(symbol, interval, limit);
     } catch(e) {
-      if(DEBUG_MODE) console.warn('[DataSource] '+symbol+' '+interval+' | Binance klines unavailable ('+e.message+') — pair skipped for signal calculation');
+      if(DEBUG_MODE && DIAG.dataSourceAudit) console.warn('[DataSource] '+symbol+' '+interval+' | Binance klines unavailable ('+e.message+') — pair skipped for signal calculation');
       throw e; // let calcPair handle the skip
     }
   },
@@ -3359,7 +3473,7 @@ const SplitSourceAdapter = {
   // ── fetchTicker → Bitunix ─────────────────────────────────────────────
   // Used for current price, live P&L, Trade Desk price display.
   async fetchTicker(symbols) {
-    if(DEBUG_MODE) console.debug('[DataSource] live prices: Bitunix | symbols:', symbols.join(','));
+    if(DEBUG_MODE && DIAG.dataSourceAudit) console.debug('[DataSource] live prices: Bitunix | symbols:', symbols.join(','));
     return BitunixAdapter.fetchTicker(symbols);
   },
 
@@ -3802,7 +3916,7 @@ async function calcPair(symbol,tf){
   const t17=t17a[t17a.length-1],t92=t92a[t92a.length-1];
   // DEBUG_MODE: compare old SMA RSI vs new Wilder RSI — remove after validation
   const rsi=calcRSI(closes);
-  if(DEBUG_MODE){
+  if(DEBUG_MODE && DIAG.rsiAudit){
     // Old SMA RSI (last 14 bars only)
     const _smaRsi=(()=>{
       if(closes.length<15)return null;
@@ -3970,117 +4084,152 @@ async function calcPair(symbol,tf){
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
   const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,null);
 
-  // ── SOL UT BOT PINE-PARITY AUDIT (DEBUG_MODE, SOLUSDT 4H only) ───────────
-  // Probe: full Pine-step dump for 24-26 Jun and 28-30 Jun windows, plus
-  // complete signal scan 10 Jun-30 Jun (not just last 30 bars).
-  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='SOLUSDT'&&tf==='4h'){
+  // ── SOL UT BOT PARITY COMPARISON (DEBUG_MODE, SOLUSDT 4H only) ───────────
+  // CURRENT (production calcUTBot) vs PINE_EXACT (diagnostic-only Pine-literal
+  // implementation) compared side-by-side. Gated by DIAG.solUtPineParityAudit.
+  // Production utBot assignment is unchanged — this is observation only.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.solUtPineParityAudit&&symbol==='SOLUSDT'&&tf==='4h'){
     (function(){
       const _f4=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
-      const _f6=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(6)):'—';
       const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+      const _dStr=(t)=>t?_ts(t).slice(0,10):'';
       const n=closedCloses.length;
-
-      console.log('');
-      console.log('══ SOL UT BOT PINE-PARITY AUDIT | SOLUSDT | 4H ═══════════════════════════');
-      console.log('Data source: Binance klines (SplitSourceAdapter) | closed candles:', n);
-      console.log('First closed candle:', _ts(closedTimes[0]), '| Last closed candle:', _ts(closedTimes[n-1]));
-      console.log('');
-
-      // ── Full Pine-exact re-derivation, identical to calcUTBot() internals ──
       const closedOpens=raw.slice(0,-1).map(k=>k.open);
+
+      console.log('');
+      console.log('══ SOL UT BOT PARITY COMPARISON | SOLUSDT | 4H ════════════════════════════');
+      console.log('Data source: Binance klines via SplitSourceAdapter');
+      console.log('Closed candles:', n, '| First:', _ts(closedTimes[0]), '| Last:', _ts(closedTimes[n-1]));
+      console.log('');
+
+      // ── CURRENT: re-derive using identical logic to production calcUTBot() ──
       const trs=new Array(n).fill(0);
       for(let i=1;i<n;i++) trs[i]=Math.max(closedHighs[i]-closedLows[i],Math.abs(closedHighs[i]-closedCloses[i-1]),Math.abs(closedLows[i]-closedCloses[i-1]));
       let rma=0; for(let i=1;i<=10;i++) rma+=trs[i]; rma/=10;
-      const tr2=new Array(n).fill(0); tr2[10]=closedCloses[10]-4*rma;
-      let pc2=closedCloses[10];
-      const allSigs=[]; // every signal across the whole closed array
-      const perBar=[];  // full per-bar record for windowed printing
+      const curTrail=new Array(n).fill(0); curTrail[10]=closedCloses[10]-4*rma;
+      let pc=closedCloses[10];
+      const curSigs=[]; const curPerBar=[];
       for(let i=11;i<n;i++){
         rma=rma*9/10+trs[i]/10;
-        const nL=4*rma,prevTrail=tr2[i-1],src=closedCloses[i],prevSrc=closedCloses[i-1];
-        let trail;
-        if(src>prevTrail&&prevSrc>prevTrail)       trail=Math.max(prevTrail,src-nL);
-        else if(src<prevTrail&&prevSrc<prevTrail)  trail=Math.min(prevTrail,src+nL);
-        else if(src>prevTrail)                     trail=src-nL;
-        else                                        trail=src+nL;
-        tr2[i]=trail;
-        // Pine: above = crossover(ema,trail) = ema[1]<trail[1] AND ema>trail (ema=src, period-1 EMA=identity)
-        // Pine: below = crossover(trail,ema) = trail[1]<ema[1] AND trail>ema
-        const above = prevSrc<prevTrail && src>trail;
-        const below = prevTrail<prevSrc && trail>src;
-        const buy  = src>trail && above;
-        const sell = src<trail && below;
-        const dirBefore = (i>11) ? (closedCloses[i-1]>tr2[i-1]?1:-1) : 0;
-        const dirAfter  = src>trail?1:-1;
+        const nL=4*rma,prev=curTrail[i-1],c=closedCloses[i];
+        if(c>prev&&closedCloses[i-1]>prev) curTrail[i]=Math.max(prev,c-nL);
+        else if(c<prev&&closedCloses[i-1]<prev) curTrail[i]=Math.min(prev,c+nL);
+        else if(c>prev) curTrail[i]=c-nL;
+        else curTrail[i]=c+nL;
         let sig='none';
-        if(buy)  sig='long';
-        if(sell) sig='short';
-        const rec={i,t:closedTimes[i],open:closedOpens[i],
-          high:closedHighs[i],low:closedLows[i],close:src,prevSrc,
-          atr:rma,nLoss:nL,prevTrail,trail,above,below,buy,sell,
-          dirBefore,dirAfter,sig};
-        perBar.push(rec);
-        if(sig!=='none') allSigs.push(rec);
-        pc2=src;
+        if(pc<curTrail[i-1]&&c>curTrail[i]) sig='long';
+        if(pc>curTrail[i-1]&&c<curTrail[i]) sig='short';
+        const rec={i,t:closedTimes[i],open:closedOpens[i],high:closedHighs[i],low:closedLows[i],
+          close:c,atr:rma,nLoss:nL,prevTrail:curTrail[i-1],trail:curTrail[i],
+          dir:c>curTrail[i]?1:-1,sig};
+        curPerBar.push(rec);
+        if(sig!=='none') curSigs.push(rec);
+        pc=c;
       }
 
-      // ── Task 4: ALL signals 10 Jun - 30 Jun (not just last 30 bars) ────────
+      // ── PINE_EXACT: diagnostic-only literal Pine bootstrap implementation ──
+      const pineResult=calcUTBotPineExactDiagnostic(closedHighs,closedLows,closedCloses,4,10,closedTimes);
+      // Build a per-bar lookup for PINE_EXACT trail values (bar index → trail)
+      // by re-running the same bootstrap inline so we can align rows with CURRENT.
+      const pTrs=new Array(n).fill(0); pTrs[0]=closedHighs[0]-closedLows[0];
+      for(let i=1;i<n;i++) pTrs[i]=Math.max(closedHighs[i]-closedLows[i],Math.abs(closedHighs[i]-closedCloses[i-1]),Math.abs(closedLows[i]-closedCloses[i-1]));
+      const pAtr=new Array(n).fill(null);
+      let pRma=0; for(let i=0;i<10;i++) pRma+=pTrs[i]; pRma/=10; pAtr[9]=pRma;
+      for(let i=10;i<n;i++){ pRma=pRma*9/10+pTrs[i]/10; pAtr[i]=pRma; }
+      const pTrail=new Array(n).fill(0);
+      const pinePerBar=[];
+      for(let i=1;i<n;i++){
+        const av=pAtr[i];
+        if(av===null){ pTrail[i]=0; pinePerBar.push({i,t:closedTimes[i],trail:0,sig:'none',dir:0}); continue; }
+        const nL=4*av,prevT=pTrail[i-1],src=closedCloses[i],prevSrc=closedCloses[i-1];
+        if(src>prevT&&prevSrc>prevT) pTrail[i]=Math.max(prevT,src-nL);
+        else if(src<prevT&&prevSrc<prevT) pTrail[i]=Math.min(prevT,src+nL);
+        else if(src>prevT) pTrail[i]=src-nL;
+        else pTrail[i]=src+nL;
+        const above=prevSrc<prevT&&src>pTrail[i];
+        const below=prevT<prevSrc&&pTrail[i]>src;
+        let sig='none';
+        if(src>pTrail[i]&&above) sig='long';
+        if(src<pTrail[i]&&below) sig='short';
+        pinePerBar.push({i,t:closedTimes[i],close:src,trail:pTrail[i],prevTrail:prevT,atr:av,nLoss:nL,dir:src>pTrail[i]?1:-1,sig,above,below});
+      }
+
+      // ── Task 3: signal lists 10 Jun - 30 Jun ────────────────────────────────
       const RANGE_S=new Date('2026-06-10T00:00:00Z').getTime();
       const RANGE_E=new Date('2026-06-30T23:59:59Z').getTime();
-      console.log('── ALL TDAS UT signals, 2026-06-10 to 2026-06-30 ─────────────────────────');
-      const rangeSigs=allSigs.filter(s=>s.t>=RANGE_S&&s.t<=RANGE_E);
-      if(rangeSigs.length===0){
-        console.log('  NO signals detected in this range');
-      } else {
-        rangeSigs.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | barsAgo='+(n-1-s.i)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)+' | prevSrc='+_f4(s.prevSrc)+' | prevTrail='+_f4(s.prevTrail)));
-      }
-      console.log('  Total signals in range: '+rangeSigs.length);
-      console.log('');
-      console.log('TradingView-visible (expected): Buy ~14-15 Jun, Sell ~25 Jun, Buy ~29 Jun');
+      const curRange=curSigs.filter(s=>s.t>=RANGE_S&&s.t<=RANGE_E);
+      const pineRange=pinePerBar.filter(s=>s.sig&&s.sig!=='none'&&s.t>=RANGE_S&&s.t<=RANGE_E);
+
+      console.log('CURRENT calcUTBot signals (2026-06-10 to 2026-06-30):');
+      if(curRange.length===0) console.log('  (none)');
+      curRange.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
       console.log('');
 
-      // ── Task 1+2+3: Pine-step dump for the two target windows ──────────────
-      function dumpWindow(label, startStr, endStr){
+      console.log('PINE_EXACT diagnostic signals (2026-06-10 to 2026-06-30):');
+      if(pineRange.length===0) console.log('  (none)');
+      pineRange.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
+      console.log('');
+
+      console.log('TradingView-visible expected: Buy ~14-15 Jun, Sell ~25 Jun, Buy ~29 Jun');
+      console.log('');
+
+      // ── Comparison summary ───────────────────────────────────────────────
+      const tvDates=['2026-06-14','2026-06-15','2026-06-25','2026-06-29'];
+      const curMatchesTv = curRange.some(s=>tvDates.includes(_dStr(s.t)));
+      const pineMatchesTv = pineRange.some(s=>tvDates.includes(_dStr(s.t)));
+      const curPineIdentical = curRange.length===pineRange.length &&
+        curRange.every((s,idx)=>pineRange[idx]&&s.t===pineRange[idx].t&&s.sig===pineRange[idx].sig);
+
+      console.log('Comparison:');
+      console.log('  Current matches TradingView dates?   '+(curMatchesTv?'YES':'NO'));
+      console.log('  PineExact matches TradingView dates? '+(pineMatchesTv?'YES':'NO'));
+      console.log('  Current vs PineExact identical?      '+(curPineIdentical?'YES':'NO'));
+      console.log('');
+
+      // ── Task 4: side-by-side divergence rows for key windows ───────────────
+      function sideBySide(label,startStr,endStr){
         const ws=new Date(startStr).getTime(), we=new Date(endStr).getTime();
-        console.log('── PINE-STEP DUMP: '+label+' ('+startStr+' to '+endStr+') ──────────────');
-        console.log('ts | O | H | L | C | ATR | nLoss | prevSrc | src | prevTrail | trail | above | below | buy | sell | dirBefore→dirAfter | sig');
-        const rows=perBar.filter(r=>r.t>=ws&&r.t<=we);
-        if(rows.length===0){ console.log('  (no candles in this window — check date range vs available data)'); return; }
+        console.log('── '+label+' ('+startStr+' to '+endStr+') ──────────────────────────────');
+        console.log('time | close | curTrail | pineTrail | curSig | pineSig | curDir | pineDir');
+        const rows=curPerBar.filter(r=>r.t>=ws&&r.t<=we);
         rows.forEach(r=>{
+          const p=pinePerBar.find(x=>x.t===r.t);
+          const diverges = !p || r.sig!==p.sig || Math.abs(r.trail-(p.trail||0))>0.01;
+          const isExpected = tvDates.includes(_dStr(r.t));
+          const marker = diverges?' << DIVERGE':(isExpected?' << TV EXPECTED':'');
           console.log(
-            _ts(r.t)+' | '+
-            'O='+_f4(r.open)+' H='+_f4(r.high)+' L='+_f4(r.low)+' C='+_f4(r.close)+
-            ' | ATR='+_f6(r.atr)+' nL='+_f4(r.nLoss)+
-            ' | prevSrc='+_f4(r.prevSrc)+' src='+_f4(r.close)+
-            ' | prevTrail='+_f4(r.prevTrail)+' trail='+_f4(r.trail)+
-            ' | above='+r.above+' below='+r.below+
-            ' | buy='+r.buy+' sell='+r.sell+
-            ' | dir '+(r.dirBefore===1?'bull':r.dirBefore===-1?'bear':'—')+'→'+(r.dirAfter===1?'bull':'bear')+
-            ' | sig='+(r.sig==='none'?'—':r.sig.toUpperCase())
+            _ts(r.t)+' | '+_f4(r.close)+
+            ' | '+_f4(r.trail)+' | '+_f4(p?p.trail:null)+
+            ' | '+(r.sig==='none'?'—':r.sig.toUpperCase())+' | '+(p&&p.sig&&p.sig!=='none'?p.sig.toUpperCase():'—')+
+            ' | '+(r.dir===1?'bull':'bear')+' | '+(p?(p.dir===1?'bull':'bear'):'—')+
+            marker
           );
+          // Full ATR/nLoss detail only where it diverges or TV expects an event
+          if(diverges||isExpected){
+            console.log('    [detail] curATR='+_f4(r.atr)+' curNL='+_f4(r.nLoss)+' curPrevTrail='+_f4(r.prevTrail)+
+              ' | pineATR='+_f4(p?p.atr:null)+' pineNL='+_f4(p?p.nLoss:null)+' pinePrevTrail='+_f4(p?p.prevTrail:null));
+          }
         });
+        console.log('');
       }
-      dumpWindow('Sell window', '2026-06-24T00:00:00Z', '2026-06-26T23:59:59Z');
-      console.log('');
-      dumpWindow('Buy window',  '2026-06-28T00:00:00Z', '2026-06-30T23:59:59Z');
-      console.log('');
+      sideBySide('Sell window','2026-06-24T00:00:00Z','2026-06-26T23:59:59Z');
+      sideBySide('Buy window', '2026-06-28T00:00:00Z','2026-06-30T23:59:59Z');
 
-      // ── Task 5: Raw OHLC for the two comparison windows (for TV cross-check) ──
-      console.log('── Raw OHLC for TradingView comparison ────────────────────────────────────');
-      function dumpOHLC(label, startStr, endStr){
+      // ── Task 5: compact OHLC for TradingView comparison ─────────────────────
+      console.log('── SOLUSDT Binance OHLC key windows ─────────────────────────────────────');
+      function compactOHLC(label,startStr,endStr){
         const ws=new Date(startStr).getTime(), we=new Date(endStr).getTime();
         console.log(label+':');
-        perBar.filter(r=>r.t>=ws&&r.t<=we).forEach(r=>{
+        curPerBar.filter(r=>r.t>=ws&&r.t<=we).forEach(r=>{
           console.log('  '+_ts(r.t)+' | O='+_f4(r.open)+' H='+_f4(r.high)+' L='+_f4(r.low)+' C='+_f4(r.close));
         });
       }
-      dumpOHLC('2026-06-24 00:00 through 2026-06-26 20:00', '2026-06-24T00:00:00Z', '2026-06-26T20:00:00Z');
-      dumpOHLC('2026-06-28 00:00 through 2026-06-30 00:00', '2026-06-28T00:00:00Z', '2026-06-30T00:00:00Z');
-      console.log('  OHLC sourced from the same Binance closed-candle arrays calcUTBot consumes.');
+      compactOHLC('2026-06-24 to 2026-06-26','2026-06-24T00:00:00Z','2026-06-26T23:59:59Z');
+      compactOHLC('2026-06-28 to 2026-06-30','2026-06-28T00:00:00Z','2026-06-30T23:59:59Z');
       console.log('');
 
-      // ── calcUTBot() production return values ────────────────────────────────
-      console.log('calcUTBot() returned (production call):');
+      // ── Production calcUTBot() return values (unchanged call) ──────────────
+      console.log('calcUTBot() returned (production call, unchanged):');
       console.log('  direction   :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
       console.log('  freshSignal :', utBot.signal);
       console.log('  recentSignal:', utBot.recentSignal);
@@ -4099,7 +4248,7 @@ async function calcPair(symbol,tf){
   // Probe 3: expose OHLC, TR, ATR, nLoss, trail per bar across the 15-25 Jun
   // divergence window so raw values can be compared directly against TradingView.
   // Production utBot is unchanged — diagnostic only, no extra API calls.
-  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&tf==='4h'&&
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.legacyUtAuditEthLink&&tf==='4h'&&
      (symbol==='ETHUSDT'||symbol==='LINKUSDT')){
     (function(){
       const _f  =(v,d=4)=>v!=null&&isFinite(v)?v.toFixed(d):'—';
@@ -4166,8 +4315,10 @@ async function calcPair(symbol,tf){
     })();
 
     // ── Probe 4: Bitunix candle source audit (LAST_PRICE vs MARK_PRICE vs INDEX_PRICE) ──
-    // Extra API calls — DEBUG_MODE only. Production untouched.
-    auditBitunixCandleSources(symbol, tf).catch(e=>console.warn('[Probe4] '+symbol+': '+e.message));
+    // Extra API calls — DEBUG_MODE only. Production untouched. Gated independently.
+    if(DIAG.bitunixCandleSourceAudit){
+      auditBitunixCandleSources(symbol, tf).catch(e=>console.warn('[Probe4] '+symbol+': '+e.message));
+    }
   }
 
   const utLongConfirm  = utBot.direction===1  && (utBot.recentSignal==='long'  || utBot.signal==='long');
@@ -4245,7 +4396,7 @@ async function calcPair(symbol,tf){
     (signal==='long' ? aboveTrendSMA : !aboveTrendSMA)
   );
   // DEBUG_MODE: full score/conviction audit after Wilder RSI switch
-  if(DEBUG_MODE && signal!=='neutral'){
+  if(DEBUG_MODE && DIAG.scoreAudit && signal!=='neutral'){
     const _rsiOk=signal==='long'?rsiOk_long:rsiOk_short;
     const _str=score>=80?'Strong':score>=65?'Moderate':'Weak';
     console.log('[Score Audit]',symbol,tf,{
@@ -4298,7 +4449,7 @@ async function calcPair(symbol,tf){
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
   _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
-  if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE){
+  if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && DIAG.internalsAudit){
     console.debug('[TDAS Phase2 lifecycle]', _result.symbol||'', _result.lifecycle);
     console.debug('[TDAS Phase1 regime]', _result.symbol||'', {
       key:       _result.regime.key,
