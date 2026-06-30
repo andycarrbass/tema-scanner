@@ -3281,6 +3281,106 @@ function calcUTBotPineExactDiagnostic(highs,lows,closes,keyVal=4,atrPeriod=10,ti
 }
 
 
+// ── calcAtrPineV4Diagnostic ───────────────────────────────────────────────
+// DIAGNOSTIC ONLY. Standalone Pine v4 atr(c) / rma(tr,c) emulation —
+// independent of the existing ATR implementation, so it can be compared
+// directly rather than assumed identical.
+// Pine v4 atr(length): tr = max(high-low, abs(high-close[1]), abs(low-close[1]))
+//   (close[1] treated as na on bar 0 → tr[0] = high[0]-low[0])
+// rma(src, length): first value = sma(src, length) once `length` bars exist;
+//   thereafter rma := (rma[1]*(length-1) + src) / length. Returns na before that.
+function calcAtrPineV4Diagnostic(highs, lows, closes, period=10){
+  const n=closes.length;
+  const tr=new Array(n).fill(null);
+  tr[0]=highs[0]-lows[0];
+  for(let i=1;i<n;i++){
+    tr[i]=Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1]));
+  }
+  const atr=new Array(n).fill(null);
+  let sum=0;
+  for(let i=0;i<period && i<n;i++) sum+=tr[i];
+  if(n>=period){
+    atr[period-1]=sum/period; // Pine rma seed = sma(tr,period) on the period-th bar
+    for(let i=period;i<n;i++){
+      atr[i]=(atr[i-1]*(period-1)+tr[i])/period;
+    }
+  }
+  return { tr, atr };
+}
+
+// ── calcUTBotPineV4FullDiagnostic ─────────────────────────────────────────
+// DIAGNOSTIC ONLY. Independent second-pass UT Bot implementation built on
+// calcAtrPineV4Diagnostic (not the existing/production ATR path), to prove
+// or disprove ATR equivalence as the source of signal divergence.
+// Trail recursion, crossover semantics and Key Value/ATR Period match the
+// Pine v4 source exactly:
+//   xATRTrailingStop := iff(src>nz(prevTrail,0) and src[1]>nz(prevTrail,0), max(prevTrail,src-nLoss),
+//      iff(src<nz(prevTrail,0) and src[1]<nz(prevTrail,0), min(prevTrail,src+nLoss),
+//      iff(src>nz(prevTrail,0), src-nLoss, src+nLoss)))
+//   ema = ema(src,1) ≡ src (period-1 EMA is the identity function)
+//   above = crossover(ema, trail) = ema[1]<=trail[1] is NOT Pine's definition —
+//     Pine ta.crossover(a,b) := a[1]<b[1] and a>b (strict on the prior bar).
+//   buy  = src>trail and above
+//   sell = src<trail and below
+function calcUTBotPineV4FullDiagnostic(highs, lows, closes, keyVal=4, atrPeriod=10, times=null){
+  const n=closes.length;
+  if(n<atrPeriod+2) return {direction:0,trailLevel:0,barsAgoFlip:99,freshSignal:'none',recentSignal:'none',signals:[],perBar:[]};
+
+  const { atr } = calcAtrPineV4Diagnostic(highs, lows, closes, atrPeriod);
+
+  const trail=new Array(n).fill(0);
+  const sigs=[]; const perBar=[];
+
+  for(let i=1;i<n;i++){
+    const atrVal=atr[i];
+    if(atrVal===null){ trail[i]=0; perBar.push({i,t:times?times[i]:null,close:closes[i],atr:null,nLoss:null,prevTrail:trail[i-1],trail:0,dir:0,sig:'none'}); continue; }
+    const nLoss=keyVal*atrVal;
+    const prevT=trail[i-1];
+    const src=closes[i], prevSrc=closes[i-1];
+
+    if(src>prevT && prevSrc>prevT)       trail[i]=Math.max(prevT, src-nLoss);
+    else if(src<prevT && prevSrc<prevT)  trail[i]=Math.min(prevT, src+nLoss);
+    else if(src>prevT)                   trail[i]=src-nLoss;
+    else                                  trail[i]=src+nLoss;
+
+    // Pine ta.crossover(a,b): a[1]<b[1] and a>b (strict, prior-bar inequality)
+    const above = prevSrc<prevT && src>trail[i];
+    const below = prevT<prevSrc && trail[i]>src;
+    const buy  = src>trail[i] && above;
+    const sell = src<trail[i] && below;
+
+    let sig='none';
+    if(buy)  sig='long';
+    if(sell) sig='short';
+
+    const rec={i,t:times?times[i]:null,close:src,atr:atrVal,nLoss,prevTrail:prevT,trail:trail[i],
+      dir:src>trail[i]?1:-1,sig,above,below};
+    perBar.push(rec);
+    if(sig!=='none') sigs.push(rec);
+  }
+
+  const lastTrail=trail[n-1];
+  const direction=closes[n-1]>lastTrail?1:-1;
+
+  let barsAgoFlip=n;
+  if(sigs.length){
+    const lastIdx=sigs[sigs.length-1].i;
+    barsAgoFlip=n-1-lastIdx;
+  }
+  if(typeof barsAgoFlip!=='number'||isNaN(barsAgoFlip)) barsAgoFlip=99;
+
+  const recentCut=n-3;
+  let recentSignal='none', freshSignal='none';
+  for(let s=sigs.length-1;s>=0;s--){
+    if(sigs[s].i>=n-1) freshSignal=sigs[s].sig;
+    if(sigs[s].i>=recentCut&&recentSignal==='none') recentSignal=sigs[s].sig;
+    if(sigs[s].i<recentCut) break;
+  }
+
+  return {direction,trailLevel:lastTrail,barsAgoFlip,freshSignal,recentSignal,signals:sigs,perBar};
+}
+
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -4084,33 +4184,39 @@ async function calcPair(symbol,tf){
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
   const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,null);
 
-  // ── SOL UT BOT PARITY COMPARISON (DEBUG_MODE, SOLUSDT 4H only) ───────────
-  // CURRENT (production calcUTBot) vs PINE_EXACT (diagnostic-only Pine-literal
-  // implementation) compared side-by-side. Gated by DIAG.solUtPineParityAudit.
+  // ── SOL UT BOT PARITY COMPARISON v2 (DEBUG_MODE, SOLUSDT 4H only) ─────────
+  // CURRENT (production calcUTBot) vs PREVIOUS PineExact vs PINE_V4_FULL
+  // (independent ATR re-implementation). Gated by DIAG.solUtPineParityAudit.
   // Production utBot assignment is unchanged — this is observation only.
+  // Verdict logic fixed: previous build used .some() which trivially matched
+  // on a single coincidental date. This version requires the FULL expected
+  // sequence (Buy~14/15, Sell~25, Buy~29) to be present, in order, to pass.
   if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.solUtPineParityAudit&&symbol==='SOLUSDT'&&tf==='4h'){
     (function(){
       const _f4=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+      const _f6=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(6)):'—';
       const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
       const _dStr=(t)=>t?_ts(t).slice(0,10):'';
       const n=closedCloses.length;
       const closedOpens=raw.slice(0,-1).map(k=>k.open);
 
       console.log('');
-      console.log('══ SOL UT BOT PARITY COMPARISON | SOLUSDT | 4H ════════════════════════════');
-      console.log('Data source: Binance klines via SplitSourceAdapter');
+      console.log('══ SOL UT BOT PARITY COMPARISON v2 | SOLUSDT | 4H ═════════════════════════');
+      console.log('Data source: Binance klines via SplitSourceAdapter | Key Value=4, ATR Period=10');
       console.log('Closed candles:', n, '| First:', _ts(closedTimes[0]), '| Last:', _ts(closedTimes[n-1]));
       console.log('');
 
-      // ── CURRENT: re-derive using identical logic to production calcUTBot() ──
+      // ── CURRENT: identical to production calcUTBot() logic ──────────────────
       const trs=new Array(n).fill(0);
       for(let i=1;i<n;i++) trs[i]=Math.max(closedHighs[i]-closedLows[i],Math.abs(closedHighs[i]-closedCloses[i-1]),Math.abs(closedLows[i]-closedCloses[i-1]));
       let rma=0; for(let i=1;i<=10;i++) rma+=trs[i]; rma/=10;
       const curTrail=new Array(n).fill(0); curTrail[10]=closedCloses[10]-4*rma;
       let pc=closedCloses[10];
-      const curSigs=[]; const curPerBar=[];
+      const curPerBar=[];
+      const curAtrSeries=new Array(n).fill(null);
       for(let i=11;i<n;i++){
         rma=rma*9/10+trs[i]/10;
+        curAtrSeries[i]=rma;
         const nL=4*rma,prev=curTrail[i-1],c=closedCloses[i];
         if(c>prev&&closedCloses[i-1]>prev) curTrail[i]=Math.max(prev,c-nL);
         else if(c<prev&&closedCloses[i-1]<prev) curTrail[i]=Math.min(prev,c+nL);
@@ -4119,116 +4225,148 @@ async function calcPair(symbol,tf){
         let sig='none';
         if(pc<curTrail[i-1]&&c>curTrail[i]) sig='long';
         if(pc>curTrail[i-1]&&c<curTrail[i]) sig='short';
-        const rec={i,t:closedTimes[i],open:closedOpens[i],high:closedHighs[i],low:closedLows[i],
-          close:c,atr:rma,nLoss:nL,prevTrail:curTrail[i-1],trail:curTrail[i],
-          dir:c>curTrail[i]?1:-1,sig};
-        curPerBar.push(rec);
-        if(sig!=='none') curSigs.push(rec);
+        curPerBar.push({i,t:closedTimes[i],open:closedOpens[i],high:closedHighs[i],low:closedLows[i],
+          close:c,atr:rma,nLoss:nL,prevTrail:curTrail[i-1],trail:curTrail[i],dir:c>curTrail[i]?1:-1,sig});
         pc=c;
       }
+      const curSigs=curPerBar.filter(r=>r.sig!=='none');
 
-      // ── PINE_EXACT: diagnostic-only literal Pine bootstrap implementation ──
-      const pineResult=calcUTBotPineExactDiagnostic(closedHighs,closedLows,closedCloses,4,10,closedTimes);
-      // Build a per-bar lookup for PINE_EXACT trail values (bar index → trail)
-      // by re-running the same bootstrap inline so we can align rows with CURRENT.
-      const pTrs=new Array(n).fill(0); pTrs[0]=closedHighs[0]-closedLows[0];
-      for(let i=1;i<n;i++) pTrs[i]=Math.max(closedHighs[i]-closedLows[i],Math.abs(closedHighs[i]-closedCloses[i-1]),Math.abs(closedLows[i]-closedCloses[i-1]));
-      const pAtr=new Array(n).fill(null);
-      let pRma=0; for(let i=0;i<10;i++) pRma+=pTrs[i]; pRma/=10; pAtr[9]=pRma;
-      for(let i=10;i<n;i++){ pRma=pRma*9/10+pTrs[i]/10; pAtr[i]=pRma; }
-      const pTrail=new Array(n).fill(0);
-      const pinePerBar=[];
-      for(let i=1;i<n;i++){
-        const av=pAtr[i];
-        if(av===null){ pTrail[i]=0; pinePerBar.push({i,t:closedTimes[i],trail:0,sig:'none',dir:0}); continue; }
-        const nL=4*av,prevT=pTrail[i-1],src=closedCloses[i],prevSrc=closedCloses[i-1];
-        if(src>prevT&&prevSrc>prevT) pTrail[i]=Math.max(prevT,src-nL);
-        else if(src<prevT&&prevSrc<prevT) pTrail[i]=Math.min(prevT,src+nL);
-        else if(src>prevT) pTrail[i]=src-nL;
-        else pTrail[i]=src+nL;
-        const above=prevSrc<prevT&&src>pTrail[i];
-        const below=prevT<prevSrc&&pTrail[i]>src;
-        let sig='none';
-        if(src>pTrail[i]&&above) sig='long';
-        if(src<pTrail[i]&&below) sig='short';
-        pinePerBar.push({i,t:closedTimes[i],close:src,trail:pTrail[i],prevTrail:prevT,atr:av,nLoss:nL,dir:src>pTrail[i]?1:-1,sig,above,below});
-      }
+      // ── PREVIOUS PineExact: nz(prevTrail,0) bootstrap from bar 0 ────────────
+      const pineExact=calcUTBotPineExactDiagnostic(closedHighs,closedLows,closedCloses,4,10,closedTimes);
+      const pineExactSigs=(pineExact.signals||[]);
 
-      // ── Task 3: signal lists 10 Jun - 30 Jun ────────────────────────────────
+      // ── PINE_V4_FULL: independent ATR re-implementation ──────────────────────
+      const pineV4=calcUTBotPineV4FullDiagnostic(closedHighs,closedLows,closedCloses,4,10,closedTimes);
+      const pineV4Sigs=(pineV4.signals||[]);
+      const pineV4Atr=calcAtrPineV4Diagnostic(closedHighs,closedLows,closedCloses,10).atr;
+
+      // ── Task 2/3: ATR comparison table — only meaningful-diff or key-window rows ──
+      console.log('── ATR comparison: existing vs PineV4 (2026-06-10 to 2026-06-30) ──────────');
+      console.log('Only printing rows with |diff| > 0.001 or near 14/15, 24/25, 28/29 Jun:');
+      console.log('time | close | existingATR | pineV4ATR | diff | existingNLoss | pineV4NLoss');
       const RANGE_S=new Date('2026-06-10T00:00:00Z').getTime();
       const RANGE_E=new Date('2026-06-30T23:59:59Z').getTime();
-      const curRange=curSigs.filter(s=>s.t>=RANGE_S&&s.t<=RANGE_E);
-      const pineRange=pinePerBar.filter(s=>s.sig&&s.sig!=='none'&&s.t>=RANGE_S&&s.t<=RANGE_E);
+      const KEY_DAYS=['2026-06-14','2026-06-15','2026-06-24','2026-06-25','2026-06-28','2026-06-29'];
+      let atrDiffFound=false;
+      for(let i=11;i<n;i++){
+        const t=closedTimes[i];
+        if(t<RANGE_S||t>RANGE_E) continue;
+        const eAtr=curAtrSeries[i], pAtr=pineV4Atr[i];
+        const diff=(eAtr!=null&&pAtr!=null)?Math.abs(eAtr-pAtr):null;
+        const isKeyDay=KEY_DAYS.includes(_dStr(t));
+        if((diff!=null&&diff>0.001)||isKeyDay){
+          if(diff!=null&&diff>0.001) atrDiffFound=true;
+          console.log(_ts(t)+' | '+_f4(closedCloses[i])+' | '+_f6(eAtr)+' | '+_f6(pAtr)+' | '+_f6(diff)+
+            ' | '+_f4(eAtr!=null?4*eAtr:null)+' | '+_f4(pAtr!=null?4*pAtr:null));
+        }
+      }
+      console.log('Meaningful ATR difference found: '+(atrDiffFound?'YES':'NO (existing ATR matches PineV4 ATR)'));
+      console.log('');
+
+      // ── Task 5: three-way signal comparison ──────────────────────────────────
+      function inRange(t){ return t>=RANGE_S && t<=RANGE_E; }
+      const curRange=curSigs.filter(s=>inRange(s.t));
+      const pineExactRange=pineExactSigs.filter(s=>inRange(s.time));
+      const pineV4Range=pineV4Sigs.filter(s=>inRange(s.t));
 
       console.log('CURRENT calcUTBot signals (2026-06-10 to 2026-06-30):');
       if(curRange.length===0) console.log('  (none)');
       curRange.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
       console.log('');
 
-      console.log('PINE_EXACT diagnostic signals (2026-06-10 to 2026-06-30):');
-      if(pineRange.length===0) console.log('  (none)');
-      pineRange.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
+      console.log('PREVIOUS PineExact diagnostic signals (2026-06-10 to 2026-06-30):');
+      if(pineExactRange.length===0) console.log('  (none)');
+      pineExactRange.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.time)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
       console.log('');
 
-      console.log('TradingView-visible expected: Buy ~14-15 Jun, Sell ~25 Jun, Buy ~29 Jun');
+      console.log('PINE_V4_FULL diagnostic signals (2026-06-10 to 2026-06-30):');
+      if(pineV4Range.length===0) console.log('  (none)');
+      pineV4Range.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
       console.log('');
 
-      // ── Comparison summary ───────────────────────────────────────────────
-      const tvDates=['2026-06-14','2026-06-15','2026-06-25','2026-06-29'];
-      const curMatchesTv = curRange.some(s=>tvDates.includes(_dStr(s.t)));
-      const pineMatchesTv = pineRange.some(s=>tvDates.includes(_dStr(s.t)));
-      const curPineIdentical = curRange.length===pineRange.length &&
-        curRange.every((s,idx)=>pineRange[idx]&&s.t===pineRange[idx].t&&s.sig===pineRange[idx].sig);
-
-      console.log('Comparison:');
-      console.log('  Current matches TradingView dates?   '+(curMatchesTv?'YES':'NO'));
-      console.log('  PineExact matches TradingView dates? '+(pineMatchesTv?'YES':'NO'));
-      console.log('  Current vs PineExact identical?      '+(curPineIdentical?'YES':'NO'));
+      console.log('TradingView-visible expected: BUY ~14/15 Jun, SELL ~25 Jun, BUY ~29 Jun');
       console.log('');
 
-      // ── Task 4: side-by-side divergence rows for key windows ───────────────
-      function sideBySide(label,startStr,endStr){
-        const ws=new Date(startStr).getTime(), we=new Date(endStr).getTime();
-        console.log('── '+label+' ('+startStr+' to '+endStr+') ──────────────────────────────');
-        console.log('time | close | curTrail | pineTrail | curSig | pineSig | curDir | pineDir');
-        const rows=curPerBar.filter(r=>r.t>=ws&&r.t<=we);
-        rows.forEach(r=>{
-          const p=pinePerBar.find(x=>x.t===r.t);
-          const diverges = !p || r.sig!==p.sig || Math.abs(r.trail-(p.trail||0))>0.01;
-          const isExpected = tvDates.includes(_dStr(r.t));
-          const marker = diverges?' << DIVERGE':(isExpected?' << TV EXPECTED':'');
-          console.log(
-            _ts(r.t)+' | '+_f4(r.close)+
-            ' | '+_f4(r.trail)+' | '+_f4(p?p.trail:null)+
-            ' | '+(r.sig==='none'?'—':r.sig.toUpperCase())+' | '+(p&&p.sig&&p.sig!=='none'?p.sig.toUpperCase():'—')+
-            ' | '+(r.dir===1?'bull':'bear')+' | '+(p?(p.dir===1?'bull':'bear'):'—')+
-            marker
-          );
-          // Full ATR/nLoss detail only where it diverges or TV expects an event
-          if(diverges||isExpected){
-            console.log('    [detail] curATR='+_f4(r.atr)+' curNL='+_f4(r.nLoss)+' curPrevTrail='+_f4(r.prevTrail)+
-              ' | pineATR='+_f4(p?p.atr:null)+' pineNL='+_f4(p?p.nLoss:null)+' pinePrevTrail='+_f4(p?p.prevTrail:null));
-          }
-        });
-        console.log('');
+      // ── Corrected verdict: requires the FULL expected sequence, in order ────
+      // A series "matches" only if it contains, in chronological order:
+      //   1 BUY within 14-15 Jun, then 1 SELL within 25 Jun (±1 day), then 1 BUY within 29 Jun (±1 day)
+      function matchesExpectedSequence(sigList, getDate, getSig){
+        const buy1 = sigList.find(s=>['2026-06-14','2026-06-15'].includes(getDate(s)) && getSig(s)==='long');
+        if(!buy1) return false;
+        const sell1 = sigList.find(s=>['2026-06-24','2026-06-25','2026-06-26'].includes(getDate(s)) && getSig(s)==='short' && getDate(s)>=getDate(buy1));
+        if(!sell1) return false;
+        const buy2 = sigList.find(s=>['2026-06-28','2026-06-29','2026-06-30'].includes(getDate(s)) && getSig(s)==='long' && getDate(s)>=getDate(sell1));
+        if(!buy2) return false;
+        return true;
       }
-      sideBySide('Sell window','2026-06-24T00:00:00Z','2026-06-26T23:59:59Z');
-      sideBySide('Buy window', '2026-06-28T00:00:00Z','2026-06-30T23:59:59Z');
+      const curMatch    = matchesExpectedSequence(curRange, s=>_dStr(s.t), s=>s.sig);
+      const pineExMatch = matchesExpectedSequence(pineExactRange, s=>_dStr(s.time), s=>s.sig);
+      const pineV4Match = matchesExpectedSequence(pineV4Range, s=>_dStr(s.t), s=>s.sig);
+      const curVsV4Identical = curRange.length===pineV4Range.length &&
+        curRange.every((s,idx)=>pineV4Range[idx]&&s.t===pineV4Range[idx].t&&s.sig===pineV4Range[idx].sig);
 
-      // ── Task 5: compact OHLC for TradingView comparison ─────────────────────
-      console.log('── SOLUSDT Binance OHLC key windows ─────────────────────────────────────');
-      function compactOHLC(label,startStr,endStr){
-        const ws=new Date(startStr).getTime(), we=new Date(endStr).getTime();
-        console.log(label+':');
-        curPerBar.filter(r=>r.t>=ws&&r.t<=we).forEach(r=>{
-          console.log('  '+_ts(r.t)+' | O='+_f4(r.open)+' H='+_f4(r.high)+' L='+_f4(r.low)+' C='+_f4(r.close));
-        });
-      }
-      compactOHLC('2026-06-24 to 2026-06-26','2026-06-24T00:00:00Z','2026-06-26T23:59:59Z');
-      compactOHLC('2026-06-28 to 2026-06-30','2026-06-28T00:00:00Z','2026-06-30T23:59:59Z');
+      console.log('Verdict (requires full BUY→SELL→BUY sequence in expected windows, not just any one matching date):');
+      console.log('  Current matches TV?          '+(curMatch?'MATCH':'NO MATCH'));
+      console.log('  Previous PineExact matches TV? '+(pineExMatch?'MATCH':'NO MATCH'));
+      console.log('  PineV4Full matches TV?       '+(pineV4Match?'MATCH':'NO MATCH'));
+      console.log('  Current vs PineV4Full identical? '+(curVsV4Identical?'YES':'NO'));
       console.log('');
 
-      // ── Production calcUTBot() return values (unchanged call) ──────────────
+      // ── First divergence point between CURRENT and PINE_V4_FULL ────────────
+      let firstDivIdx=null;
+      for(let i=11;i<n;i++){
+        const cRec=curPerBar.find(r=>r.i===i);
+        const vRec=pineV4.perBar.find(r=>r.i===i);
+        if(!cRec||!vRec) continue;
+        if(Math.abs(cRec.trail-vRec.trail)>0.0001 || cRec.sig!==vRec.sig){ firstDivIdx=i; break; }
+      }
+      if(firstDivIdx!=null){
+        const cRec=curPerBar.find(r=>r.i===firstDivIdx);
+        const vRec=pineV4.perBar.find(r=>r.i===firstDivIdx);
+        console.log('First CURRENT vs PINE_V4_FULL divergence: '+_ts(closedTimes[firstDivIdx]));
+        console.log('  CURRENT  : trail='+_f4(cRec.trail)+' sig='+cRec.sig+' ATR='+_f6(cRec.atr));
+        console.log('  PINE_V4  : trail='+_f4(vRec.trail)+' sig='+vRec.sig+' ATR='+_f6(vRec.atr));
+      } else {
+        console.log('No divergence found between CURRENT and PINE_V4_FULL across the full closed-candle array.');
+        console.log('(This would mean existing ATR is equivalent to PineV4 ATR — divergence vs TradingView is data, not formula.)');
+      }
+      console.log('');
+
+      // ── Task 6: Data Window comparison for specific suspected bars ──────────
+      console.log('── Data Window comparison: suspected bars ──────────────────────────────');
+      const TARGET_BARS=[
+        '2026-06-18 12:00','2026-06-21 16:00','2026-06-23 16:00',
+        '2026-06-25 00:00','2026-06-25 04:00','2026-06-25 12:00',
+        '2026-06-26 16:00','2026-06-29 12:00','2026-06-29 16:00'
+      ];
+      console.log('time | O | H | L | C | src | TR | existingATR | pineV4ATR | nLoss | trail | prevTrail | buy | sell | dir');
+      curPerBar.forEach(r=>{
+        const tStr=_ts(r.t).replace(' UTC','');
+        if(!TARGET_BARS.includes(tStr)) return;
+        const vRec=pineV4.perBar.find(x=>x.i===r.i);
+        const trVal=trs[r.i];
+        const buy = vRec? (vRec.sig==='long') : (r.sig==='long');
+        const sell= vRec? (vRec.sig==='short'): (r.sig==='short');
+        console.log(
+          _ts(r.t)+' | O='+_f4(r.open)+' H='+_f4(r.high)+' L='+_f4(r.low)+' C='+_f4(r.close)+
+          ' | src='+_f4(r.close)+' | TR='+_f4(trVal)+
+          ' | eATR='+_f6(r.atr)+' | pATR='+_f6(vRec?vRec.atr:null)+
+          ' | nL='+_f4(r.nLoss)+' | trail='+_f4(r.trail)+' | prevTrail='+_f4(r.prevTrail)+
+          ' | buy='+buy+' | sell='+sell+' | dir='+(r.dir===1?'bull':'bear')
+        );
+      });
+      console.log('');
+
+      // ── Task 7: compact OHLC for the same target bars ────────────────────────
+      console.log('── Compact OHLC for target bars (compare against TradingView Data Window) ──');
+      curPerBar.forEach(r=>{
+        const tStr=_ts(r.t).replace(' UTC','');
+        if(!TARGET_BARS.includes(tStr)) return;
+        console.log('  '+_ts(r.t)+' | O='+_f4(r.open)+' H='+_f4(r.high)+' L='+_f4(r.low)+' C='+_f4(r.close));
+      });
+      console.log('');
+
+      // ── Production calcUTBot() return values (unchanged call) ───────────────
       console.log('calcUTBot() returned (production call, unchanged):');
       console.log('  direction   :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
       console.log('  freshSignal :', utBot.signal);
