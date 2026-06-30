@@ -3189,7 +3189,7 @@ async function auditBitunixCandleSources(symbol, interval){
 // ── Diagnostic mode ─────────────────────────────────────────────────────
 // Set to true to re-enable UT Bot candle traces and per-signal forensic logs.
 // Must be false in production.
-const DEBUG_MODE = false;
+const DEBUG_MODE = true; // diagnostic build — SOL UT freshness audit — set back to false before production deploy
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
 
@@ -3969,6 +3969,73 @@ async function calcPair(symbol,tf){
   const closedCloses=closes.slice(0,-1);
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
   const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,null);
+
+  // ── SOL UT FRESHNESS AUDIT (DEBUG_MODE, SOLUSDT 4H only) ─────────────────
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&symbol==='SOLUSDT'&&tf==='4h'){
+    (function(){
+      const _f4=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+      const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+      const n=closedCloses.length;
+      console.log('');
+      console.log('══ SOL UT FRESHNESS AUDIT | SOLUSDT | 4H ═══════════════════════════════');
+      console.log('Data source: Binance klines (SplitSourceAdapter)');
+      console.log('Closed candles available:', n);
+      console.log('');
+      // Last 10 candles: timestamp, close, trail, direction
+      console.log('Last 10 closed candles (re-deriving trail inline):');
+      console.log('ts                    | close    | trail    | dir  | sig');
+      // Re-derive trail for last 10 bars using same calcUTBot logic
+      const trs=new Array(n).fill(0);
+      for(let i=1;i<n;i++) trs[i]=Math.max(closedHighs[i]-closedLows[i],Math.abs(closedHighs[i]-closedCloses[i-1]),Math.abs(closedLows[i]-closedCloses[i-1]));
+      let rma=0; for(let i=1;i<=10;i++) rma+=trs[i]; rma/=10;
+      const tr2=new Array(n).fill(0); tr2[10]=closedCloses[10]-4*rma;
+      let pc2=closedCloses[10];
+      const sigs=[];
+      for(let i=11;i<n;i++){
+        rma=rma*9/10+trs[i]/10;
+        const nL=4*rma,prev=tr2[i-1],c=closedCloses[i];
+        if(c>prev&&closedCloses[i-1]>prev) tr2[i]=Math.max(prev,c-nL);
+        else if(c<prev&&closedCloses[i-1]<prev) tr2[i]=Math.min(prev,c+nL);
+        else if(c>prev) tr2[i]=c-nL;
+        else tr2[i]=c+nL;
+        let sig='none';
+        if(pc2<tr2[i-1]&&c>tr2[i]) sig='long';
+        if(pc2>tr2[i-1]&&c<tr2[i]) sig='short';
+        if(sig!=='none') sigs.push({i,sig,t:closedTimes[i],c,trail:tr2[i],pc:pc2,pt:tr2[i-1]});
+        pc2=c;
+      }
+      // Print last 10 bars
+      for(let i=Math.max(11,n-10);i<n;i++){
+        const dir=closedCloses[i]>tr2[i]?'bull':'bear';
+        const sigLabel=sigs.find(s=>s.i===i);
+        console.log(_ts(closedTimes[i])+' | '+_f4(closedCloses[i])+' | '+_f4(tr2[i])+' | '+dir+' | '+(sigLabel?sigLabel.sig.toUpperCase():'—'));
+      }
+      console.log('');
+      // All signals in last 30 bars
+      console.log('All signals in last 30 bars (barsAgo from end of closed array):');
+      const last30sigs=sigs.filter(s=>s.i>=n-30);
+      if(last30sigs.length===0) console.log('  (none)');
+      last30sigs.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | barsAgo='+(n-1-s.i)+' | c='+_f4(s.c)+' | trail='+_f4(s.trail)));
+      console.log('');
+      // calcUTBot returned values
+      console.log('calcUTBot() returned:');
+      console.log('  direction   :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
+      console.log('  freshSignal :', utBot.signal);
+      console.log('  recentSignal:', utBot.recentSignal);
+      console.log('  barsAgoFlip :', utBot.barsAgoFlip);
+      console.log('  trailLevel  :', _f4(utBot.trailLevel));
+      console.log('  prevTrailLvl:', _f4(utBot.prevTrailLevel));
+      console.log('');
+      // What the card displays
+      const baf=utBot.barsAgoFlip??99;
+      const freshnessLabel=baf===0?'this bar ⚡':baf+'b · '+(baf<=3?'Fresh':baf<=8?'Workable':'Stale');
+      console.log('Card display: UT Bot '+(utBot.direction===1?'Bullish':'Bearish')+' · '+freshnessLabel);
+      console.log('  → barsAgoFlip='+baf+' drives the "'+baf+'b · '+(baf<=3?'Fresh':baf<=8?'Workable':'Stale')+'" label');
+      console.log('  → barsAgoFlip = bars since last signal of ANY type (buy or sell)');
+      console.log('  → if last signal was a SELL, barsAgoFlip counts from that sell, not the current bullish direction');
+      console.log('');
+    })();
+  }
 
   // ── DIAGNOSTIC PROBE 3: OHLC / ATR / Trail Audit (DEBUG_MODE, ETH/LINK 4H) ─
   // Probes 1+2 ruled out candle slicing and trail initialisation.
