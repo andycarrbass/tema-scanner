@@ -9035,21 +9035,20 @@ function _updateScannerStatusBar(){
   const _cfg = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
   const _sigSrc  = _cfg.signalSource  || _cfg.label || ACTIVE_EXCHANGE;
   const _priceSrc = _cfg.priceSource  || _cfg.label || ACTIVE_EXCHANGE;
+  // Timestamp styled same weight as signal age — bright, not noisy
   const priceSegment = _livePriceMs
-    ? sep + '<span>Prices: '+_priceSrc+' live @ '
+    ? sep + '<span>Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '
       + new Date(_livePriceMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
-      + '</span>'
+      + '</span></span>'
     : '';
 
-  // Line 1: dynamic status (signal age + live price timestamp)
-  // Line 2: static methodology note — always on its own line, secondary colour
+  // Single status line only — source disclosure lives in footer/diag bar
   bar.style.display = 'block';
   bar.innerHTML =
-    '<div style="display:flex;align-items:center;flex-wrap:wrap;margin-bottom:3px;">'
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;">'
       + '<span>Signals: '+_sigSrc+' candles, <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span></span>'
       + priceSegment
-    + '</div>'
-    + '<div style="color:var(--text3);">Signals use closed '+_sigSrc+' candles &middot; Execution: '+(_cfg.executionVenue||_cfg.label||ACTIVE_EXCHANGE)+'</div>';
+    + '</div>';
 }
 
 // Tick every 30s to keep signal age current — zero API calls
