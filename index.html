@@ -3613,11 +3613,61 @@ const DIAG = {
   legacyUtDiagnosticFixed:   false,  // [UT Bot Diagnostic FIXED] per-bar dump inside calcUTBot (debugSymbol arg)
   internalsAudit:            false,  // [TDAS Phase0/1/1.5/2] computeStates/regime/evaluation/lifecycle internals
   solUtPineParityAudit:      false,  // SOL UT BOT PARITY COMPARISON (CURRENT vs PINE_EXACT) — already proved formula equivalence, off for now
-  solCandleBakeOff:          true,   // SOL CANDLE SOURCE BAKE-OFF (Binance Spot/Futures vs Bitunix LAST/MARK) — current focus
+  solCandleBakeOff:          false,  // SOL CANDLE SOURCE BAKE-OFF (Binance Spot/Futures vs Bitunix LAST/MARK) — served its purpose, root cause found (HA)
+  solHaSourceValidation:     true,   // SOL UT BOT HA-SOURCE VALIDATION — current focus
   dataSourceAudit:           true,   // [DataSource] concise klines/ticker source confirmation
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
+
+// ── UT Bot configuration ────────────────────────────────────────────────
+// Centralised so Key Value / ATR Period / candle source mode are visible
+// and adjustable in one place. UT_BOT_SOURCE_MODE applies to UT Bot ONLY —
+// TEMA, RSI, ADX, SMA200, regime, and all other indicators always use
+// normal exchange OHLC candles regardless of this setting.
+const UT_BOT_KEY_VALUE   = 4;
+const UT_BOT_ATR_PERIOD  = 10;
+const UT_BOT_SOURCE_MODE = 'heikin_ashi'; // 'standard' | 'heikin_ashi'
+
+// ── buildHeikinAshiCandles ───────────────────────────────────────────────
+// Pure transform. Input: array of normalised candles {time,open,high,low,
+// close,volume,quoteVolume}. Output: same shape and length, OHLC replaced
+// with Heikin Ashi values. Does not mutate the input array or its objects.
+//   haClose = (open + high + low + close) / 4
+//   haOpen[0] = (open[0] + close[0]) / 2
+//   haOpen[i] = (haOpen[i-1] + haClose[i-1]) / 2   for i > 0
+//   haHigh = max(high, haOpen, haClose)
+//   haLow  = min(low,  haOpen, haClose)
+// time, volume, quoteVolume are carried through unchanged for traceability.
+function buildHeikinAshiCandles(candles){
+  const n = candles.length;
+  const out = new Array(n);
+  let prevHaOpen = null, prevHaClose = null;
+  for(let i=0;i<n;i++){
+    const c = candles[i];
+    const haClose = (c.open + c.high + c.low + c.close) / 4;
+    const haOpen  = i===0 ? (c.open + c.close) / 2 : (prevHaOpen + prevHaClose) / 2;
+    const haHigh  = Math.max(c.high, haOpen, haClose);
+    const haLow   = Math.min(c.low,  haOpen, haClose);
+    out[i] = {
+      time:        c.time,
+      open:        haOpen,
+      high:        haHigh,
+      low:         haLow,
+      close:       haClose,
+      volume:      c.volume,
+      quoteVolume: c.quoteVolume,
+      closed:      c.closed,
+      _sourceOpen:  c.open,   // original values retained for debugging only
+      _sourceHigh:  c.high,
+      _sourceLow:   c.low,
+      _sourceClose: c.close,
+    };
+    prevHaOpen = haOpen;
+    prevHaClose = haClose;
+  }
+  return out;
+}
 
 // ── Normalised candle contract ────────────────────────────────────────────
 // Both adapters MUST return candles in this shape. calcPair() reads only
@@ -4388,13 +4438,153 @@ async function calcPair(symbol,tf){
   // UT Bot (Key Value 4, ATR Period 10)
   // Uses only closed candles from the 600-bar main fetch to match TradingView behaviour.
   // Pine-exact logic: ATR RMA carried forward as a scalar, strict crossover inequalities.
-  // Note: TDAS ATR will differ from Pine's full-history RMA — this is a known characteristic
-  // of a finite candle window vs Pine's chart-history RMA. Signal timing may vary by 1-3 bars.
+  //
+  // Candle source split: UT Bot consumes Heikin Ashi candles (when
+  // UT_BOT_SOURCE_MODE='heikin_ashi') because the validated TradingView UT
+  // Bot chart uses HA candles as a noise filter. ALL OTHER indicators below
+  // (TEMA, RSI, ADX, SMA200, regime) continue to use normal exchange OHLC —
+  // closedHighs/closedLows/closedCloses are NOT touched by this and remain
+  // the normal-candle series consumed elsewhere in this function.
   const closedHighs=highs.slice(0,-1);
   const closedLows=lows.slice(0,-1);
   const closedCloses=closes.slice(0,-1);
   const closedTimes=raw.slice(0,-1).map(k=>k.time);
-  const utBot=calcUTBot(closedHighs,closedLows,closedCloses,4,10,closedTimes,null);
+
+  // UT-Bot-only candle source — normal or Heikin Ashi, per UT_BOT_SOURCE_MODE.
+  // closedCandlesNormal carries time/open/high/low/close/volume for the
+  // transform; closedHighs/Lows/Closes (above) remain the normal series used
+  // by every other indicator in this function and are never reassigned.
+  const closedCandlesNormal = raw.slice(0,-1);
+  const utSourceCandles = UT_BOT_SOURCE_MODE === 'heikin_ashi'
+    ? buildHeikinAshiCandles(closedCandlesNormal)
+    : closedCandlesNormal;
+  const utHighs  = utSourceCandles.map(c=>c.high);
+  const utLows   = utSourceCandles.map(c=>c.low);
+  const utCloses = utSourceCandles.map(c=>c.close);
+  const utTimes  = utSourceCandles.map(c=>c.time);
+
+  const utBot=calcUTBot(utHighs,utLows,utCloses,UT_BOT_KEY_VALUE,UT_BOT_ATR_PERIOD,utTimes,null);
+  // ── SOL UT BOT HA-SOURCE VALIDATION (DEBUG_MODE, SOLUSDT 4H only) ─────────
+  // Confirms: (a) UT Bot now runs on Heikin Ashi candles, (b) TEMA/RSI/ADX
+  // remain on normal candles (verified by inspecting the same closedHighs/
+  // closedLows/closedCloses arrays used elsewhere in calcPair), (c) the HA
+  // close calculation on the disputed candle matches TradingView's HA Data
+  // Window, (d) the HA-source UT signal sequence vs the prior standard-source
+  // sequence vs TradingView's expected HA labels.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.solHaSourceValidation&&symbol==='SOLUSDT'&&tf==='4h'){
+    (function(){
+      const _f4=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+      const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+      const _dStr=(t)=>t?_ts(t).slice(0,10):'';
+
+      console.log('');
+      console.log('══ SOL UT BOT HA-SOURCE VALIDATION | SOLUSDT | 4H ══════════════════════════');
+      console.log('Market candles: normal OHLC');
+      console.log('UT Bot source: '+(UT_BOT_SOURCE_MODE==='heikin_ashi'?'Heikin Ashi':'standard (normal OHLC)'));
+      console.log('TEMA/RSI/ADX source: normal OHLC (unchanged — confirmed via closedHighs/closedLows/closedCloses)');
+      console.log('Key Value: '+UT_BOT_KEY_VALUE+' | ATR Period: '+UT_BOT_ATR_PERIOD);
+      console.log('');
+
+      // ── Task 6: confirm the disputed candle's HA transform ─────────────────
+      const PRIMARY='2026-06-18 12:00';
+      const TV_HA = { o:71.56, h:71.76, l:68.32, c:69.85 }; // TradingView HA Data Window (approx, per task)
+      const normIdx = closedCandlesNormal.findIndex(c=>_ts(c.time)===PRIMARY);
+      const haIdx   = utSourceCandles.findIndex(c=>_ts(c.time)===PRIMARY);
+
+      console.log('── Disputed candle: '+PRIMARY+' UTC ────────────────────────────────────────');
+      if(normIdx>=0){
+        const nC=closedCandlesNormal[normIdx];
+        console.log('Normal source candle:');
+        console.log('  O='+_f4(nC.open)+' H='+_f4(nC.high)+' L='+_f4(nC.low)+' C='+_f4(nC.close));
+      } else {
+        console.log('Normal source candle: NOT FOUND in current window');
+      }
+      if(haIdx>=0){
+        const hC=utSourceCandles[haIdx];
+        console.log('Heikin Ashi source candle:');
+        console.log('  O='+_f4(hC.open)+' H='+_f4(hC.high)+' L='+_f4(hC.low)+' C='+_f4(hC.close));
+        console.log('TradingView HA Data Window (reference): O≈'+TV_HA.o+' H≈'+TV_HA.h+' L≈'+TV_HA.l+' C≈'+TV_HA.c);
+        const near=(a,b,tol=0.10)=>a!=null&&b!=null&&Math.abs(a-b)<tol;
+        const oM=near(hC.open,TV_HA.o), hM=near(hC.high,TV_HA.h), lM=near(hC.low,TV_HA.l), cM=near(hC.close,TV_HA.c);
+        console.log('HA match (tolerance 0.10): O='+(oM?'YES':'NO')+' H='+(hM?'YES':'NO')+' L='+(lM?'YES':'NO')+' C='+(cM?'YES':'NO'));
+      } else {
+        console.log('Heikin Ashi source candle: NOT FOUND in current window');
+      }
+      console.log('');
+
+      // ── STANDARD-source UT signals (re-derive from normal candles, same logic) ──
+      function deriveSignals(srcCloses, srcHighs, srcLows, srcTimes){
+        const n=srcCloses.length;
+        const trs=new Array(n).fill(0);
+        for(let i=1;i<n;i++) trs[i]=Math.max(srcHighs[i]-srcLows[i],Math.abs(srcHighs[i]-srcCloses[i-1]),Math.abs(srcLows[i]-srcCloses[i-1]));
+        let rma=0; for(let i=1;i<=UT_BOT_ATR_PERIOD;i++) rma+=trs[i]; rma/=UT_BOT_ATR_PERIOD;
+        const trail=new Array(n).fill(0); trail[UT_BOT_ATR_PERIOD]=srcCloses[UT_BOT_ATR_PERIOD]-UT_BOT_KEY_VALUE*rma;
+        let pc=srcCloses[UT_BOT_ATR_PERIOD]; const sigs=[];
+        for(let i=UT_BOT_ATR_PERIOD+1;i<n;i++){
+          rma=rma*(UT_BOT_ATR_PERIOD-1)/UT_BOT_ATR_PERIOD+trs[i]/UT_BOT_ATR_PERIOD;
+          const nL=UT_BOT_KEY_VALUE*rma,prev=trail[i-1],c=srcCloses[i];
+          if(c>prev&&srcCloses[i-1]>prev) trail[i]=Math.max(prev,c-nL);
+          else if(c<prev&&srcCloses[i-1]<prev) trail[i]=Math.min(prev,c+nL);
+          else if(c>prev) trail[i]=c-nL;
+          else trail[i]=c+nL;
+          let sig='none';
+          if(pc<trail[i-1]&&c>trail[i]) sig='long';
+          if(pc>trail[i-1]&&c<trail[i]) sig='short';
+          if(sig!=='none') sigs.push({t:srcTimes[i],sig,close:c,trail:trail[i]});
+          pc=c;
+        }
+        return sigs;
+      }
+      const standardSigs = deriveSignals(closedCloses, closedHighs, closedLows, closedTimes);
+      const haSigs        = deriveSignals(utCloses, utHighs, utLows, utTimes);
+
+      const RANGE_S=new Date('2026-06-10T00:00:00Z').getTime();
+      const RANGE_E=new Date('2026-06-30T23:59:59Z').getTime();
+      const stdRange = standardSigs.filter(s=>s.t>=RANGE_S&&s.t<=RANGE_E);
+      const haRange   = haSigs.filter(s=>s.t>=RANGE_S&&s.t<=RANGE_E);
+
+      console.log('STANDARD-source UT signals (2026-06-10 to 2026-06-30):');
+      if(stdRange.length===0) console.log('  (none)');
+      stdRange.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
+      console.log('');
+
+      console.log('HA-source UT signals (2026-06-10 to 2026-06-30):');
+      if(haRange.length===0) console.log('  (none)');
+      haRange.forEach(s=>console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | close='+_f4(s.close)+' | trail='+_f4(s.trail)));
+      console.log('');
+
+      console.log('TradingView HA UT expected: BUY ~14/15 Jun, SELL ~25 Jun, BUY ~29 Jun');
+      console.log('');
+
+      // ── Sequence-match verdict (full BUY→SELL→BUY required, not .some()) ──
+      function matchesExpectedSequence(sigList){
+        const buy1 = sigList.find(s=>['2026-06-14','2026-06-15'].includes(_dStr(s.t)) && s.sig==='long');
+        if(!buy1) return false;
+        const sell1 = sigList.find(s=>['2026-06-24','2026-06-25','2026-06-26'].includes(_dStr(s.t)) && s.sig==='short' && s.t>=buy1.t);
+        if(!sell1) return false;
+        const buy2 = sigList.find(s=>['2026-06-28','2026-06-29','2026-06-30'].includes(_dStr(s.t)) && s.sig==='long' && s.t>=sell1.t);
+        if(!buy2) return false;
+        return true;
+      }
+      const stdMatch = matchesExpectedSequence(stdRange);
+      const haMatch  = matchesExpectedSequence(haRange);
+
+      console.log('Verdict:');
+      console.log('  Standard-source UT matches TradingView HA chart? '+(stdMatch?'YES':'NO'));
+      console.log('  HA-source UT matches TradingView HA chart?       '+(haMatch?'YES':'NO'));
+      console.log('');
+
+      // ── Production calcUTBot() return values (now HA-sourced, unchanged call site) ──
+      console.log('calcUTBot() returned (production call, now HA-sourced):');
+      console.log('  direction   :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
+      console.log('  freshSignal :', utBot.signal);
+      console.log('  recentSignal:', utBot.recentSignal);
+      console.log('  barsAgoFlip :', utBot.barsAgoFlip);
+      console.log('  trailLevel  :', _f4(utBot.trailLevel));
+      console.log('');
+    })();
+  }
+
 
   // ── SOL UT BOT PARITY COMPARISON v2 (DEBUG_MODE, SOLUSDT 4H only) ─────────
   // CURRENT (production calcUTBot) vs PREVIOUS PineExact vs PINE_V4_FULL
@@ -4854,7 +5044,7 @@ function buildSnapshot(symbol) {
   const tf_val   = document.getElementById('tf') ? document.getElementById('tf').value : '4H';
   const _xcfg    = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
   const exchange  = _xcfg.signalSource
-    ? 'Signal candles: '+_xcfg.signalSource+' | Live price: '+(_xcfg.priceSource||_xcfg.label)+' | Execution: '+(_xcfg.executionVenue||_xcfg.label)
+    ? 'Signal candles: '+_xcfg.signalSource+' | UT Bot: '+(UT_BOT_SOURCE_MODE==='heikin_ashi'?'HA source':'standard')+' · KV'+UT_BOT_KEY_VALUE+' ATR'+UT_BOT_ATR_PERIOD+' | Live price: '+(_xcfg.priceSource||_xcfg.label)+' | Execution: '+(_xcfg.executionVenue||_xcfg.label)
     : (_xcfg.label || ACTIVE_EXCHANGE);
   const label    = LABELS[symbol] || symbol;
 
@@ -4927,7 +5117,7 @@ function buildSnapshotFromTrade(entry) {
   const d   = currentScanData[entry.symbol] || {};
   const _xcfg    = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
   const exchange  = _xcfg.signalSource
-    ? 'Signal candles: '+_xcfg.signalSource+' | Live price: '+(_xcfg.priceSource||_xcfg.label)+' | Execution: '+(_xcfg.executionVenue||_xcfg.label)
+    ? 'Signal candles: '+_xcfg.signalSource+' | UT Bot: '+(UT_BOT_SOURCE_MODE==='heikin_ashi'?'HA source':'standard')+' · KV'+UT_BOT_KEY_VALUE+' ATR'+UT_BOT_ATR_PERIOD+' | Live price: '+(_xcfg.priceSource||_xcfg.label)+' | Execution: '+(_xcfg.executionVenue||_xcfg.label)
     : (_xcfg.label || ACTIVE_EXCHANGE);
   const label    = LABELS[entry.symbol] || entry.symbol;
   const livePrice = d.price || null;
@@ -5940,7 +6130,7 @@ function openAnalysisPanel(symbol){
 
     <!-- UT Bot detail -->
     <div class="ap-section">
-      <div class="ap-section-title">UT Bot Alert · KV 4 · ATR 10</div>
+      <div class="ap-section-title">UT Bot Alert · KV ${UT_BOT_KEY_VALUE} · ATR ${UT_BOT_ATR_PERIOD}${UT_BOT_SOURCE_MODE==='heikin_ashi'?' · HA source':''}</div>
       <div class="ap-row"><span>Direction</span><span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span></div>
       <div class="ap-row"><span>Trail stop level</span><span>${fmt(_utBot.trailLevel)}</span></div>
       <div class="ap-row"><span>Last signal event</span><span style="color:${(_utBot.barsAgoFlip??99)<=3?'var(--green-text)':(_utBot.barsAgoFlip??99)<=8?'var(--amber-text)':'var(--red-text)'};">${(()=>{const _sig=_utBot.signal!=='none'?_utBot.signal:_utBot.recentSignal!=='none'?_utBot.recentSignal:null;const _sigLabel=_sig==='long'?'Buy ▲':_sig==='short'?'Sell ▼':'None';const _age=_utBot.barsAgoFlip??99;return _age===0?_sigLabel+' ⚡ This bar':_sigLabel+' · '+_age+' bars ago';})()}</span></div>
@@ -6076,6 +6266,10 @@ function buildV1Entry(symbol, d, decision, overrides) {
     signalSource:   (EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.signalSource  || _exchange),
     priceSource:    (EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.priceSource   || _exchange),
     executionVenue: (EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.executionVenue|| _exchange),
+    // UT Bot configuration metadata (additive — captures source/settings at decision time)
+    utSourceMode:   UT_BOT_SOURCE_MODE,
+    utKeyValue:     UT_BOT_KEY_VALUE,
+    utAtrPeriod:    UT_BOT_ATR_PERIOD,
     tf:             _tf,
     htf:            _htf,
 
