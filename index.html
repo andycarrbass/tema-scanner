@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TEMA Desk</title>
+<title>TDAS</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
 :root{
@@ -760,8 +760,8 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 <div class="header">
   <div>
-    <h1>TEMA Desk</h1>
-    <div style="font-size:11px;color:var(--text3);margin-top:1px;letter-spacing:0.2px;">Trading System Management Platform</div>
+    <h1>TDAS</h1>
+    <div style="font-size:11px;color:var(--text3);margin-top:1px;letter-spacing:0.2px;">Trade Decision Augmentation System</div>
   </div>
   <div class="controls">
     <select id="tf">
@@ -772,7 +772,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div class="htf-note" id="htfNote">HTF: 1D</div>
     <button id="refreshBtn" onclick="globalRefresh()">⟳ Re-scan</button>
     <button id="livePriceBtn" onclick="triggerLivePriceUpdate()" style="display:none;">⟳ Live $</button>
-    <span style="font-size:11px;color:var(--text3);padding:0 4px;" id="exchangeLabel">Binance data</span>
+    <span style="font-size:11px;color:var(--text3);padding:0 4px;" id="exchangeLabel">Signals: Binance futures · Prices: Bitunix</span>
     <span id="syncStatus" style="font-size:11px;color:var(--green-text);padding:0 4px;"></span>
   </div>
 </div>
@@ -989,13 +989,15 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 </div>
 
 <div class="footer" style="margin-top:30px;padding-top:20px;">
-  <span>TEMA Desk · data: <span id="footerExchange">Bitunix</span></span>
+  <span>TDAS · Signals: Binance USDT-M futures · Prices: Bitunix</span>
   <span id="footerTime"></span>
 </div>
 <div class="diag-bar" id="diagBar">
-  <span class="diag-item">Data: <span class="diag-val" id="diagExchange">—</span></span>
+  <span class="diag-item">Signals: <span class="diag-val">Binance USDT-M futures</span></span>
   <span class="diag-sep">·</span>
-  <span class="diag-item">Adapter: <span class="diag-val" id="diagAdapter">—</span></span>
+  <span class="diag-item">UT Bot: <span class="diag-val">HA source · KV4 ATR10</span></span>
+  <span class="diag-sep">·</span>
+  <span class="diag-item">Prices: <span class="diag-val">Bitunix</span></span>
   <span class="diag-sep">·</span>
   <span class="diag-item">Last scan: <span class="diag-val" id="diagTime">—</span></span>
   <span class="diag-sep">·</span>
@@ -8903,12 +8905,9 @@ async function runScan(){
   (function(){
     const ok = results.filter(r=>r.status==='fulfilled').length;
     const failed = results.filter(r=>r.status==='rejected').length;
-    const exchangeLabel = EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.label || ACTIVE_EXCHANGE;
     const statusText = failed===0 ? 'OK' : (ok===0 ? 'Error' : ok+' OK, '+failed+' failed');
     const statusColor = failed===0 ? 'var(--green-text)' : failed<results.length ? 'var(--amber-text)' : 'var(--red-text)';
     const el = id => document.getElementById(id);
-    if(el('diagExchange')) el('diagExchange').textContent = exchangeLabel;
-    if(el('diagAdapter'))  el('diagAdapter').textContent  = getExchange().name || '—';
     if(el('diagTime'))     el('diagTime').textContent     = t;
     if(el('diagPairs'))    el('diagPairs').textContent    = PAIRS.length;
     if(el('diagCandles'))  el('diagCandles').textContent  = '600 / 300 HTF';
@@ -9059,14 +9058,10 @@ setInterval(_updateScannerStatusBar, 30000);
 document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false; runScan(); });
 
 // ── Set exchange label on load ────────────────────────────────────────────
+// Source disclosure (Signals/UT Bot/Prices) is now static text in the footer
+// markup — see #diagBar — since the production architecture is fixed.
 (function(){
-  const label = EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.label || ACTIVE_EXCHANGE;
-  const hdr = document.getElementById('exchangeLabel');
-  const ftr = document.getElementById('footerExchange');
-  if(hdr) hdr.textContent = label + ' data';
-  if(ftr) ftr.textContent = label;
-  const diagEx = document.getElementById('diagExchange');
-  if(diagEx) diagEx.textContent = label;
+  // #exchangeLabel is now static text in markup (Signals: Binance futures · Prices: Bitunix)
   // Show developer controls only when DEBUG_MODE is enabled
   const diagDevSep = document.getElementById('diagDevSep');
   const diagDevCtrl = document.getElementById('diagDevControls');
@@ -9074,8 +9069,6 @@ document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false
     if(diagDevSep)  diagDevSep.style.display  = '';
     if(diagDevCtrl) diagDevCtrl.style.display = '';
   }
-  const diagAd = document.getElementById('diagAdapter');
-  if(diagAd) diagAd.textContent = getExchange().name || '—';
 })();
 
 // On startup: sync journal + load pairs from Sheets, then scan
