@@ -3599,7 +3599,7 @@ async function auditSolCandleBakeOff(){
 // ── Diagnostic mode ─────────────────────────────────────────────────────
 // Set to true to re-enable UT Bot candle traces and per-signal forensic logs.
 // Must be false in production.
-const DEBUG_MODE = true; // diagnostic build — set back to false before production deploy
+const DEBUG_MODE = false;
 
 // ── Diagnostic switchboard ────────────────────────────────────────────────
 // Gates individual DEBUG_MODE console blocks so only relevant diagnostics
@@ -3616,8 +3616,8 @@ const DIAG = {
   solCandleBakeOff:          false,  // SOL CANDLE SOURCE BAKE-OFF (Binance Spot/Futures vs Bitunix LAST/MARK) — served its purpose, root cause found (HA)
   solHaSourceValidation:     false,  // SOL UT BOT HA-SOURCE VALIDATION — HA confirmed working, off for now
   xrpHaUtParityAudit:        false,  // XRP HA UT BOT PARITY AUDIT (4H vs 1H control) — root cause found (Spot vs Futures), off for now
-  binanceFuturesSwitchValidation: true, // BINANCE FUTURES SWITCH VALIDATION (XRP+SOL 4H) — current focus
-  dataSourceAudit:           true,   // [DataSource] concise klines/ticker source confirmation
+  binanceFuturesSwitchValidation: false, // BINANCE FUTURES SWITCH VALIDATION (XRP+SOL 4H) — validated, off for now
+  dataSourceAudit:           false,  // [DataSource] concise klines/ticker source confirmation — off for production
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
