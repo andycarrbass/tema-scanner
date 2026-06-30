@@ -3614,7 +3614,9 @@ const DIAG = {
   internalsAudit:            false,  // [TDAS Phase0/1/1.5/2] computeStates/regime/evaluation/lifecycle internals
   solUtPineParityAudit:      false,  // SOL UT BOT PARITY COMPARISON (CURRENT vs PINE_EXACT) — already proved formula equivalence, off for now
   solCandleBakeOff:          false,  // SOL CANDLE SOURCE BAKE-OFF (Binance Spot/Futures vs Bitunix LAST/MARK) — served its purpose, root cause found (HA)
-  solHaSourceValidation:     true,   // SOL UT BOT HA-SOURCE VALIDATION — current focus
+  solHaSourceValidation:     false,  // SOL UT BOT HA-SOURCE VALIDATION — HA confirmed working, off for now
+  xrpHaUtParityAudit:        false,  // XRP HA UT BOT PARITY AUDIT (4H vs 1H control) — root cause found (Spot vs Futures), off for now
+  binanceFuturesSwitchValidation: true, // BINANCE FUTURES SWITCH VALIDATION (XRP+SOL 4H) — current focus
   dataSourceAudit:           true,   // [DataSource] concise klines/ticker source confirmation
 };
 
@@ -3744,10 +3746,10 @@ const EXCHANGE_CONFIG = {
     priceType:        'LAST_PRICE',   // or 'MARK_PRICE' — change here globally
   },
   split: {
-    // Signals: Binance candles  |  Prices: Bitunix live
+    // Signals: Binance USD-M Futures candles  |  Prices: Bitunix live
     // See SplitSourceAdapter for routing logic.
-    label:            'Binance/Bitunix',
-    signalSource:     'Binance',
+    label:            'Binance Futures/Bitunix',
+    signalSource:     'Binance USDT-M futures',
     priceSource:      'Bitunix',
     executionVenue:   'Bitunix',
     maxKlineLimit:    1000,           // Binance limit (no pagination needed)
@@ -3758,18 +3760,31 @@ const EXCHANGE_CONFIG = {
 // ── BinanceAdapter ────────────────────────────────────────────────────────
 // Wraps existing working Binance logic verbatim.
 // Normalises responses to the shared candle/ticker contracts.
+// ── BinanceAdapter ────────────────────────────────────────────────────────
+// Signal candle source: Binance USD-M Futures klines via /fapi/v1/klines.
+// Switched from Binance Spot (api.binance.com) to Binance USD-M Futures
+// (fapi.binance.com) — Spot and Futures candles diverge on some pairs (e.g.
+// XRP), and TradingView's reference chart is the Binance perpetual futures
+// market. Futures is now the canonical signal candle source for all
+// indicators (TEMA, RSI, ADX, SMA200, regime, and UT Bot's HA transform).
+// Kline array format is identical to Spot: raw[0]=open time, raw[1]=open,
+// raw[2]=high, raw[3]=low, raw[4]=close, raw[5]=volume, raw[6]=close time —
+// normalizeCandle() requires no changes.
 const BinanceAdapter = {
 
   async fetchKlines(symbol, interval, limit = 600) {
-    const url = `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
+    const url = `https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`;
     const raw = await apiFetch(url);
     return raw.map(normalizeCandle);
   },
 
+  // fetchTicker is not used in production (SplitSourceAdapter routes
+  // fetchTicker to BitunixAdapter for live price/P&L/execution). Retained
+  // for completeness / standalone Binance-only configurations.
   async fetchTicker(symbols) {
     if (!symbols.length) return {};
     try {
-      const url = `https://api.binance.com/api/v3/ticker/price?symbols=[${symbols.map(s => '"' + s + '"').join(',')}]`;
+      const url = `https://fapi.binance.com/fapi/v1/ticker/price?symbols=[${symbols.map(s => '"' + s + '"').join(',')}]`;
       const data = await apiFetch(url);
       const out = {};
       (Array.isArray(data) ? data : [data]).forEach(t => {
@@ -3782,7 +3797,7 @@ const BinanceAdapter = {
       const out = {};
       for (const sym of symbols) {
         try {
-          const d = await apiFetch(`https://api.binance.com/api/v3/ticker/price?symbol=${sym}`);
+          const d = await apiFetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${sym}`);
           const n = normalizeTicker(d);
           out[n.symbol] = n.price;
         } catch(e2) { console.warn('[BinanceAdapter] price fetch failed for', sym, e2.message); }
@@ -3791,29 +3806,38 @@ const BinanceAdapter = {
     }
   },
 
+  // Lightweight existence check — validates against Binance USD-M Futures,
+  // matching the signal candle source. Not a full exchangeInfo symbol-list
+  // fetch; a successful price lookup is sufficient confirmation the symbol
+  // exists on the futures market and is not overbuilt beyond that.
   async validateSymbol(symbol) {
-    const d = await apiFetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
+    const d = await apiFetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);
     if (!d || !d.price) throw new Error('Invalid response');
     return true;
   },
 
   name:        'BinanceAdapter',
-  errorLabel: 'Binance',
+  errorLabel: 'Binance Futures',
 };
 
 
 // ── SplitSourceAdapter ────────────────────────────────────────────────────
-// Routes indicator/signal candles to Binance (for TradingView parity)
-// and live prices/tickers to Bitunix (for accurate P&L on the execution venue).
+// Routes indicator/signal candles to Binance USD-M Futures (for TradingView
+// parity) and live prices/tickers to Bitunix (for accurate P&L on the
+// execution venue).
 //
 // Rationale (from UT Bot parity investigation, June 2026):
 //   Bitunix REST klines differ from TradingView Bitunix chart candles due to
-//   a LAST_PRICE vs MARK_PRICE divergence in the VPS proxy. Binance USDT
-//   candles match TradingView UT Bot labels on all tested pairs. This adapter
+//   a LAST_PRICE vs MARK_PRICE divergence in the VPS proxy. Binance Spot was
+//   tried first but diverges from TradingView's perpetual futures chart on
+//   some pairs (confirmed on XRP — Spot produces an extra signal the
+//   futures/TradingView chart does not show). Binance USD-M Futures klines
+//   match TradingView UT Bot labels across all tested pairs. This adapter
 //   restores signal parity while keeping Bitunix as the live price source.
 //
-// Symbol mapping: TDAS symbols (e.g. ETHUSDT) map 1:1 to Binance USDT-M.
-// If Binance rejects a symbol, the pair is skipped with a DEBUG warning.
+// Symbol mapping: TDAS symbols (e.g. ETHUSDT) map 1:1 to Binance USD-M
+// Futures contracts. If Binance rejects a symbol, the pair is skipped with
+// a DEBUG warning.
 const SplitSourceAdapter = {
 
   name:        'SplitSourceAdapter',
@@ -3823,11 +3847,11 @@ const SplitSourceAdapter = {
   // Used for all indicator candles: TEMA, UT Bot, RSI, ADX, SMA200.
   // Binance returns up to 1000 candles per request (no pagination needed).
   async fetchKlines(symbol, interval, limit = 600) {
-    if(DEBUG_MODE && DIAG.dataSourceAudit) console.debug('[DataSource] '+symbol+' '+interval+' | klines=Binance');
+    if(DEBUG_MODE && DIAG.dataSourceAudit) console.debug('[DataSource] '+symbol+' '+interval+' | klines=Binance USD-M Futures');
     try {
       return await BinanceAdapter.fetchKlines(symbol, interval, limit);
     } catch(e) {
-      if(DEBUG_MODE && DIAG.dataSourceAudit) console.warn('[DataSource] '+symbol+' '+interval+' | Binance klines unavailable ('+e.message+') — pair skipped for signal calculation');
+      if(DEBUG_MODE && DIAG.dataSourceAudit) console.warn('[DataSource] '+symbol+' '+interval+' | Binance Futures klines unavailable ('+e.message+') — pair skipped for signal calculation');
       throw e; // let calcPair handle the skip
     }
   },
@@ -4464,6 +4488,237 @@ async function calcPair(symbol,tf){
   const utTimes  = utSourceCandles.map(c=>c.time);
 
   const utBot=calcUTBot(utHighs,utLows,utCloses,UT_BOT_KEY_VALUE,UT_BOT_ATR_PERIOD,utTimes,null);
+  // ── BINANCE FUTURES SWITCH VALIDATION (DEBUG_MODE, XRP+SOL 4H only) ───────
+  // Confirms the Spot→Futures endpoint switch resolves the XRP 43-vs-66-bar
+  // discrepancy, and that SOL (already correct under Spot) remains correct
+  // under Futures. Diagnostic only — no production logic changed by this block.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.binanceFuturesSwitchValidation&&
+     (symbol==='XRPUSDT'||symbol==='SOLUSDT')&&tf==='4h'){
+    const _f4=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+    const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+    console.log('');
+    console.log('══ BINANCE FUTURES SWITCH VALIDATION | '+symbol+' | 4H ══════════════════════');
+    console.log(symbol+' 4H signal source: Binance USDT-M Futures');
+    console.log('UT source: '+(UT_BOT_SOURCE_MODE==='heikin_ashi'?'Heikin Ashi':'standard'));
+    console.log('UT settings: KV='+UT_BOT_KEY_VALUE+' ATR='+UT_BOT_ATR_PERIOD);
+    console.log('');
+    const sigIdx = closedTimes.length - 1 - (utBot.barsAgoFlip??0);
+    console.log('Current TDAS '+symbol+' 4H UT result:');
+    console.log('  direction  :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
+    console.log('  barsAgoFlip:', utBot.barsAgoFlip);
+    console.log('  signal time:', sigIdx>=0 && sigIdx<closedTimes.length ? _ts(closedTimes[sigIdx]) : '—');
+    console.log('');
+    if(symbol==='XRPUSDT'){
+      console.log('Expected: should now match the Binance perpetual / TradingView signal —');
+      console.log('barsAgoFlip ≈ 66 (the futures signal), not 43 (the Spot-only signal).');
+      console.log('Actual barsAgoFlip='+utBot.barsAgoFlip+' — '+(utBot.barsAgoFlip>=60&&utBot.barsAgoFlip<=72?'MATCHES expected ~66-bar range':'does NOT match expected ~66-bar range, needs further investigation'));
+    }
+    if(symbol==='SOLUSDT'){
+      console.log('Expected: should still show the recent HA buy correctly, around 4 bars old.');
+      console.log('Actual barsAgoFlip='+utBot.barsAgoFlip+' — '+(utBot.barsAgoFlip<=8?'MATCHES expected recent range':'does NOT match expected recent range, needs further investigation'));
+    }
+    console.log('');
+  }
+
+  // ── XRP HA UT PARITY AUDIT (DEBUG_MODE, XRPUSDT 4H + 1H control) ──────────
+  // Diagnostic only. Does not change buildHeikinAshiCandles(), calcUTBot(),
+  // UT_BOT_SOURCE_MODE, scoring, lifecycle, cards, source routing, or journal.
+  // Investigates the 66-bar (TradingView) vs 43-bar (TDAS) XRP 4H discrepancy
+  // while XRP 1H is reportedly correct — isolates whether this is source
+  // data, signal selection, or a timeframe-specific routing difference.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.xrpHaUtParityAudit&&symbol==='XRPUSDT'&&(tf==='4h'||tf==='1h')){
+    (function(){
+      const _f4=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+      const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16)+' UTC':'—';
+
+      console.log('');
+      console.log('══ XRP HA UT BOT PARITY AUDIT | XRPUSDT | '+tf.toUpperCase()+' ════════════════════');
+
+      // ── Task 3: current TDAS UT result for this timeframe ───────────────────
+      console.log('Current TDAS source: '+(EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.signalSource||EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.label||ACTIVE_EXCHANGE));
+      console.log('UT source mode: '+UT_BOT_SOURCE_MODE);
+      console.log('UT settings: KV='+UT_BOT_KEY_VALUE+' ATR='+UT_BOT_ATR_PERIOD);
+      console.log('Last closed candle time: '+_ts(closedTimes[closedTimes.length-1]));
+      console.log('Current incomplete candle time: '+_ts(raw[raw.length-1].time));
+      console.log('');
+      console.log('TDAS current UT result:');
+      console.log('  direction    :', utBot.direction===1?'BULLISH (1)':'BEARISH (-1)');
+      console.log('  barsAgoFlip  :', utBot.barsAgoFlip);
+      console.log('  freshSignal  :', utBot.signal);
+      console.log('  recentSignal :', utBot.recentSignal);
+      console.log('  trailLevel   :', _f4(utBot.trailLevel));
+      console.log('  prevTrailLvl :', _f4(utBot.prevTrailLevel));
+      const sigIdx = closedTimes.length - 1 - (utBot.barsAgoFlip??0);
+      console.log('  signal time  :', sigIdx>=0 && sigIdx<closedTimes.length ? _ts(closedTimes[sigIdx]) : '—');
+      console.log('');
+
+      // ── Task 4: HA-source signal history, last 120 bars ─────────────────────
+      function deriveSignals(srcCandlesNormal, haCandles){
+        const n=haCandles.length;
+        const closes=haCandles.map(c=>c.close), highs=haCandles.map(c=>c.high), lows=haCandles.map(c=>c.low), times=haCandles.map(c=>c.time);
+        const trs=new Array(n).fill(0);
+        for(let i=1;i<n;i++) trs[i]=Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1]));
+        let rma=0; for(let i=1;i<=UT_BOT_ATR_PERIOD;i++) rma+=trs[i]; rma/=UT_BOT_ATR_PERIOD;
+        const trail=new Array(n).fill(0); trail[UT_BOT_ATR_PERIOD]=closes[UT_BOT_ATR_PERIOD]-UT_BOT_KEY_VALUE*rma;
+        let pc=closes[UT_BOT_ATR_PERIOD]; const sigs=[];
+        for(let i=UT_BOT_ATR_PERIOD+1;i<n;i++){
+          rma=rma*(UT_BOT_ATR_PERIOD-1)/UT_BOT_ATR_PERIOD+trs[i]/UT_BOT_ATR_PERIOD;
+          const nL=UT_BOT_KEY_VALUE*rma,prev=trail[i-1],c=closes[i];
+          if(c>prev&&closes[i-1]>prev) trail[i]=Math.max(prev,c-nL);
+          else if(c<prev&&closes[i-1]<prev) trail[i]=Math.min(prev,c+nL);
+          else if(c>prev) trail[i]=c-nL;
+          else trail[i]=c+nL;
+          let sig='none';
+          if(pc<trail[i-1]&&c>trail[i]) sig='long';
+          if(pc>trail[i-1]&&c<trail[i]) sig='short';
+          if(sig!=='none'){
+            const nC=srcCandlesNormal[i], hC=haCandles[i];
+            sigs.push({i,t:times[i],barsAgo:n-1-i,sig,
+              normO:nC.open,normH:nC.high,normL:nC.low,normC:nC.close,
+              haO:hC.open,haH:hC.high,haL:hC.low,haC:hC.close,
+              trail:trail[i],prevTrail:trail[i-1]});
+          }
+          pc=c;
+        }
+        return sigs;
+      }
+      const allSigs = deriveSignals(closedCandlesNormal, utSourceCandles);
+      const last120 = allSigs.filter(s=>s.barsAgo<120);
+
+      console.log('HA-source UT signals over last 120 bars ('+tf.toUpperCase()+'):');
+      console.log('idx | time | barsAgo | dir | normalOHLC | haOHLC | trail | prevTrail | buy/sell');
+      last120.forEach(s=>{
+        let marker='';
+        if(tf==='4h' && s.barsAgo===66) marker=' << 66-BAR SIGNAL (TradingView)';
+        if(tf==='4h' && s.barsAgo===43) marker=' << 43-BAR SIGNAL (TDAS current)';
+        console.log(
+          s.i+' | '+_ts(s.t)+' | '+s.barsAgo+' | '+s.sig.toUpperCase()+
+          ' | normO='+_f4(s.normO)+' normH='+_f4(s.normH)+' normL='+_f4(s.normL)+' normC='+_f4(s.normC)+
+          ' | haO='+_f4(s.haO)+' haH='+_f4(s.haH)+' haL='+_f4(s.haL)+' haC='+_f4(s.haC)+
+          ' | trail='+_f4(s.trail)+' | prevTrail='+_f4(s.prevTrail)+
+          ' | '+(s.sig==='long'?'BUY':'SELL')+marker
+        );
+      });
+      if(last120.length===0) console.log('  (no signals in last 120 bars)');
+      console.log('');
+
+      // ── Task 5: does TDAS 4H have both candidate signals? ───────────────────
+      if(tf==='4h'){
+        const sig66 = allSigs.find(s=>s.barsAgo===66);
+        const sig43 = allSigs.find(s=>s.barsAgo===43);
+        console.log('── Candidate signal check (4H only) ─────────────────────────────────────');
+        console.log('Signal 66 bars ago exists in TDAS data? '+(sig66?'YES — '+_ts(sig66.t)+' '+sig66.sig.toUpperCase():'NO'));
+        console.log('Signal 43 bars ago exists in TDAS data? '+(sig43?'YES — '+_ts(sig43.t)+' '+sig43.sig.toUpperCase():'NO'));
+        if(sig66 && sig43){
+          const sameDir = sig66.sig===sig43.sig;
+          console.log('Both exist. Same direction? '+(sameDir?'YES':'NO'));
+          console.log('Production selects barsAgoFlip='+utBot.barsAgoFlip+' — this is the MOST RECENT signal of either');
+          console.log('direction, scanning backwards from the last closed bar. If both 66-bar and');
+          console.log('43-bar signals are the same direction, the 43-bar one is selected because it');
+          console.log('is more recent — the 66-bar signal is real but superseded, not missing.');
+          if(sameDir){
+            console.log('CONFIRMED: TDAS is selecting a later same-direction flip at barsAgo=43,');
+            console.log('which is mathematically correct given calcUTBot\'s "most recent signal of any');
+            console.log('type" selection rule — but does not match what TradingView is displaying,');
+            console.log('meaning TradingView either is not counting the 43-bar event as a fresh');
+            console.log('signal, or TDAS data has a signal TradingView does not (extra/spurious flip).');
+          }
+        } else if(sig43 && !sig66){
+          console.log('Only the 43-bar signal exists in TDAS data — the 66-bar signal TradingView');
+          console.log('shows is entirely absent from TDAS\'s HA-source calculation. This points to');
+          console.log('a candle data difference, not a signal-selection issue.');
+        }
+        console.log('');
+      }
+
+      // ── Task 6: source comparison for XRP 4H only ────────────────────────────
+      if(tf==='4h'){
+        console.log('── Source comparison: XRP 4H across candidate sources ───────────────────');
+        (async function(){
+          const srcResults={};
+          try{
+            const url='https://api.binance.com/api/v3/klines?symbol=XRPUSDT&interval=4h&limit=600';
+            const raw2=await apiFetch(url);
+            srcResults['Binance Spot']=raw2.map(normalizeCandle);
+          } catch(e){ console.warn('Binance Spot fetch failed:', e.message); }
+          try{
+            const url='https://fapi.binance.com/fapi/v1/klines?symbol=XRPUSDT&interval=4h&limit=600';
+            const raw2=await apiFetch(url);
+            srcResults['Binance Futures']=raw2.map(normalizeCandle);
+          } catch(e){ console.warn('Binance Futures fetch failed:', e.message); }
+          try{
+            const params=new URLSearchParams({symbol:'XRPUSDT',interval:'4h',limit:'200',type:'LAST_PRICE'});
+            const url=BitunixAdapter._proxy+'/kline?'+params;
+            const rawResp=await apiFetch(url);
+            const arr=BitunixAdapter._extractArray(rawResp,'xrp-LAST_PRICE');
+            srcResults['Bitunix LAST']=arr.map(normalizeCandle);
+          } catch(e){ console.warn('Bitunix LAST_PRICE fetch failed:', e.message); }
+          try{
+            const params=new URLSearchParams({symbol:'XRPUSDT',interval:'4h',limit:'200',type:'MARK_PRICE'});
+            const url=BitunixAdapter._proxy+'/kline?'+params;
+            const rawResp=await apiFetch(url);
+            const arr=BitunixAdapter._extractArray(rawResp,'xrp-MARK_PRICE');
+            srcResults['Bitunix MARK']=arr.map(normalizeCandle);
+          } catch(e){ console.warn('Bitunix MARK_PRICE fetch failed:', e.message); }
+
+          let src66=null, src43=null;
+          for(const [srcName, candles] of Object.entries(srcResults)){
+            const closedC = candles.slice(0,-1);
+            const haC = UT_BOT_SOURCE_MODE==='heikin_ashi' ? buildHeikinAshiCandles(closedC) : closedC;
+            const sigs = deriveSignals(closedC, haC);
+            const r120 = sigs.filter(s=>s.barsAgo<120);
+            console.log('SOURCE: '+srcName+' — last 120-bar HA-source UT signals:');
+            if(r120.length===0) console.log('  (none)');
+            r120.forEach(s=>{
+              let marker='';
+              if(s.barsAgo===66){ marker=' << 66-BAR'; src66=srcName; }
+              if(s.barsAgo===43){ marker=' << 43-BAR'; src43=srcName; }
+              console.log('  '+s.sig.toUpperCase()+' | '+_ts(s.t)+' | barsAgo='+s.barsAgo+marker);
+            });
+          }
+          console.log('');
+          console.log('Which source has the 66-bar signal? '+(src66||'none found'));
+          console.log('Which source has the 43-bar signal? '+(src43||'none found'));
+          console.log('Best match to TradingView XRP 4H: requires manual visual comparison against the above.');
+          console.log('');
+        })().catch(e=>console.warn('[XrpSourceCompare] '+e.message));
+      }
+
+      // ── Task 7: timeframe routing comparison ─────────────────────────────────
+      console.log('── Timeframe routing check ('+tf.toUpperCase()+') ─────────────────────────────');
+      console.log(tf.toUpperCase()+' endpoint: '+(EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.signalSource||ACTIVE_EXCHANGE)+' via fetchKlines(symbol,\''+tf+'\',600)');
+      console.log(tf.toUpperCase()+' limit/pagination: 600 requested, Binance single request (no pagination, max 1000)');
+      console.log(tf.toUpperCase()+' closed candle slicing: raw.slice(0,-1) — same logic regardless of tf');
+      console.log('No timeframe-specific branch exists in fetchKlines(), calcUTBot(), or the HA transform —');
+      console.log('the only input that varies between 1H and 4H calls is the `interval` string passed through.');
+      console.log('');
+
+      // ── Task 8: manual TradingView symbol reminder ───────────────────────────
+      console.log('── TradingView verification reminder ────────────────────────────────────');
+      console.log('Please confirm XRP '+tf.toUpperCase()+' TradingView exact symbol and chart type:');
+      console.log('  - BINANCE:XRPUSDT');
+      console.log('  - BINANCE:XRPUSDT.P');
+      console.log('  - BITUNIX:XRPUSDT');
+      console.log('  - other');
+      console.log('Chart type: Heikin Ashi');
+      console.log('UT settings: KV=4 ATR=10');
+      console.log('Since 1H is reportedly correct, verify XRP 4H did not accidentally load a different symbol/feed on the chart.');
+      console.log('');
+
+      // ── Task 9: barsAgo calculation check ────────────────────────────────────
+      console.log('── BarsAgo calculation check ('+tf.toUpperCase()+') ────────────────────────────');
+      const lastClosedIdx = closedTimes.length-1;
+      console.log('Last closed candle index/time: '+lastClosedIdx+' / '+_ts(closedTimes[lastClosedIdx]));
+      if(sigIdx>=0 && sigIdx<closedTimes.length){
+        console.log('Signal candle index/time: '+sigIdx+' / '+_ts(closedTimes[sigIdx]));
+        console.log('barsAgo = lastClosedIndex('+lastClosedIdx+') - signalIndex('+sigIdx+') = '+(lastClosedIdx-sigIdx)+' (matches reported barsAgoFlip='+utBot.barsAgoFlip+'? '+((lastClosedIdx-sigIdx)===utBot.barsAgoFlip?'YES':'NO')+')');
+      } else {
+        console.log('Signal candle index/time: out of range — barsAgoFlip default/clamped value');
+      }
+      console.log('');
+    })();
+  }
+
   // ── SOL UT BOT HA-SOURCE VALIDATION (DEBUG_MODE, SOLUSDT 4H only) ─────────
   // Confirms: (a) UT Bot now runs on Heikin Ashi candles, (b) TEMA/RSI/ADX
   // remain on normal candles (verified by inspecting the same closedHighs/
