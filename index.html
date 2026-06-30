@@ -3381,6 +3381,217 @@ function calcUTBotPineV4FullDiagnostic(highs, lows, closes, keyVal=4, atrPeriod=
 }
 
 
+// ── auditSolCandleBakeOff ─────────────────────────────────────────────────
+// DIAGNOSTIC ONLY — not called in production. SOLUSDT 4H candle-source
+// bake-off comparing Binance Spot, Binance USD-M Futures, Bitunix LAST_PRICE,
+// and Bitunix MARK_PRICE for the disputed bars, plus a 24h alignment search
+// to detect timestamp/field-mapping/candle-boundary misalignment.
+// Does not switch production source routing.
+async function auditSolCandleBakeOff(){
+  const TARGET_TIMES = [
+    '2026-06-18 08:00','2026-06-18 12:00','2026-06-18 16:00',
+    '2026-06-21 16:00','2026-06-23 16:00',
+    '2026-06-25 00:00','2026-06-25 04:00','2026-06-25 12:00',
+    '2026-06-26 16:00','2026-06-29 12:00','2026-06-29 16:00',
+  ];
+  const PRIMARY = '2026-06-18 12:00';
+  const TV_PRIMARY = { o:71.61, h:71.80, l:68.35, c:69.88 };
+  const TOL = 0.01; // Task 5: tolerance for OHLC match
+  const TDAS_DISPUTED = { o:70.94, c:68.44 }; // TDAS's current values for the disputed candle
+  const _f4=(v)=>v!=null&&isFinite(v)?parseFloat(v.toFixed(4)):'—';
+  const _ts=(t)=>t?new Date(t).toISOString().replace('T',' ').slice(0,16):'—';
+  const tsKey=(t)=>_ts(t);
+  const near=(a,b,tol=TOL)=>a!=null&&b!=null&&Math.abs(a-b)<tol;
+
+  console.log('');
+  console.log('══ SOL CANDLE SOURCE BAKE-OFF | SOLUSDT | 4H ══════════════════════════════');
+  console.log('TradingView Data Window target for '+PRIMARY+' UTC:');
+  console.log('  O='+TV_PRIMARY.o+' H='+TV_PRIMARY.h+' L='+TV_PRIMARY.l+' C='+TV_PRIMARY.c);
+  console.log('TDAS disputed values for the same labelled candle:');
+  console.log('  O='+TDAS_DISPUTED.o+' (H/L match TV) C='+TDAS_DISPUTED.c);
+  console.log('');
+
+  // sources[name] = { raw: [...unmodified API response items...], norm: [...normalizeCandle()...] }
+  const sources = {};
+
+  // ── Source 1: Current TDAS signal source (whatever ACTIVE_EXCHANGE routes to) ──
+  try {
+    const raw = await fetchKlines('SOLUSDT','4h',600); // already normalised by the adapter
+    sources['Current TDAS'] = { raw: null, norm: raw }; // adapter returns normalised only
+    console.log('Current TDAS source: '+(EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.signalSource||EXCHANGE_CONFIG[ACTIVE_EXCHANGE]?.label||ACTIVE_EXCHANGE));
+  } catch(e){ console.warn('Current TDAS fetch failed:', e.message); }
+
+  // ── Source 2: Binance Spot (explicit, independent of adapter) ──────────────
+  try {
+    const url='https://api.binance.com/api/v3/klines?symbol=SOLUSDT&interval=4h&limit=600';
+    const raw=await apiFetch(url);
+    sources['Binance Spot']={ raw, norm: raw.map(normalizeCandle) };
+    console.log('Binance Spot URL: '+url);
+  } catch(e){ console.warn('Binance Spot fetch failed:', e.message); }
+
+  // ── Source 3: Binance USD-M Futures ─────────────────────────────────────────
+  try {
+    const url='https://fapi.binance.com/fapi/v1/klines?symbol=SOLUSDT&interval=4h&limit=600';
+    const raw=await apiFetch(url);
+    sources['Binance Futures']={ raw, norm: raw.map(normalizeCandle) };
+    console.log('Binance Futures URL: '+url);
+  } catch(e){ console.warn('Binance Futures fetch failed:', e.message); }
+
+  // ── Source 4: Bitunix current proxy (LAST_PRICE, current production type) ──
+  try {
+    const params=new URLSearchParams({symbol:'SOLUSDT',interval:'4h',limit:'200',type:'LAST_PRICE'});
+    const url=BitunixAdapter._proxy+'/kline?'+params;
+    const rawResp=await apiFetch(url);
+    const arr=BitunixAdapter._extractArray(rawResp,'bakeoff-LAST_PRICE');
+    sources['Bitunix LAST']={ raw: arr, norm: arr.map(normalizeCandle) };
+    console.log('Bitunix LAST_PRICE URL: '+url);
+  } catch(e){ console.warn('Bitunix LAST_PRICE fetch failed:', e.message); }
+
+  // ── Source 5: Bitunix MARK_PRICE ────────────────────────────────────────────
+  try {
+    const params=new URLSearchParams({symbol:'SOLUSDT',interval:'4h',limit:'200',type:'MARK_PRICE'});
+    const url=BitunixAdapter._proxy+'/kline?'+params;
+    const rawResp=await apiFetch(url);
+    const arr=BitunixAdapter._extractArray(rawResp,'bakeoff-MARK_PRICE');
+    sources['Bitunix MARK']={ raw: arr, norm: arr.map(normalizeCandle) };
+    console.log('Bitunix MARK_PRICE URL: '+url);
+  } catch(e){ console.warn('Bitunix MARK_PRICE fetch failed:', e.message); }
+
+  console.log('');
+
+  // ── Task 4: normalised values for every target candle, every source ────────
+  for(const [srcName, s] of Object.entries(sources)){
+    console.log('── SOURCE: '+srcName+' ──────────────────────────────────────────────────');
+    TARGET_TIMES.forEach(tStr=>{
+      const match = s.norm.find(c=>tsKey(c.time)===tStr);
+      if(!match){ console.log('  '+tStr+' UTC | NOT FOUND in this source'); return; }
+      console.log('  '+tStr+' UTC | O='+_f4(match.open)+' H='+_f4(match.high)+' L='+_f4(match.low)+' C='+_f4(match.close));
+    });
+    console.log('');
+  }
+
+  // ── Task 4/7/8: full raw array dump + open/close-time check for primary candle ──
+  console.log('── RAW DATA DUMP + TIMESTAMP MAPPING: primary disputed candle '+PRIMARY+' UTC ──');
+  for(const [srcName, s] of Object.entries(sources)){
+    const idx = s.norm.findIndex(c=>tsKey(c.time)===PRIMARY);
+    if(idx<0){ console.log(srcName+': not found'); continue; }
+    const n = s.norm[idx];
+    console.log(srcName+' (normalised index '+idx+'):');
+    console.log('  normalised: time='+_ts(n.time)+' O='+_f4(n.open)+' H='+_f4(n.high)+' L='+_f4(n.low)+' C='+_f4(n.close));
+    if(s.raw && Array.isArray(s.raw) && Array.isArray(s.raw[idx])){
+      // Binance array format: [openTime, open, high, low, close, volume, closeTime, ...]
+      const r = s.raw[idx];
+      console.log('  raw array: '+JSON.stringify(r).slice(0,250));
+      console.log('  raw[0] openTime='+_ts(parseInt(r[0]))+' | raw[6] closeTime='+(r[6]?_ts(parseInt(r[6])):'—'));
+      console.log('  field mapping check: raw[1]=open='+r[1]+' raw[2]=high='+r[2]+' raw[3]=low='+r[3]+' raw[4]=close='+r[4]);
+      console.log('  → normalised.time uses raw[0] (OPEN time), confirmed by code at normalizeCandle().');
+    } else if(s.raw && Array.isArray(s.raw) && s.raw[idx] && typeof s.raw[idx]==='object'){
+      // Bitunix named-field format
+      const r = s.raw[idx];
+      console.log('  raw object: '+JSON.stringify(r).slice(0,250));
+      console.log('  → Bitunix "time" field semantics (open vs close) cannot be confirmed from frontend alone.');
+      console.log('  → normalizeCandle() reads c.time/c.ts/c.timestamp/c.openTime as-is without converting from a close-time basis.');
+    } else {
+      console.log('  (raw array unavailable for this source — adapter pre-normalises)');
+    }
+  }
+  console.log('');
+
+  // ── Task 5: comparison table vs TradingView for the primary disputed candle ──
+  console.log('── '+PRIMARY+' UTC comparison vs TradingView (tolerance '+TOL+') ──────────────');
+  console.log('Target: O='+TV_PRIMARY.o+' H='+TV_PRIMARY.h+' L='+TV_PRIMARY.l+' C='+TV_PRIMARY.c);
+  console.log('Source              | O match? | H match? | L match? | C match? | Full match?');
+  for(const [srcName, s] of Object.entries(sources)){
+    const match = s.norm.find(c=>tsKey(c.time)===PRIMARY);
+    if(!match){ console.log(srcName.padEnd(20)+' | NOT FOUND'); continue; }
+    const oM=near(match.open,TV_PRIMARY.o), hM=near(match.high,TV_PRIMARY.h);
+    const lM=near(match.low,TV_PRIMARY.l),  cM=near(match.close,TV_PRIMARY.c);
+    const full=oM&&hM&&lM&&cM;
+    console.log(
+      srcName.padEnd(20)+' | '+(oM?'YES':'NO').padEnd(8)+
+      ' | '+(hM?'YES':'NO').padEnd(8)+
+      ' | '+(lM?'YES':'NO').padEnd(8)+
+      ' | '+(cM?'YES':'NO').padEnd(8)+
+      ' | '+(full?'YES ✓':'NO')
+    );
+  }
+  console.log('');
+
+  // ── Task 6: 24-hour alignment search ────────────────────────────────────────
+  // Searches every 4H candle from 18 Jun 00:00 to 19 Jun 00:00 in each source
+  // for ANY of: TV's O/H/L/C, or TDAS's disputed O/C, appearing on a DIFFERENT
+  // bar than the labelled 12:00 candle. This detects a one-candle shift,
+  // open/close-time mislabelling, or mixed adjacent-candle fields.
+  console.log('── 24h ALIGNMENT SEARCH: 2026-06-18 00:00 to 2026-06-19 00:00 ─────────────');
+  console.log('Searching for: TV O='+TV_PRIMARY.o+' H='+TV_PRIMARY.h+' L='+TV_PRIMARY.l+' C='+TV_PRIMARY.c+
+    '  |  TDAS O='+TDAS_DISPUTED.o+' C='+TDAS_DISPUTED.c);
+  console.log('');
+  console.log('Source | time | O | H | L | C | O~TVtarget? | H~TVtarget? | L~TVtarget? | C~TVtarget? | O~TDAS? | C~TDAS? | Full TV match?');
+  const WIN_S=new Date('2026-06-18T00:00:00Z').getTime();
+  const WIN_E=new Date('2026-06-19T00:00:00Z').getTime();
+  let foundTvOpenElsewhere=false, foundTvCloseElsewhere=false;
+  let foundTdasOpenElsewhere=false, foundTdasCloseElsewhere=false;
+  for(const [srcName, s] of Object.entries(sources)){
+    s.norm.filter(c=>c.time>=WIN_S&&c.time<=WIN_E).forEach(c=>{
+      const isPrimaryBar = tsKey(c.time)===PRIMARY;
+      const oTv=near(c.open,TV_PRIMARY.o), hTv=near(c.high,TV_PRIMARY.h);
+      const lTv=near(c.low,TV_PRIMARY.l),  cTv=near(c.close,TV_PRIMARY.c);
+      const oTdas=near(c.open,TDAS_DISPUTED.o), cTdas=near(c.close,TDAS_DISPUTED.c);
+      const fullTv=oTv&&hTv&&lTv&&cTv;
+      if(!isPrimaryBar){
+        if(oTv) foundTvOpenElsewhere=true;
+        if(cTv) foundTvCloseElsewhere=true;
+        if(oTdas) foundTdasOpenElsewhere=true;
+        if(cTdas) foundTdasCloseElsewhere=true;
+      }
+      console.log(
+        srcName.padEnd(16)+' | '+_ts(c.time)+
+        ' | '+_f4(c.open)+' | '+_f4(c.high)+' | '+_f4(c.low)+' | '+_f4(c.close)+
+        ' | '+(oTv?'YES':'no')+' | '+(hTv?'YES':'no')+' | '+(lTv?'YES':'no')+' | '+(cTv?'YES':'no')+
+        ' | '+(oTdas?'YES':'no')+' | '+(cTdas?'YES':'no')+
+        ' | '+(fullTv?'YES ✓':'no')+
+        (isPrimaryBar?' << PRIMARY BAR':'')
+      );
+    });
+  }
+  console.log('');
+  console.log('24h search summary:');
+  console.log('  TradingView O='+TV_PRIMARY.o+' found on a DIFFERENT (adjacent) bar? '+(foundTvOpenElsewhere?'YES':'NO'));
+  console.log('  TradingView C='+TV_PRIMARY.c+' found on a DIFFERENT (adjacent) bar? '+(foundTvCloseElsewhere?'YES':'NO'));
+  console.log('  TDAS O='+TDAS_DISPUTED.o+' found on a DIFFERENT (adjacent) bar?       '+(foundTdasOpenElsewhere?'YES':'NO'));
+  console.log('  TDAS C='+TDAS_DISPUTED.c+' found on a DIFFERENT (adjacent) bar?       '+(foundTdasCloseElsewhere?'YES':'NO'));
+  console.log('');
+
+  // ── Task 9: run PineV4Full UT Bot on the first fully-matching source, if any ──
+  let matchedSource=null;
+  for(const [srcName, s] of Object.entries(sources)){
+    const match = s.norm.find(c=>tsKey(c.time)===PRIMARY);
+    if(match && near(match.open,TV_PRIMARY.o) && near(match.high,TV_PRIMARY.h) &&
+       near(match.low,TV_PRIMARY.l) && near(match.close,TV_PRIMARY.c)){
+      matchedSource=srcName; break;
+    }
+  }
+  console.log('── UT Bot re-run on matching source ─────────────────────────────────────');
+  if(!matchedSource){
+    console.log('No source matched the TradingView Data Window within tolerance '+TOL+'.');
+    console.log('Cannot run a confirmatory UT Bot pass — no candidate source qualifies yet.');
+  } else {
+    console.log('Matching source found: '+matchedSource+'. Running PineV4Full UT Bot diagnostic on it.');
+    const mCandles = sources[matchedSource].norm.filter(c=>c.closed!==false);
+    const mCloses=mCandles.map(c=>c.close), mHighs=mCandles.map(c=>c.high),
+          mLows=mCandles.map(c=>c.low), mTimes=mCandles.map(c=>c.time);
+    const mResult = calcUTBotPineV4FullDiagnostic(mHighs,mLows,mCloses,4,10,mTimes);
+    const RANGE_S=new Date('2026-06-10T00:00:00Z').getTime();
+    const RANGE_E=new Date('2026-06-30T23:59:59Z').getTime();
+    const mRange=(mResult.signals||[]).filter(sg=>sg.t>=RANGE_S&&sg.t<=RANGE_E);
+    console.log(matchedSource+' UT signals (2026-06-10 to 2026-06-30):');
+    if(mRange.length===0) console.log('  (none)');
+    mRange.forEach(sg=>console.log('  '+sg.sig.toUpperCase()+' | '+_ts(sg.t)+' | close='+_f4(sg.close)+' | trail='+_f4(sg.trail)));
+    console.log('TradingView-visible expected: BUY ~14/15 Jun, SELL ~25 Jun, BUY ~29 Jun');
+  }
+  console.log('');
+}
+
 // ── Exchange Adapter Architecture ─────────────────────────────────────────
 // ACTIVE_EXCHANGE controls which adapter the app uses.
 // 'binance' = current working behaviour (default during abstraction testing)
@@ -3401,7 +3612,8 @@ const DIAG = {
   legacyUtAuditEthLink:      false,  // UT AUDIT | ETHUSDT/LINKUSDT | 4H | 2026-06-15 to 2026-06-25 (Probe 3)
   legacyUtDiagnosticFixed:   false,  // [UT Bot Diagnostic FIXED] per-bar dump inside calcUTBot (debugSymbol arg)
   internalsAudit:            false,  // [TDAS Phase0/1/1.5/2] computeStates/regime/evaluation/lifecycle internals
-  solUtPineParityAudit:      true,   // SOL UT BOT PARITY COMPARISON (CURRENT vs PINE_EXACT) — current focus
+  solUtPineParityAudit:      false,  // SOL UT BOT PARITY COMPARISON (CURRENT vs PINE_EXACT) — already proved formula equivalence, off for now
+  solCandleBakeOff:          true,   // SOL CANDLE SOURCE BAKE-OFF (Binance Spot/Futures vs Bitunix LAST/MARK) — current focus
   dataSourceAudit:           true,   // [DataSource] concise klines/ticker source confirmation
 };
 
@@ -4379,6 +4591,14 @@ async function calcPair(symbol,tf){
       console.log('Card display: UT Bot '+(utBot.direction===1?'Bullish':'Bearish')+' · '+baf+'b · '+(baf<=3?'Fresh':baf<=8?'Workable':'Stale'));
       console.log('');
     })();
+  }
+
+  // ── SOL candle source bake-off (DEBUG_MODE, SOLUSDT 4H only) ──────────────
+  // Gated independently — makes extra API calls (Binance Spot, Binance
+  // Futures, Bitunix LAST_PRICE, Bitunix MARK_PRICE). Production source
+  // routing (SplitSourceAdapter → ACTIVE_EXCHANGE) is not changed by this.
+  if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE&&DIAG.solCandleBakeOff&&symbol==='SOLUSDT'&&tf==='4h'){
+    auditSolCandleBakeOff().catch(e=>console.warn('[SolBakeOff] '+e.message));
   }
 
   // ── DIAGNOSTIC PROBE 3: OHLC / ATR / Trail Audit (DEBUG_MODE, ETH/LINK 4H) ─
