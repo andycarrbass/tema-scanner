@@ -5623,26 +5623,32 @@ function getTradeManagementWarning(dir, crossLong, aboveMA, maDist, tf){
 
 // ── UT Bot compact display — direction / age / freshness token colouring ──
 // Display-only helpers. Do not change UT Bot calculation, barsAgoFlip,
-// dot logic, or any existing "fresh within N bars" boolean used elsewhere
-// (e.g. counterFresh, utSignalFresh-driven dot/severity checks stay as-is).
+// or dot logic (dots continue to be driven by their own existing checks
+// unless explicitly re-pointed at classifyUtFreshness — see call sites).
 //
-// Freshness bucket thresholds (display classification only):
-//   0–6 bars   : Fresh
-//   7–12 bars  : Recent
-//   13–24 bars : Mature
-//   25+ bars   : Stale
-function classifyUtFreshnessLabel(bars){
-  const b = bars!=null ? bars : 99;
-  if(b <= 6)  return 'Fresh';
-  if(b <= 12) return 'Recent';
-  if(b <= 24) return 'Mature';
-  return 'Stale';
+// classifyUtFreshness is the single central freshness classification used
+// throughout the app — display labels, dot severity, and colour buckets
+// all derive from this one function so they can never drift apart again.
+//   0–6 bars   : Fresh   (rank 0)
+//   7–12 bars  : Recent  (rank 1)
+//   13–24 bars : Mature  (rank 2)
+//   25+ bars   : Stale   (rank 3)
+//   null/NaN   : None    (rank 99)
+function classifyUtFreshness(barsAgo){
+  if(barsAgo == null || !Number.isFinite(barsAgo)) {
+    return { key:'none', label:'None', rank:99 };
+  }
+  if(barsAgo <= 6)  return { key:'fresh',  label:'Fresh',  rank:0 };
+  if(barsAgo <= 12) return { key:'recent', label:'Recent', rank:1 };
+  if(barsAgo <= 24) return { key:'mature', label:'Mature', rank:2 };
+  return { key:'stale', label:'Stale', rank:3 };
 }
-function utFreshnessTokenColor(label){
-  return label==='Fresh'  ? 'var(--green-text)'
-       : label==='Recent' ? 'var(--blue-text)'
-       : label==='Mature' ? 'var(--amber-text)'
-       : 'var(--text3)'; // Stale — muted grey
+// Colour for a classifyUtFreshness() key — shared by every display site.
+function utFreshnessColorForKey(key){
+  return key==='fresh'  ? 'var(--green-text)'
+       : key==='recent' ? 'var(--blue-text)'
+       : key==='mature' ? 'var(--amber-text)'
+       : 'var(--text3)'; // stale / none — muted grey
 }
 function utDirectionTokenColor(direction){
   return direction===1  ? 'var(--green-text)'   // Bullish
@@ -5655,10 +5661,10 @@ function utCompactTokenHtml(direction, barsAgoFlip){
   const bars = barsAgoFlip!=null ? barsAgoFlip : 99;
   const dirWord = direction===1 ? 'Bullish' : direction===-1 ? 'Bearish' : 'Neutral';
   const ageStr  = bars===0 ? 'this bar' : bars+'b';
-  const freshLabel = classifyUtFreshnessLabel(bars);
+  const fresh = classifyUtFreshness(bars);
   return '<span style="color:'+utDirectionTokenColor(direction)+';">'+dirWord+'</span>'
     +' \u00b7 <span style="color:var(--text2);">'+ageStr+'</span>'
-    +' \u00b7 <span style="color:'+utFreshnessTokenColor(freshLabel)+';">'+freshLabel+'</span>';
+    +' \u00b7 <span style="color:'+utFreshnessColorForKey(fresh.key)+';">'+fresh.label+'</span>';
 }
 
 // TDAS Phase 0: buildTradeMgmtHtml is a pure parametric builder.
@@ -5672,7 +5678,9 @@ function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, t
   var dir=trade.signal||'short', id=trade.id;
   var aligned=htfAlign==='aligned', conflicted=htfAlign==='conflict';
   var counterBot=(dir==='long'&&safeUtBot.direction===-1)||(dir==='short'&&safeUtBot.direction===1);
-  var counterFresh=counterBot&&(safeUtBot.barsAgoFlip??99)<=3;
+  // counterFresh: highest severity only when the counter-signal is genuinely
+  // Fresh per the central classification (<=6 bars), not the old <=3 window.
+  var counterFresh=counterBot&&classifyUtFreshness(safeUtBot.barsAgoFlip??99).rank===0;
   var htfWord=dir==='short'?'bearish':'bullish';
 
   // ── Banner: driven by same crossLong that renders the TEMA row ────────
@@ -5713,10 +5721,6 @@ function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, t
   var pnlStr=(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%'+(pnlR!==null?' · '+(pnlR>=0?'+':'')+pnlR.toFixed(2)+'R':'');
   var temaOk=(dir==='short'&&!crossLong)||(dir==='long'&&crossLong);
   var utAge=safeUtBot.barsAgoFlip??99;
-  // fresh = within the existing freshness window (barsAgoFlip <= 3) — unchanged,
-  // still drives counterFresh/dot severity below. Display label uses the
-  // separate 4-tier classifyUtFreshnessLabel() bucket via utCompactTokenHtml.
-  var utSignalFresh=utAge<=3;
   var utLabel=utCompactTokenHtml(safeUtBot.direction, utAge);
   var fibHit=safeFib?(dir==='short'?(price>=safeFib):(price<=safeFib)):false;
   var fibColor=fibHit?'var(--amber-text)':'var(--text3)';
@@ -5797,7 +5801,10 @@ function buildEntrySignalsHtml(signal, htfAlign, htf, tf, utBot, crossLong, tema
   // UT Bot
   const utOk = (dir==='long'&&utLongConfirm)||(dir==='short'&&utShortConfirm);
   const utAge = safeUtBot.barsAgoFlip??99;
-  const utDot = utOk?'ok':utAge<=8?'warn':'no';
+  // utOk (confirming) unchanged. When not confirming, severity now derives
+  // from the central freshness rank: Fresh/Recent (rank<=1, <=12 bars) = warn,
+  // Mature/Stale (rank>=2, 13+ bars) = no. Was a flat <=8 cutoff before.
+  const utDot = utOk?'ok':classifyUtFreshness(utAge).rank<=1?'warn':'no';
   // Display value uses per-token colouring (direction / age / freshness) via
   // utCompactTokenHtml — the utOk-based dot/severity logic above is unchanged.
   const utVal = utCompactTokenHtml(safeUtBot.direction, utAge);
@@ -6429,7 +6436,7 @@ function openAnalysisPanel(symbol){
       <div class="cond"><span class="dot ${volOk?'ok':'warn'}"></span>Volume ${volRatio!==null?volRatio.toFixed(2)+'×':'—'} avg ${volOk?'':'(weak) ⚠'}</div>
       <div class="cond"><span class="dot ${adxTrending?'ok':'warn'}"></span>ADX ${_adx} · ${adxStrong?'Strong trend':adxTrending?'Trending':'Ranging ⚠'}</div>
       <div class="cond"><span class="dot ${htfDot}"></span>HTF ${(htf||'').toUpperCase()} ${htfAlign==='aligned'?'aligned ✓':htfAlign==='conflict'?'conflict ✗':htfAlign==='insufficient'?'insufficient data':'—'}</div>
-      <div class="cond"><span class="dot ${signal==='long'&&utLongConfirm?'ok':signal==='short'&&utShortConfirm?'ok':signal!=='neutral'?'no':'na'}"></span>UT Bot <span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span> · ${(_utBot.barsAgoFlip??99)===0?'this bar ⚡':(_utBot.barsAgoFlip??99)+'b · '+((_utBot.barsAgoFlip??99)<=3?'Fresh':(_utBot.barsAgoFlip??99)<=8?'Workable':'Stale')}</div>
+      <div class="cond"><span class="dot ${signal==='long'&&utLongConfirm?'ok':signal==='short'&&utShortConfirm?'ok':signal!=='neutral'?'no':'na'}"></span>UT Bot <span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span> · ${(_utBot.barsAgoFlip??99)===0?'this bar ⚡':(_utBot.barsAgoFlip??99)+'b · '+classifyUtFreshness(_utBot.barsAgoFlip??99).label}</div>
     </div>
 
     <!-- TEMA detail -->
@@ -6454,7 +6461,7 @@ function openAnalysisPanel(symbol){
       <div class="ap-section-title">UT Bot Alert · KV ${UT_BOT_KEY_VALUE} · ATR ${UT_BOT_ATR_PERIOD}${UT_BOT_SOURCE_MODE==='heikin_ashi'?' · HA source':''}</div>
       <div class="ap-row"><span>Direction</span><span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span></div>
       <div class="ap-row"><span>Trail stop level</span><span>${fmt(_utBot.trailLevel)}</span></div>
-      <div class="ap-row"><span>Last signal event</span><span style="color:${(_utBot.barsAgoFlip??99)<=3?'var(--green-text)':(_utBot.barsAgoFlip??99)<=8?'var(--amber-text)':'var(--red-text)'};">${(()=>{const _sig=_utBot.signal!=='none'?_utBot.signal:_utBot.recentSignal!=='none'?_utBot.recentSignal:null;const _sigLabel=_sig==='long'?'Buy ▲':_sig==='short'?'Sell ▼':'None';const _age=_utBot.barsAgoFlip??99;return _age===0?_sigLabel+' ⚡ This bar':_sigLabel+' · '+_age+' bars ago';})()}</span></div>
+      <div class="ap-row"><span>Last signal event</span><span style="color:${utFreshnessColorForKey(classifyUtFreshness(_utBot.barsAgoFlip??99).key)};">${(()=>{const _sig=_utBot.signal!=='none'?_utBot.signal:_utBot.recentSignal!=='none'?_utBot.recentSignal:null;const _sigLabel=_sig==='long'?'Buy ▲':_sig==='short'?'Sell ▼':'None';const _age=_utBot.barsAgoFlip??99;return _age===0?_sigLabel+' ⚡ This bar':_sigLabel+' · '+_age+' bars ago';})()}</span></div>
       <div class="ap-row"><span>Signal vs thesis</span><span style="color:${(signal==='long'&&utLongConfirm)||(signal==='short'&&utShortConfirm)?'var(--green-text)':(signal==='long'&&(_utBot.recentSignal==='short'||_utBot.signal==='short'))||(signal==='short'&&(_utBot.recentSignal==='long'||_utBot.signal==='long'))?'var(--amber-text)':signal!=='neutral'?'var(--text3)':'var(--text3)'}">${(signal==='long'&&utLongConfirm)?'✓ Confirms long — fresh Buy signal':(signal==='short'&&utShortConfirm)?'✓ Confirms short — fresh Sell signal':(signal==='short'&&(_utBot.recentSignal==='long'||_utBot.signal==='long'))?'⚠ Recent Buy opposes short thesis':(signal==='long'&&(_utBot.recentSignal==='short'||_utBot.signal==='short'))?'⚠ Recent Sell opposes long thesis':signal!=='neutral'?'Direction aligned — no recent confirming signal':'—'}</span></div>
       <div class="ap-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;">
         <span style="color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:0.4px;">Raw calculation inputs</span>
@@ -8461,8 +8468,11 @@ function renderConfCard(obj){
   // Kept for context — shows how old the directional bias is on the 4H chart.
   // Intentionally separate from Confluence Persistence.
   const _utBot4h = safeUtBot(h4.utBot);
-  const signalAge4hHours = (_utBot4h.barsAgoFlip != null ? _utBot4h.barsAgoFlip : 0) * 4;
-  const signalAgeColor = signalAge4hHours<=8?'var(--green-text)':signalAge4hHours<=24?'var(--amber-text)':'var(--text3)';
+  const _signalAge4hBars = _utBot4h.barsAgoFlip != null ? _utBot4h.barsAgoFlip : 0;
+  const signalAge4hHours = _signalAge4hBars * 4;
+  // Colour bucket driven by the central bar-based freshness classification —
+  // displayed value stays in hours, only the colour is unified with cards.
+  const signalAgeColor = utFreshnessColorForKey(classifyUtFreshness(_signalAge4hBars).key);
   const signalAgeHtml = '<div style="margin-bottom:12px;">'
     +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.6px;color:var(--text3);margin-bottom:3px;">4H Signal Age</div>'
     +'<div style="font-size:13px;font-weight:600;color:'+signalAgeColor+';">'+fmtAge(signalAge4hHours)+'</div>'
