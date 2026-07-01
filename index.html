@@ -1016,10 +1016,11 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // ── Storage layer ─────────────────────────────────────────────────────────
 // Centralised keys — change here, updates everywhere
 const STORAGE_KEYS = {
-  journal:     'temaJournal',
-  pairs:       'temaPairs',
-  history:     'temaHistory',
-  resetMarker: 'temaJournalResetAt',
+  journal:      'temaJournal',
+  pairs:        'temaPairs',
+  history:      'temaHistory',
+  resetMarker:  'temaJournalResetAt',
+  removedPairs: 'temaRemovedPairs',
 };
 
 // Parse JSON from localStorage with a safe fallback — never throws
@@ -1083,6 +1084,21 @@ function _isPreReset(entry){
 function savePairsData(){ safeStore(STORAGE_KEYS.pairs, PAIRS); }
 function saveHistory(){ safeStore(STORAGE_KEYS.history, signalHistory); }
 let PAIRS=safeParse(STORAGE_KEYS.pairs, DEFAULT_PAIRS);
+
+// ── Removed-pairs tombstone ────────────────────────────────────────────────
+// Tracks symbols the user has explicitly removed so a stale/longer Sheets
+// list can never silently resurrect them on the next load. Cleared for a
+// symbol only when the user deliberately re-adds it via addPair().
+let REMOVED_PAIRS = safeParse(STORAGE_KEYS.removedPairs, []);
+function loadRemovedPairs(){ return REMOVED_PAIRS; }
+function saveRemovedPairs(){ safeStore(STORAGE_KEYS.removedPairs, REMOVED_PAIRS); }
+function markPairRemoved(sym){
+  if(!REMOVED_PAIRS.includes(sym)){ REMOVED_PAIRS.push(sym); saveRemovedPairs(); }
+}
+function unmarkPairRemoved(sym){
+  if(REMOVED_PAIRS.includes(sym)){ REMOVED_PAIRS=REMOVED_PAIRS.filter(p=>p!==sym); saveRemovedPairs(); }
+}
+
 function getLabel(sym){return sym.replace('USDT','')+'/USDT';}
 const LABELS=new Proxy({},{get:(_,sym)=>getLabel(sym)});
 const HTF={'1h':'4h','4h':'1d','1d':'1w'};
@@ -1659,15 +1675,20 @@ async function syncPairsToSheets(){
 }
 async function loadPairsFromSheets(){
   const res = await sheetsGet('getPairs');
-  if(res&&res.pairs&&res.pairs.length>0){
-    // Filter out header artefacts and invalid pairs — must end in USDT and be all-caps alphanumeric
-    const valid = res.pairs.filter(p => typeof p === 'string' && /^[A-Z0-9]+USDT$/.test(p.trim()));
-    if(valid.length>0){
-      if(valid.length>=PAIRS.length){
-        PAIRS.length=0; valid.forEach(p=>PAIRS.push(p.trim())); savePairsData();
-      } else { syncPairsToSheets(); }
-    } else { syncPairsToSheets(); }
-  } else { syncPairsToSheets(); }
+  // Sheets pairs, filtered for header artefacts / invalid entries — must end in USDT and be all-caps alphanumeric
+  const sheetPairs = (res && res.pairs) ? res.pairs.filter(p => typeof p === 'string' && /^[A-Z0-9]+USDT$/.test(p.trim())).map(p=>p.trim()) : [];
+  const localPairs = PAIRS;
+  // Union of local + sheets, excluding anything the user has explicitly removed (tombstone).
+  // This replaces the old "longer list wins" heuristic, which always resurrected removals
+  // whenever Sheets still held a stale, longer copy of the list.
+  const merged = Array.from(new Set([...localPairs, ...sheetPairs])).filter(p => !REMOVED_PAIRS.includes(p));
+  const changed = merged.length !== PAIRS.length || merged.some((p,i)=>p!==PAIRS[i]);
+  if(changed){
+    PAIRS.length=0; merged.forEach(p=>PAIRS.push(p));
+    savePairsData();
+  }
+  // Push the reconciled, tombstone-respecting list back so Sheets self-heals toward it.
+  syncPairsToSheets();
 }
 
 
@@ -7968,6 +7989,7 @@ async function addPair(){
   try{
     await validateSymbol(raw);
     PAIRS.push(raw);
+    unmarkPairRemoved(raw);
     savePairs();
     syncPairsToSheets();
     input.value='';
@@ -7985,6 +8007,7 @@ async function addPair(){
 function removePair(sym){
   if(PAIRS.length<=1){alert('You need at least one pair.');return;}
   PAIRS=PAIRS.filter(p=>p!==sym);
+  markPairRemoved(sym);
   savePairs();
   syncPairsToSheets();
   renderPairsList();
