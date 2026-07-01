@@ -4244,7 +4244,14 @@ async function _executeRequest(url, opts, retryNum=0){
     const res = await fetch(url, {signal: controller.signal, ...opts});
     clearTimeout(timer);
     if(!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const text = await res.text();
+    let data;
+    try{
+      data = JSON.parse(text);
+    }catch(parseErr){
+      const ct = res.headers.get('content-type') || 'unknown';
+      throw new Error(`Non-JSON response (${ct}) from ${url.slice(0,90)} — body: ${text.slice(0,120).replace(/\s+/g,' ')}`);
+    }
     if(DEBUG_MODE) console.debug(`[API] ✓ ${res.status} (${Date.now()-t0}ms) ${url.slice(30,75)}`);
     return data;
   } catch(err) {
