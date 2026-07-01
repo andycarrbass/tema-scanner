@@ -5336,7 +5336,7 @@ function buildSnapshot(symbol) {
   // Safe UT Bot fields
   const utBot = d.utBot && typeof d.utBot === 'object' ? d.utBot : {};
   const utDir = utBot.direction === 1 ? 'Bullish' : utBot.direction === -1 ? 'Bearish' : '-';
-  const utAge = utBot.barsAgoFlip != null ? utBot.barsAgoFlip + ' bars' : '-';
+  const utAge = utBot.barsAgoFlip != null ? utBot.barsAgoFlip + ' bars (' + classifyUtFreshness(utBot.barsAgoFlip).label + ')' : '-';
 
   // Status
   const openTrade = journal.find(function(j){ return !j.deleted && j.symbol===symbol && j.decision==='took' && !j.outcome; });
@@ -5424,7 +5424,7 @@ function buildSnapshotFromTrade(entry) {
   var _bsftSt = (d.states && typeof d.states === 'object') ? d.states : null;
   var utBot  = _bsftSt ? _bsftSt.utBot : (d.utBot && typeof d.utBot === 'object' ? d.utBot : {});
   var utDir  = utBot.direction === 1 ? 'Bullish' : utBot.direction === -1 ? 'Bearish' : '-';
-  var utAge  = utBot.barsAgoFlip != null ? utBot.barsAgoFlip + ' bars' : '-';
+  var utAge  = utBot.barsAgoFlip != null ? utBot.barsAgoFlip + ' bars (' + classifyUtFreshness(utBot.barsAgoFlip).label + ')' : '-';
   var score  = entry.score || (_bsftSt ? _bsftSt.score : null) || d.score || 0;
   var strength = _bsftSt ? _bsftSt.strength : (score >= 80 ? 'Strong' : score >= 65 ? 'Moderate' : 'Weak');
   var htfState  = d.htfAlign === 'aligned' ? 'Aligned' : d.htfAlign === 'conflict' ? 'Conflict' : 'Neutral';
@@ -6461,14 +6461,14 @@ function openAnalysisPanel(symbol){
       <div class="ap-section-title">UT Bot Alert · KV ${UT_BOT_KEY_VALUE} · ATR ${UT_BOT_ATR_PERIOD}${UT_BOT_SOURCE_MODE==='heikin_ashi'?' · HA source':''}</div>
       <div class="ap-row"><span>Direction</span><span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span></div>
       <div class="ap-row"><span>Trail stop level</span><span>${fmt(_utBot.trailLevel)}</span></div>
-      <div class="ap-row"><span>Last signal event</span><span style="color:${utFreshnessColorForKey(classifyUtFreshness(_utBot.barsAgoFlip??99).key)};">${(()=>{const _sig=_utBot.signal!=='none'?_utBot.signal:_utBot.recentSignal!=='none'?_utBot.recentSignal:null;const _sigLabel=_sig==='long'?'Buy ▲':_sig==='short'?'Sell ▼':'None';const _age=_utBot.barsAgoFlip??99;return _age===0?_sigLabel+' ⚡ This bar':_sigLabel+' · '+_age+' bars ago';})()}</span></div>
-      <div class="ap-row"><span>Signal vs thesis</span><span style="color:${(signal==='long'&&utLongConfirm)||(signal==='short'&&utShortConfirm)?'var(--green-text)':(signal==='long'&&(_utBot.recentSignal==='short'||_utBot.signal==='short'))||(signal==='short'&&(_utBot.recentSignal==='long'||_utBot.signal==='long'))?'var(--amber-text)':signal!=='neutral'?'var(--text3)':'var(--text3)'}">${(signal==='long'&&utLongConfirm)?'✓ Confirms long — fresh Buy signal':(signal==='short'&&utShortConfirm)?'✓ Confirms short — fresh Sell signal':(signal==='short'&&(_utBot.recentSignal==='long'||_utBot.signal==='long'))?'⚠ Recent Buy opposes short thesis':(signal==='long'&&(_utBot.recentSignal==='short'||_utBot.signal==='short'))?'⚠ Recent Sell opposes long thesis':signal!=='neutral'?'Direction aligned — no recent confirming signal':'—'}</span></div>
+      <div class="ap-row"><span>Last UT flip</span><span style="color:${utFreshnessColorForKey(classifyUtFreshness(_utBot.barsAgoFlip??99).key)};">${(()=>{const _bars=_utBot.barsAgoFlip??99;const _dirWord=_utBot.direction===1?'Bullish':_utBot.direction===-1?'Bearish':'—';if(_utBot.direction===0)return'No UT Bot data';const _label=classifyUtFreshness(_bars).label;return _bars===0?_dirWord+' ⚡ This bar · '+_label:_dirWord+' · '+_bars+' bars ago · '+_label;})()}</span></div>
+      <div class="ap-row"><span>Signal vs thesis</span><span style="color:${(()=>{if(signal==='neutral'||_utBot.direction===0)return'var(--text3)';const _aligns=(signal==='long'&&_utBot.direction===1)||(signal==='short'&&_utBot.direction===-1);const _rank=classifyUtFreshness(_utBot.barsAgoFlip??99).rank;if(_aligns)return _rank<=1?'var(--green-text)':_rank===2?'var(--amber-text)':'var(--text3)';return _rank<=1?'var(--red-text)':_rank===2?'var(--amber-text)':'var(--text3)';})()};">${(()=>{if(signal==='neutral')return'—';if(_utBot.direction===0)return'No UT Bot data';const _aligns=(signal==='long'&&_utBot.direction===1)||(signal==='short'&&_utBot.direction===-1);const _fresh=classifyUtFreshness(_utBot.barsAgoFlip??99);if(_aligns){if(_fresh.rank<=1)return'Direction aligned — recent confirming signal';if(_fresh.key==='mature')return'Direction aligned — mature signal, less immediate';return'Direction aligned — old signal, context only';}return'Counter-signal — '+_fresh.label;})()}</span></div>
       <div class="ap-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;">
         <span style="color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:0.4px;">Raw calculation inputs</span>
       </div>
       <div class="ap-row"><span style="color:var(--text3);">barsAgoFlip</span><span style="font-family:var(--mono);font-size:12px;">${_utBot.barsAgoFlip??'—'}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">freshSignal (last bar)</span><span style="font-family:var(--mono);font-size:12px;">${_utBot.signal||'none'}</span></div>
-      <div class="ap-row"><span style="color:var(--text3);">recentSignal (≤3 bars)</span><span style="font-family:var(--mono);font-size:12px;">${_utBot.recentSignal||'none'}</span></div>
+      <div class="ap-row"><span style="color:var(--text3);">recentSignal (raw flag)</span><span style="font-family:var(--mono);font-size:12px;">${_utBot.recentSignal||'none'}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">trailLevel (current)</span><span style="font-family:var(--mono);font-size:12px;">${fmt(_utBot.trailLevel)}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">trailLevel (prev bar)</span><span style="font-family:var(--mono);font-size:12px;">${fmt(_utBot.prevTrailLevel)}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">Trade age (time-based)</span><span style="font-family:var(--mono);font-size:12px;">${d.tradeAgeHours!=null?d.tradeAgeHours+' hrs':'—'}</span></div>
