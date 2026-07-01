@@ -5621,6 +5621,46 @@ function getTradeManagementWarning(dir, crossLong, aboveMA, maDist, tf){
   }
 }
 
+// ── UT Bot compact display — direction / age / freshness token colouring ──
+// Display-only helpers. Do not change UT Bot calculation, barsAgoFlip,
+// dot logic, or any existing "fresh within N bars" boolean used elsewhere
+// (e.g. counterFresh, utSignalFresh-driven dot/severity checks stay as-is).
+//
+// Freshness bucket thresholds (display classification only):
+//   0–6 bars   : Fresh
+//   7–12 bars  : Recent
+//   13–24 bars : Mature
+//   25+ bars   : Stale
+function classifyUtFreshnessLabel(bars){
+  const b = bars!=null ? bars : 99;
+  if(b <= 6)  return 'Fresh';
+  if(b <= 12) return 'Recent';
+  if(b <= 24) return 'Mature';
+  return 'Stale';
+}
+function utFreshnessTokenColor(label){
+  return label==='Fresh'  ? 'var(--green-text)'
+       : label==='Recent' ? 'var(--blue-text)'
+       : label==='Mature' ? 'var(--amber-text)'
+       : 'var(--text3)'; // Stale — muted grey
+}
+function utDirectionTokenColor(direction){
+  return direction===1  ? 'var(--green-text)'   // Bullish
+       : direction===-1 ? 'var(--red-text)'     // Bearish
+       : 'var(--text3)';                        // Neutral / none
+}
+// Builds "Bullish · 171b · Stale" with each token coloured independently.
+// barsAgo stays neutral (var(--text2)) per spec — no strong colour.
+function utCompactTokenHtml(direction, barsAgoFlip){
+  const bars = barsAgoFlip!=null ? barsAgoFlip : 99;
+  const dirWord = direction===1 ? 'Bullish' : direction===-1 ? 'Bearish' : 'Neutral';
+  const ageStr  = bars===0 ? 'this bar' : bars+'b';
+  const freshLabel = classifyUtFreshnessLabel(bars);
+  return '<span style="color:'+utDirectionTokenColor(direction)+';">'+dirWord+'</span>'
+    +' \u00b7 <span style="color:var(--text2);">'+ageStr+'</span>'
+    +' \u00b7 <span style="color:'+utFreshnessTokenColor(freshLabel)+';">'+freshLabel+'</span>';
+}
+
 // TDAS Phase 0: buildTradeMgmtHtml is a pure parametric builder.
 // Callers (renderCard) pass values that come from d.states — no inline re-derivation.
 function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, temaWidening, adx, adxStrong, adxTrending, fibRetrace618, aboveMA, maDist, htfTrendContext){
@@ -5673,12 +5713,11 @@ function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, t
   var pnlStr=(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%'+(pnlR!==null?' · '+(pnlR>=0?'+':'')+pnlR.toFixed(2)+'R':'');
   var temaOk=(dir==='short'&&!crossLong)||(dir==='long'&&crossLong);
   var utAge=safeUtBot.barsAgoFlip??99;
-  var utAgeStr=utAge===0?'this bar':utAge+'b';
-  // fresh = within the existing freshness window (barsAgoFlip <= 3)
+  // fresh = within the existing freshness window (barsAgoFlip <= 3) — unchanged,
+  // still drives counterFresh/dot severity below. Display label uses the
+  // separate 4-tier classifyUtFreshnessLabel() bucket via utCompactTokenHtml.
   var utSignalFresh=utAge<=3;
-  var utColor=counterFresh?'var(--red-text)':counterBot?'var(--amber-text)':'var(--green-text)';
-  var utDirectionWord=safeUtBot.direction===1?'Bullish':'Bearish';
-  var utLabel=utDirectionWord+' \u00b7 '+utAgeStr+' \u00b7 '+(utSignalFresh?'fresh':'stale');
+  var utLabel=utCompactTokenHtml(safeUtBot.direction, utAge);
   var fibHit=safeFib?(dir==='short'?(price>=safeFib):(price<=safeFib)):false;
   var fibColor=fibHit?'var(--amber-text)':'var(--text3)';
   var fibLabel=safeFib?(fibHit?('⚠ 0.618 retrace '+fmt(safeFib)+' — key level'):('Within trend — 0.618 at '+fmt(safeFib))):'Fib levels unavailable';
@@ -5708,7 +5747,7 @@ function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, t
         return row(_dot,'HTF '+htf.toUpperCase()+' state',_color,_val);
       }())
       +row((temaOk&&temaWidening)?'ok':temaOk?'warn':'no','TEMA crossover',temaOk?(temaWidening?'var(--green-text)':'var(--amber-text)'):'var(--red-text)',temaOk?(temaWidening?'✓ Widening':'▼ Converging'):'✗ Crossed against')
-      +row(counterBot?(counterFresh?'no':'warn'):'ok','UT Bot '+(tf||'').toUpperCase(),utColor,utLabel)
+      +row(counterBot?(counterFresh?'no':'warn'):'ok','UT Bot '+(tf||'').toUpperCase(),'inherit',utLabel)
       +row(fibHit?'warn':'ok','Fib retrace',fibColor,fibLabel)
       +row(adxTrending?'ok':'warn','ADX strength',adxTrending?'var(--text2)':'var(--amber-text)',safeAdx+' · '+(adxStrong?'Strong':adxTrending?'Trending':'Ranging ⚠'))
     +'</div>'
@@ -5758,13 +5797,10 @@ function buildEntrySignalsHtml(signal, htfAlign, htf, tf, utBot, crossLong, tema
   // UT Bot
   const utOk = (dir==='long'&&utLongConfirm)||(dir==='short'&&utShortConfirm);
   const utAge = safeUtBot.barsAgoFlip??99;
-  const utAgeStr = utAge===0?'this bar':utAge+'b';
-  const utSignalFresh = utAge<=3;
   const utDot = utOk?'ok':utAge<=8?'warn':'no';
-  const utColor = utOk?'var(--green-text)':utAge<=8?'var(--amber-text)':'var(--red-text)';
-  const utWord = safeUtBot.direction===1?'Bullish':'Bearish';
-  // compact: Direction • age • fresh/aligned/counter
-  const utVal = utWord+' \u00b7 '+utAgeStr+' \u00b7 '+(utSignalFresh?'fresh':'stale');
+  // Display value uses per-token colouring (direction / age / freshness) via
+  // utCompactTokenHtml — the utOk-based dot/severity logic above is unchanged.
+  const utVal = utCompactTokenHtml(safeUtBot.direction, utAge);
   // ADX
   const adxDot = adxStrong?'ok':adxTrending?'warn':'no';
   const adxColor = adxStrong?'var(--text2)':adxTrending?'var(--amber-text)':'var(--red-text)';
@@ -5773,7 +5809,7 @@ function buildEntrySignalsHtml(signal, htfAlign, htf, tf, utBot, crossLong, tema
     +'<div class="exit-conds">'
       +row(htfDot, 'HTF '+htf.toUpperCase()+' state', htfColor, htfVal)
       +row(temaDot, 'TEMA crossover', temaColor, temaVal)
-      +row(utDot, 'UT Bot '+(tf||'').toUpperCase(), utColor, utVal)
+      +row(utDot, 'UT Bot '+(tf||'').toUpperCase(), 'inherit', utVal)
       +row(adxDot, 'ADX strength', adxColor, adxVal)
     +'</div>';
 }
