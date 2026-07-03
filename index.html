@@ -2029,6 +2029,20 @@ function computeStates(d) {
   // temaState: 'widening' | 'narrowing' — used by buildV1Entry / buildSnapshot
   const temaState    = temaWidening ? 'widening' : 'narrowing';
 
+  // ── TEMA 92 slope — measured, does not alter TEMA calculation ──────────
+  // Reads t92/prevT92 already computed in calcPair. Negligible moves
+  // (<0.01% of the previous value) are treated as flat rather than noise
+  // flipping rising/falling on essentially-unchanged values.
+  const tema92Prev = (d.prevT92 != null && isFinite(d.prevT92)) ? d.prevT92 : null;
+  const _t92Cur    = (d.t92     != null && isFinite(d.t92))     ? d.t92     : null;
+  let tema92Slope = 'unknown';
+  let tema92SlopeDelta = null;
+  if (_t92Cur != null && tema92Prev != null) {
+    tema92SlopeDelta = _t92Cur - tema92Prev;
+    const negligible = Math.abs(tema92SlopeDelta) < Math.abs(tema92Prev) * 0.0001;
+    tema92Slope = negligible ? 'flat' : (tema92SlopeDelta > 0 ? 'rising' : 'falling');
+  }
+
   // ── UT Bot states ──────────────────────────────────────────────────────
   const utDirection  = _utBot.direction; // 1 | -1 | 0
   const utBarsAgo    = _utBot.barsAgoFlip != null ? _utBot.barsAgoFlip : 99;
@@ -2143,6 +2157,7 @@ function computeStates(d) {
   return {
     // TEMA
     temaLong, temaShort, temaWidening, temaState,
+    tema92Slope, tema92SlopeDelta, tema92Prev,
     crossLong, crossShort,
     // UT Bot
     utBot:        _utBot,
@@ -2880,6 +2895,200 @@ function classifyLifecycle(d, entry) {
   // NO_ACTION — signal present but evidence insufficient
   reasons.push('Signal present but insufficient confirming evidence');
   return { state: LIFECYCLE_STATES.NO_ACTION, stage: 'discovery', confidence: 'LOW', reasons };
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS PHASE 3 — Advisory Engine (V1)                                    ║
+// ║  buildAdvisory(d, entry)                                                 ║
+// ║                                                                          ║
+// ║  Purpose: Pure translation layer that converts existing engine output   ║
+// ║  (d.states, d.evaluation) plus a resolved journal entry into a single   ║
+// ║  advisory object using ONLY approved wording:                            ║
+// ║    Scanner:      AVOID, WATCH, CONSIDER LONG/SHORT,                     ║
+// ║                  ⭐ HIGH CONVICTION LONG/SHORT                          ║
+// ║    Active trade: HOLD, REVIEW, TAKE PROFIT 25%, TAKE PROFIT 50%, CLOSE  ║
+// ║  Never displays: EXIT RISK, TRADE ARMED, NOT READY, PREPARE EXIT or     ║
+// ║  REDUCE as user-facing text (those remain internal LIFECYCLE_STATES).   ║
+// ║                                                                          ║
+// ║  Contract:                                                               ║
+// ║    - Input:  d     — calcPair result (d.states, d.evaluation, d.price;  ║
+// ║                       d._1hTiming if already computed by _calc1HTiming  ║
+// ║                       for this symbol — may be absent, never assumed)   ║
+// ║              entry — resolveJournalEntry(symbol) result, or null        ║
+// ║    - Output: advisory object, or null when there is genuinely nothing   ║
+// ║              to advise (neutral scanner signal, no open trade)          ║
+// ║    - Pure function: no DOM access, no fetching, no indicator            ║
+// ║      recalculation, no journal mutation. Reads only what already exists.║
+// ║                                                                          ║
+// ║  V1 scope: scanner mode is a direct translation of                      ║
+// ║  d.evaluation.actionBias. Active-trade mode implements the short exit   ║
+// ║  ladder in full, with a mirrored long ladder (fields are symmetric).    ║
+// ║  Not wired into any UI surface yet except the detail/analysis panel.    ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function buildAdvisory(d, entry) {
+  if (!d) return null;
+  const openTrade = entry && entry.openTrade ? entry.openTrade : null;
+  return openTrade ? _buildActiveTradeAdvisory(d, openTrade) : _buildScannerAdvisory(d);
+}
+
+// ── Scanner-mode advisory — direct translation of evaluateSetup() output ──
+// No new logic: actionBias already encodes the classification, this only
+// renames enum values to approved display wording.
+function _buildScannerAdvisory(d) {
+  const ev = d.evaluation;
+  if (!ev || ev.tradeBias === 'NEUTRAL' || ev.actionBias === ACTION_BIAS.NO_SETUP) {
+    return null; // nothing to advise — no active signal
+  }
+  const dir = ev.tradeBias === 'LONG' ? 'LONG' : 'SHORT';
+  const sfx = dir === 'LONG' ? '_LONG' : '_SHORT';
+
+  let action, headline, next;
+  if (ev.actionBias === ACTION_BIAS.AVOID) {
+    action = 'AVOID'; headline = 'AVOID';
+    next = 'Wait for regime improvement or a cleaner reset before considering entry.';
+  } else if (ev.actionBias === ACTION_BIAS['WATCH' + sfx]) {
+    action = 'WATCH'; headline = 'WATCH';
+    next = 'Wait for stronger confirmation before considering entry.';
+  } else if (ev.actionBias === ACTION_BIAS['CONSIDER' + sfx]) {
+    action = 'CONSIDER' + sfx; headline = 'CONSIDER ' + dir;
+    next = 'Review position size and entry trigger.';
+  } else if (ev.actionBias === ACTION_BIAS['STRONG' + sfx]) {
+    action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
+    next = 'Consider entry if position size and risk are acceptable.';
+  } else {
+    return null;
+  }
+
+  // tradeReady: reuses evaluateSetup's highProbability flag as the V1 threshold.
+  // Deliberately conservative — see delivery notes for the open threshold question.
+  const tradeReady = !!ev.highProbability;
+  return {
+    mode: 'scanner',
+    action, headline,
+    detail: (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : ''),
+    direction: dir,
+    tradeReady,
+    readyLabel: tradeReady ? 'TRADE READY' : null,
+    supporting: ev.reasons  || [],
+    blocking:   ev.blockers || [],
+    warnings:   ev.warnings || [],
+    next,
+  };
+}
+
+// ── Active-trade advisory — V1 exit ladder (short, and mirrored long) ─────
+// Reads only d.states (4H) and d._1hTiming (1H — may be absent if
+// _calc1HTiming hasn't run for this symbol yet; treated as unknown, never
+// assumed bullish/bearish). Does not fetch, does not recalculate TEMA/UT/ADX.
+function _buildActiveTradeAdvisory(d, openTrade) {
+  const st = d.states;
+  if (!st) return null;
+  const dir = openTrade.signal === 'long' ? 'long' : 'short'; // trade direction, not current signal
+
+  // P&L — same computation pattern as buildTradeMgmtHtml. Not centralised
+  // in this pass; see audit note on P&L/R being computed independently in
+  // multiple places — out of scope for this phase.
+  const entryPx = openTrade.actualEntry || openTrade.price || null;
+  const price   = d.price;
+  let pnlPct = null;
+  if (entryPx != null && price != null) {
+    pnlPct = dir === 'short' ? ((entryPx - price) / entryPx * 100) : ((price - entryPx) / entryPx * 100);
+  }
+  const inProfit = pnlPct != null && pnlPct > 0;
+
+  // 4H inputs
+  const utDir = st.utBot ? st.utBot.direction : 0; // 1 bullish trail, -1 bearish trail
+  const utFreshEnough = classifyUtFreshness(st.utBot ? st.utBot.barsAgoFlip : null).rank <= 1; // Fresh or Recent
+
+  // 1H inputs — may be entirely unavailable; never assumed either way
+  const oneH = d._1hTiming || null;
+  const oneHAvailable     = !!oneH;
+  const oneHTurnedAgainst = oneH ? (dir === 'short' ? oneH.crossLong1h === true  : oneH.crossLong1h === false) : null;
+  const oneHReclaimed     = oneH ? (dir === 'short' ? oneH.aboveMA1h  === true  : oneH.aboveMA1h  === false) : null;
+
+  let action, headline, detail;
+
+  if (dir === 'short') {
+    const structureReclaimed = st.aboveMA === true;   // price back above 4H 200MA — structure lost
+    const temaCrossAgainst   = st.crossLong === true;  // 4H TEMA now bullish
+    const tema92Rising       = st.tema92Slope === 'rising';
+
+    if (utDir === 1 && utFreshEnough && structureReclaimed) {
+      action = 'CLOSE'; headline = 'CLOSE';
+      detail = '4H UT flipped bullish and price reclaimed the 200MA.';
+    } else if (inProfit && ((temaCrossAgainst && tema92Rising) || utDir === 1)) {
+      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
+      detail = (temaCrossAgainst && tema92Rising)
+        ? '4H TEMA crossed against short and TEMA 92 is rising.'
+        : '4H UT flipped bullish against short.';
+    } else if (inProfit && oneHReclaimed === true) {
+      action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
+      detail = '1H reversal active. 4H structure still holds.';
+    } else if (oneHReclaimed === true) {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = '1H reversal active. 4H structure still holds.';
+    } else if (oneHTurnedAgainst === true) {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = '1H reversal developing. 4H UT still bearish.';
+    } else if (temaCrossAgainst && utDir === -1) {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = 'TEMA warning active. UT still supports short.';
+    } else if (st.htfAlign === 'conflict') {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = 'HTF weakening. No primary exit trigger yet.';
+    } else {
+      action = 'HOLD'; headline = 'HOLD';
+      detail = '4H UT remains bearish. Structure still supports short.';
+    }
+  } else {
+    // ── Mirrored LONG logic (Task 4) — fields are symmetric, safe to mirror ──
+    const structureLost    = st.aboveMA === false;   // price below 4H 200MA — structure lost
+    const temaCrossAgainst = st.crossShort === true;  // 4H TEMA now bearish
+    const tema92Falling    = st.tema92Slope === 'falling';
+
+    if (utDir === -1 && utFreshEnough && structureLost) {
+      action = 'CLOSE'; headline = 'CLOSE';
+      detail = '4H UT flipped bearish and price lost the 200MA.';
+    } else if (inProfit && ((temaCrossAgainst && tema92Falling) || utDir === -1)) {
+      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
+      detail = (temaCrossAgainst && tema92Falling)
+        ? '4H TEMA crossed against long and TEMA 92 is falling.'
+        : '4H UT flipped bearish against long.';
+    } else if (inProfit && oneHReclaimed === true) {
+      action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
+      detail = '1H reversal active. 4H structure still holds.';
+    } else if (oneHReclaimed === true) {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = '1H reversal active. 4H structure still holds.';
+    } else if (oneHTurnedAgainst === true) {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = '1H reversal developing. 4H UT still bullish.';
+    } else if (temaCrossAgainst && utDir === 1) {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = 'TEMA warning active. UT still supports long.';
+    } else if (st.htfAlign === 'conflict') {
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = 'HTF weakening. No primary exit trigger yet.';
+    } else {
+      action = 'HOLD'; headline = 'HOLD';
+      detail = '4H UT remains bullish. Structure still supports long.';
+    }
+  }
+
+  const warnings = [];
+  if (!oneHAvailable) warnings.push('1H timing data not yet available for this symbol — exit ladder is 4H-only until it loads (visit the Trade Desk tab to populate it).');
+
+  return {
+    mode: 'active_trade',
+    action, headline, detail,
+    direction: dir === 'long' ? 'LONG' : 'SHORT',
+    tradeReady: false,
+    readyLabel: null,
+    supporting: [],
+    blocking: [],
+    warnings,
+    next: '',
+  };
 }
 
 // ── calcUTBotPineBootstrapDiagnostic ──────────────────────────────────────
@@ -5264,7 +5473,7 @@ async function calcPair(symbol,tf){
     }
 
   }
-  const _result={price,t17,t92,ma200,aboveMA,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
+  const _result={price,t17,t92,prevT92,ma200,aboveMA,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
     adx,adxTrending,adxStrong,
@@ -6409,7 +6618,40 @@ function openAnalysisPanel(symbol){
     _tcHtml=_tcHtml.slice(0,-6)+_regimeRow+'</div>';
   }
 
+  // TDAS Phase 3: build advisory block — detail view only, additive.
+  // Does not replace _evalHtml/_lifecycleHtml below; both remain rendered
+  // so the new block can be visually compared against the existing sections.
+  var _advisoryHtml = '';
+  var _advisory = (typeof buildAdvisory === 'function')
+    ? buildAdvisory(d, resolveJournalEntry(symbol))
+    : null;
+  if (_advisory) {
+    var _advColor = _advisory.action === 'CLOSE' ? 'var(--red-text)'
+      : (_advisory.action === 'TAKE_PROFIT_50' || _advisory.action === 'TAKE_PROFIT_25' || _advisory.action === 'REVIEW') ? 'var(--amber-text)'
+      : (_advisory.action === 'AVOID') ? 'var(--red-text)'
+      : (_advisory.action && _advisory.action.indexOf('HIGH_CONVICTION') === 0) ? 'var(--green-text)'
+      : (_advisory.action === 'HOLD' || (_advisory.action && _advisory.action.indexOf('CONSIDER') === 0)) ? 'var(--green-text)'
+      : 'var(--text2)';
+    function _advList(label, items, color) {
+      if (!items || !items.length) return '';
+      return '<div class="ap-row" style="align-items:flex-start;">'
+        + '<span style="color:' + color + ';">' + label + '</span>'
+        + '<span style="color:' + color + ';font-size:11px;text-align:right;">' + items.join('<br>') + '</span></div>';
+    }
+    _advisoryHtml = '<div class="ap-section" style="border:1px solid ' + _advColor + ';">'
+      + '<div class="ap-section-title" style="letter-spacing:0.6px;">TDAS Advisory</div>'
+      + '<div class="ap-row"><span style="font-size:16px;font-weight:700;color:' + _advColor + ';">' + _advisory.headline + '</span>'
+      + (_advisory.readyLabel ? '<span style="font-size:11px;font-weight:700;color:var(--green-text);background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.25);padding:2px 8px;border-radius:99px;">' + _advisory.readyLabel + '</span>' : '') + '</div>'
+      + (_advisory.detail ? '<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--text2);font-size:13px;">' + _advisory.detail + '</span></div>' : '')
+      + _advList('Supporting', _advisory.supporting, 'var(--green-text)')
+      + _advList('Warnings',   _advisory.warnings,   'var(--amber-text)')
+      + _advList('Blocking',   _advisory.blocking,   'var(--red-text)')
+      + (_advisory.next ? '<div class="ap-row" style="align-items:flex-start;border-top:1px solid var(--border);margin-top:4px;padding-top:4px;"><span style="color:var(--text3);font-size:11px;font-style:italic;">' + _advisory.next + '</span></div>' : '')
+      + '</div>';
+  }
+
   body.innerHTML = `
+    ${_advisoryHtml}
     <!-- Signal summary -->
     <div class="ap-section">
       <div class="ap-section-title">Signal summary</div>
@@ -6445,6 +6687,7 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span>TEMA 17</span><span>${fmt(t17)}</span></div>
       <div class="ap-row"><span>TEMA 92</span><span>${fmt(t92)}</span></div>
       <div class="ap-row"><span>Separation</span><span style="color:${temaWidening?'var(--green-text)':'var(--amber-text)'};">${temaWidening?'▲ Widening':'▼ Converging'}</span></div>
+      <div class="ap-row"><span>TEMA 92 slope</span><span style="color:${(d.states&&d.states.tema92Slope==='rising')?'var(--green-text)':(d.states&&d.states.tema92Slope==='falling')?'var(--red-text)':'var(--text3)'};">${d.states?(d.states.tema92Slope.charAt(0).toUpperCase()+d.states.tema92Slope.slice(1)):'Unknown'}</span></div>
     </div>
 
     <!-- RSI / Volume / ADX -->
