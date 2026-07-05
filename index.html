@@ -3029,9 +3029,29 @@ function _buildScannerAdvisory(d) {
 
   let action, headline, next, detail;
   if (ev.actionBias === ACTION_BIAS.AVOID) {
-    action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
-    next = 'Wait for regime improvement or a cleaner reset before considering entry.';
-    detail = _avoidDetail(ev, d, dir);
+    // Counter-regime strong-signal exception (presentation only — does not
+    // touch evaluateSetup/actionBias/scoring). A genuinely strong signal
+    // whose ONLY real problem is regime opposition is worth watching, not
+    // dismissing outright. Weaker signals, or AVOIDs with any additional
+    // blocker beyond regime opposition, keep the blunt AVOID unchanged.
+    const blockers = ev.blockers || [];
+    const regimeBlocker = blockers.find(b => b.indexOf('Regime opposed') === 0);
+    const otherSevereBlockers = blockers.filter(b => b.indexOf('Regime opposed') !== 0);
+    const isCounterRegimeStrong = !!regimeBlocker && ev.score >= 80 && otherSevereBlockers.length === 0;
+
+    if (isCounterRegimeStrong) {
+      action = 'WATCH'; headline = 'WATCH ' + dir;
+      next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
+      const regWord = (d.regime && d.regime.direction === 'bullish') ? 'bullish'
+                    : (d.regime && d.regime.direction === 'bearish') ? 'bearish' : 'neutral';
+      detail = dir === 'LONG'
+        ? 'Strong 4H bounce, but ' + regWord + ' ' + (d.htf||'HTF').toUpperCase() + ' regime opposes.'
+        : 'Strong 4H short signal, but ' + regWord + ' ' + (d.htf||'HTF').toUpperCase() + ' regime opposes.';
+    } else {
+      action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
+      next = 'Wait for regime improvement or a cleaner reset before considering entry.';
+      detail = _avoidDetail(ev, d, dir);
+    }
   } else if (ev.actionBias === ACTION_BIAS['WATCH' + sfx]) {
     action = 'WATCH'; headline = 'WATCH';
     next = 'Wait for stronger confirmation before considering entry.';
