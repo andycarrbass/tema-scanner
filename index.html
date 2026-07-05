@@ -70,6 +70,15 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .card.long{border-left-color:var(--green);}
 .card.short{border-left-color:var(--red);}
 
+/* ── TDAS Scanner Entry/Watch Advisory — card-front state colour ────────
+   Same subtle left-rail approach as the active-trade placeholder below.
+   Placed after .card.long/.card.short so it wins the cascade tie when a
+   card carries both (e.g. class="card long tdas-state-watch"). */
+.card.tdas-state-avoid{border-left-color:var(--red);}
+.card.tdas-state-watch{border-left-color:var(--amber);}
+.card.tdas-state-consider{border-left-color:var(--green);}
+.card.tdas-state-high{border-left-color:#D4A839;}
+
 /* ── TDAS Active-Trade Scanner Placeholder ──────────────────────────────
    Minimal first pass: subtle left-rail + advisory tint only, no full-card
    bright backgrounds. Tuned further after screenshots. */
@@ -92,6 +101,10 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .tdas-advisory-block.tdas-state-take25,
 .tdas-advisory-block.tdas-state-take50{border-color:rgba(212,168,57,0.4);background:rgba(212,168,57,0.08);}
 .tdas-advisory-block.tdas-state-close{border-color:rgba(192,67,42,0.4);background:rgba(192,67,42,0.08);}
+.tdas-advisory-block.tdas-state-avoid{border-color:rgba(192,67,42,0.35);background:rgba(192,67,42,0.07);}
+.tdas-advisory-block.tdas-state-watch{border-color:rgba(186,117,23,0.35);background:rgba(186,117,23,0.07);}
+.tdas-advisory-block.tdas-state-consider{border-color:rgba(29,158,117,0.3);background:rgba(29,158,117,0.06);}
+.tdas-advisory-block.tdas-state-high{border-color:rgba(212,168,57,0.4);background:rgba(212,168,57,0.08);}
 
 .tdas-advisory-headline{
   font-size:15px;font-weight:700;letter-spacing:0.2px;margin-bottom:3px;
@@ -101,7 +114,15 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .tdas-state-take25 .tdas-advisory-headline,
 .tdas-state-take50 .tdas-advisory-headline{color:#D4A839;}
 .tdas-state-close .tdas-advisory-headline{color:var(--red-text);}
+.tdas-state-avoid .tdas-advisory-headline{color:var(--red-text);}
+.tdas-state-watch .tdas-advisory-headline{color:var(--amber-text);}
+.tdas-state-consider .tdas-advisory-headline{color:var(--green-text);}
+.tdas-state-high .tdas-advisory-headline{color:#D4A839;}
 .tdas-advisory-detail{font-size:12px;color:var(--text2);line-height:1.4;}
+
+/* Demoted direction pill — used on scanner entry/watch cards once the
+   TDAS advisory headline becomes the primary cue. Same shape, quieter. */
+.sig-pill.pill-demoted{opacity:0.65;font-size:10px;height:20px;padding:0 8px;}
 
 
 /* ── Card zones — fixed padding per zone, no variable margins ── */
@@ -6287,7 +6308,29 @@ function renderCard(symbol,d){
   const _rsi = (rsi!=null&&isFinite(rsi))?rsi:null;
   // Rebind to safe versions for all downstream use
   const utBotSafe=_utBot, fibRetrace618Safe=_fibRetrace618;
-  el.className=`card ${signal}`;
+
+  // TDAS scanner-mode advisory — computed once, used for both the card
+  // className (left-rail colour) and the advisory block in the template.
+  // {openTrade:null} is the minimal safe entry shape scanner mode expects
+  // (buildAdvisory only reads entry.openTrade, and this path is only
+  // reached for non-active cards — isOpenTrade already returned above).
+  let _advisory = null;
+  try{ _advisory = (typeof buildAdvisory==='function') ? buildAdvisory(d, {openTrade:null}) : null; }
+  catch(e){ console.warn('[renderCard] buildAdvisory failed for',symbol,e); }
+  const _advStateClass = !_advisory ? ''
+    : _advisory.action==='AVOID' ? 'tdas-state-avoid'
+    : _advisory.action==='WATCH' ? 'tdas-state-watch'
+    : (_advisory.action==='CONSIDER_LONG'||_advisory.action==='CONSIDER_SHORT') ? 'tdas-state-consider'
+    : (_advisory.action==='HIGH_CONVICTION_LONG'||_advisory.action==='HIGH_CONVICTION_SHORT') ? 'tdas-state-high'
+    : '';
+  const advisoryHtml = _advisory
+    ? '<div class="tdas-advisory-block '+_advStateClass+'">'
+      + '<div class="tdas-advisory-headline">'+_advisory.headline+'</div>'
+      + (_advisory.detail ? '<div class="tdas-advisory-detail">'+_advisory.detail+'</div>' : '')
+      + '</div>'
+    : '';
+
+  el.className=`card ${signal} ${_advStateClass}`.trim();
   const htfText=htfAlign==='aligned'?`HTF ${htf.toUpperCase()} ✓`:htfAlign==='conflict'?`HTF ${htf.toUpperCase()} ✗`:`HTF ${htf.toUpperCase()} –`;
   const rsiWarn=signal==='long'&&!rsiOk_long?`<div class="warn-strip">⚠ RSI overbought — momentum may be stretched</div>`:signal==='short'&&!rsiOk_short?`<div class="warn-strip">⚠ RSI oversold — momentum may be stretched</div>`:'';
   const volBarColor=volRatio>=1.5?'var(--green)':volRatio>=0.8?'var(--amber)':'var(--red)';
@@ -6538,9 +6581,10 @@ function renderCard(symbol,d){
     <div class="cz-price">
       <div class="price-pill-row">
         <span class="price">${fmt(price)}</span>
-        <span class="sig-pill ${pillClass}">${pillText}</span>
+        <span class="sig-pill ${pillClass}${advisoryHtml?' pill-demoted':''}">${pillText}</span>
       </div>
     </div>
+    ${advisoryHtml?'<div class="cz" style="padding-top:0;padding-bottom:6px;">'+advisoryHtml+'</div>':''}
     <div class="cz-conviction">${convHtml}</div>
     <div class="cz-warn-slot ${warnHtml?'':'empty'}">${warnHtml}</div>
     ${levelsHtml?'<div class="cz-levels">'+levelsHtml+'</div>':''}
