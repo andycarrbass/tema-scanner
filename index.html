@@ -70,6 +70,40 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .card.long{border-left-color:var(--green);}
 .card.short{border-left-color:var(--red);}
 
+/* ── TDAS Active-Trade Scanner Placeholder ──────────────────────────────
+   Minimal first pass: subtle left-rail + advisory tint only, no full-card
+   bright backgrounds. Tuned further after screenshots. */
+.tdas-card-active{border-left-width:3px;}
+.tdas-card-active.tdas-state-hold{border-left-color:var(--green);}
+.tdas-card-active.tdas-state-review{border-left-color:var(--amber);}
+.tdas-card-active.tdas-state-take25,
+.tdas-card-active.tdas-state-take50{border-left-color:#D4A839;} /* gold — reuses existing --ma200-yellow tone */
+.tdas-card-active.tdas-state-close{border-left-color:var(--red);}
+
+.tdas-advisory-block{
+  border-radius:var(--radius-sm);
+  padding:9px 11px;
+  background:var(--bg3);
+  border:1px solid var(--border);
+}
+.tdas-state-hold .tdas-advisory-block,
+.tdas-advisory-block.tdas-state-hold{border-color:rgba(29,158,117,0.3);background:rgba(29,158,117,0.06);}
+.tdas-advisory-block.tdas-state-review{border-color:rgba(186,117,23,0.35);background:rgba(186,117,23,0.07);}
+.tdas-advisory-block.tdas-state-take25,
+.tdas-advisory-block.tdas-state-take50{border-color:rgba(212,168,57,0.4);background:rgba(212,168,57,0.08);}
+.tdas-advisory-block.tdas-state-close{border-color:rgba(192,67,42,0.4);background:rgba(192,67,42,0.08);}
+
+.tdas-advisory-headline{
+  font-size:15px;font-weight:700;letter-spacing:0.2px;margin-bottom:3px;
+}
+.tdas-state-hold .tdas-advisory-headline{color:var(--green-text);}
+.tdas-state-review .tdas-advisory-headline{color:var(--amber-text);}
+.tdas-state-take25 .tdas-advisory-headline,
+.tdas-state-take50 .tdas-advisory-headline{color:#D4A839;}
+.tdas-state-close .tdas-advisory-headline{color:var(--red-text);}
+.tdas-advisory-detail{font-size:12px;color:var(--text2);line-height:1.4;}
+
+
 /* ── Card zones — fixed padding per zone, no variable margins ── */
 .cz{padding:10px 14px;}
 .cz-top{padding:10px 14px 6px;}
@@ -5904,6 +5938,94 @@ function utCompactTokenHtml(direction, barsAgoFlip){
     +' \u00b7 <span style="color:'+utFreshnessColorForKey(fresh.key)+';">'+fresh.label+'</span>';
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS Active-Trade Scanner Placeholder (Step 1 of advisory UI rollout)  ║
+// ║                                                                          ║
+// ║  Product rule: Scanner = find/prepare new trades. Trade Desk = manage   ║
+// ║  active trades. This replaces the old full entry/evaluation card        ║
+// ║  content for any symbol with an active trade — no entry strength, no    ║
+// ║  old exit-signal rows, no fib/ADX rows. Advisory comes from the         ║
+// ║  existing buildAdvisory(d, entry) — this function does not compute any  ║
+// ║  advisory logic itself, only lays it out.                                ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
+  const price = d.price;
+  const dirWord = openTrade.signal==='long' ? 'LONG' : 'SHORT';
+  const htfText = d.htfAlign==='aligned' ? `HTF ${(d.htf||'').toUpperCase()} \u2713`
+                : d.htfAlign==='conflict' ? `HTF ${(d.htf||'').toUpperCase()} \u2717`
+                : `HTF ${(d.htf||'').toUpperCase()} \u2013`;
+  const countdownUrgent = d.candleClosePct>=90;
+  const minsStr = String(d.minsRemaining).padStart(2,'0');
+  const secsStr = String(d.secsRemaining).padStart(2,'0');
+
+  // P&L — same computation pattern already used by buildTradeMgmtHtml /
+  // _buildActiveTradeAdvisory. Not centralised in this pass (unchanged from
+  // prior phases' scope note on P&L/R being computed independently).
+  const entryPx = openTrade.actualEntry || openTrade.price || null;
+  let pnlPct = null, pnlR = null;
+  if(entryPx != null && price != null){
+    pnlPct = openTrade.signal==='short' ? ((entryPx-price)/entryPx*100) : ((price-entryPx)/entryPx*100);
+    const riskPx = openTrade.stop!=null ? Math.abs(entryPx-openTrade.stop) : null;
+    if(riskPx) pnlR = openTrade.signal==='short' ? (entryPx-price)/riskPx : (price-entryPx)/riskPx;
+  }
+  const pnlColor = pnlPct>0?'var(--green-text)':pnlPct<0?'var(--red-text)':'var(--text2)';
+  const pnlStr = pnlPct!=null ? (pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%'+(pnlR!=null?' \u00b7 '+(pnlR>=0?'+':'')+pnlR.toFixed(2)+'R':'') : '\u2014';
+
+  // TDAS advisory — buildAdvisory only reads entry.openTrade, so a minimal
+  // {openTrade} object is sufficient; no need to re-run resolveJournalEntry.
+  let advisory = null;
+  try{ advisory = (typeof buildAdvisory==='function') ? buildAdvisory(d, {openTrade}) : null; }
+  catch(e){ console.warn('[buildActiveScannerPlaceholderHtml] buildAdvisory failed for',symbol,e); }
+
+  const stateClass = !advisory ? 'tdas-state-hold'
+    : advisory.action==='CLOSE' ? 'tdas-state-close'
+    : advisory.action==='TAKE_PROFIT_50' ? 'tdas-state-take50'
+    : advisory.action==='TAKE_PROFIT_25' ? 'tdas-state-take25'
+    : advisory.action==='REVIEW' ? 'tdas-state-review'
+    : 'tdas-state-hold';
+
+  const advisoryHtml = advisory
+    ? '<div class="tdas-advisory-block '+stateClass+'">'
+      + '<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px;">TDAS Advisory</div>'
+      + '<div class="tdas-advisory-headline">'+advisory.headline+'</div>'
+      + (advisory.detail ? '<div class="tdas-advisory-detail">'+advisory.detail+'</div>' : '')
+      + '</div>'
+    : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-headline">HOLD</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
+
+  return {
+    stateClass,
+    html: `
+      <div class="cz cz-top card-top">
+        <div class="pair">${LABELS[symbol]||symbol}</div>
+        <span class="htf-badge ${d.htfAlign}">${htfText}</span>
+        <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
+      </div>
+      <div class="cz" style="padding-top:0;padding-bottom:6px;">
+        <div class="candle-bar">
+          <span style="font-size:12px;color:${d.sessionColor};font-weight:600;white-space:nowrap;">${d.session}${d.overlap?' \u26a1':''}</span>
+          <span class="candle-countdown ${countdownUrgent?'urgent':'normal'}" style="white-space:nowrap;font-size:12px;" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>
+        </div>
+      </div>
+      <div class="cz-price">
+        <div class="price-pill-row">
+          <span class="price">${fmt(price)}</span>
+          <span class="sig-pill pill-trade">${dirWord==='LONG'?'\u25b2':'\u25bc'} ${dirWord} ACTIVE</span>
+        </div>
+      </div>
+      <div class="cz" style="padding-top:6px;padding-bottom:0;">${advisoryHtml}</div>
+      <div class="cz" style="padding-top:8px;padding-bottom:6px;">
+        <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:2px;">Live P&amp;L</div>
+        <div style="font-family:var(--mono);font-size:15px;font-weight:700;color:${pnlColor};">${pnlStr}</div>
+      </div>
+      <div class="cz-spacer"></div>
+      <div class="cz-actions">
+        <div class="card-btn-row"><button class="card-btn view-trade" onclick="focusTradeDeskCard('${symbol}')">View Trade \u2192</button></div>
+        <button class="analysis-btn" onclick="openAnalysisPanel('${symbol}')" style="margin-top:6px;">\u25b6 Show full analysis</button>
+      </div>
+    `,
+  };
+}
+
 // TDAS Phase 0: buildTradeMgmtHtml is a pure parametric builder.
 // Callers (renderCard) pass values that come from d.states — no inline re-derivation.
 function buildTradeMgmtHtml(trade, price, htfAlign, htf, tf, utBot, crossLong, temaWidening, adx, adxStrong, adxTrending, fibRetrace618, aboveMA, maDist, htfTrendContext){
@@ -6199,6 +6321,27 @@ function renderCard(symbol,d){
   const recentEntry=activeWatch||openTrade||sameTfRecent;
   const isWatching=!!activeWatch;
   const isOpenTrade=!!openTrade;
+
+  // TDAS Step 1: active trades get the lightweight advisory placeholder
+  // instead of the full entry/evaluation card — scanner is discovery-only,
+  // Trade Desk owns management. Nothing below this branch (old warning
+  // banner, exit-signal rows, fib/ADX rows, entry-strength framing) runs
+  // for active trades anymore.
+  if(isOpenTrade){
+    try{
+      const _ph = buildActiveScannerPlaceholderHtml(d, openTrade, symbol);
+      el.className = `card tdas-card-active ${_ph.stateClass}`;
+      el.innerHTML = _ph.html;
+    }catch(e){
+      console.warn('[renderCard] active placeholder failed for',symbol,e);
+      el.className = 'card tdas-card-active';
+      el.innerHTML = `<div class="pair">${LABELS[symbol]||symbol}</div>`
+        + `<div style="font-size:12px;color:var(--text3);margin-top:12px;">Trade active — refresh to load advisory.</div>`
+        + `<div class="cz-actions" style="margin-top:10px;"><button class="card-btn view-trade" onclick="focusTradeDeskCard('${symbol}')">View Trade \u2192</button></div>`;
+    }
+    return;
+  }
+
   // alreadyLogged: true only if a skip/missed entry exists AND the setup hasn't
   // materially changed since it was logged. Falls back to Log decision if changed.
   const alreadyLogged=!!sameTfRecent&&isSameLoggedSetup(d,sameTfRecent);
