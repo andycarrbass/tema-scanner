@@ -2076,7 +2076,8 @@ function computeStates(d) {
   const adxState = adxStrong ? 'Strong trend' : adxTrending ? 'Trending' : 'Ranging';
 
   // ── 200MA relationship (scanner-TF) ───────────────────────────────────
-  const aboveMA    = d.aboveMA;  // true | false | null
+  const aboveMA    = d.aboveMA;  // true | false | null — live ticker price vs 200MA
+  const aboveMA_closed = d.aboveMA_closed != null ? d.aboveMA_closed : null; // last CLOSED candle vs 200MA
   const maDist     = d.maDist;   // % distance, may be null
 
   // ── Trend SMA relationship (SMA 80 or SMA 135, TF-dependent) ─────────
@@ -2172,7 +2173,7 @@ function computeStates(d) {
     // ADX
     adx: _adx, adxTrending, adxStrong, adxState,
     // 200 MA
-    aboveMA, maDist,
+    aboveMA, aboveMA_closed, maDist,
     // Trend SMA
     aboveTrendSMA,
     // EMA 50
@@ -3001,7 +3002,12 @@ function _buildActiveTradeAdvisory(d, openTrade) {
 
   // 4H inputs
   const utDir = st.utBot ? st.utBot.direction : 0; // 1 bullish trail, -1 bearish trail
-  const utFreshEnough = classifyUtFreshness(st.utBot ? st.utBot.barsAgoFlip : null).rank <= 1; // Fresh or Recent
+  // Freshness still governs display/warning severity elsewhere (unchanged —
+  // see classifyUtFreshness call sites in card/analysis rendering) but is
+  // deliberately NOT required for the CLOSE structural condition below:
+  // a trade stays structurally invalidated even after the flip ages past
+  // Fresh/Recent into Mature — CLOSE must not stop firing just because the
+  // person didn't review the card the moment the flip happened.
 
   // 1H inputs — may be entirely unavailable; never assumed either way
   const oneH = d._1hTiming || null;
@@ -3019,13 +3025,18 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   let action, headline, detail;
 
   if (dir === 'short') {
-    const structureReclaimed = st.aboveMA === true;   // price back above 4H 200MA — structure lost
+    // Phase 1C: CLOSE's structural condition uses the last CLOSED 4H candle
+    // vs 200MA (st.aboveMA_closed), not the live-ticker-price version
+    // (st.aboveMA) — consistent with the closed-candle philosophy the rest
+    // of the signal engine (UT Bot, TEMA, regime) already uses. Falls back
+    // to the live-price field only if the closed-candle field is unavailable.
+    const structureReclaimed = st.aboveMA_closed != null ? st.aboveMA_closed === true : st.aboveMA === true;
     const temaCrossAgainst   = st.crossLong === true;  // 4H TEMA now bullish
     const tema92Rising       = st.tema92Slope === 'rising';
 
-    if (utDir === 1 && utFreshEnough && structureReclaimed) {
+    if (utDir === 1 && structureReclaimed) {
       action = 'CLOSE'; headline = 'CLOSE';
-      detail = '4H UT flipped bullish and price reclaimed the 200MA.';
+      detail = '4H UT bullish and 4H closed above the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Rising) || utDir === 1)) {
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = (temaCrossAgainst && tema92Rising)
@@ -3051,14 +3062,14 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = '4H UT remains bearish. Structure still supports short.';
     }
   } else {
-    // ── Mirrored LONG logic (Task 4) — fields are symmetric, safe to mirror ──
-    const structureLost    = st.aboveMA === false;   // price below 4H 200MA — structure lost
+    // ── Mirrored LONG logic — fields are symmetric, safe to mirror ──
+    const structureLost    = st.aboveMA_closed != null ? st.aboveMA_closed === false : st.aboveMA === false;
     const temaCrossAgainst = st.crossShort === true;  // 4H TEMA now bearish
     const tema92Falling    = st.tema92Slope === 'falling';
 
-    if (utDir === -1 && utFreshEnough && structureLost) {
+    if (utDir === -1 && structureLost) {
       action = 'CLOSE'; headline = 'CLOSE';
-      detail = '4H UT flipped bearish and price lost the 200MA.';
+      detail = '4H UT bearish and 4H closed below the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Falling) || utDir === -1)) {
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = (temaCrossAgainst && tema92Falling)
@@ -4568,6 +4579,13 @@ async function calcPair(symbol,tf){
   const atr=calcATR(highs,lows,closes,14);
   const aboveMA=ma200!==null?price>ma200:null;
   const maDist=ma200!==null?(price-ma200)/ma200*100:null;
+  // aboveMA_closed: last CLOSED candle vs 200MA — as opposed to aboveMA above,
+  // which uses the live ticker price. Both are already computable from data
+  // already fetched (closes[] and ma200) — no new candle fetch required.
+  // Phase 1C uses this for the active-trade CLOSE structural check, matching
+  // the closed-candle philosophy the rest of the signal engine already uses
+  // (UT Bot, TEMA, regime all evaluate on closed bars, not live price).
+  const aboveMA_closed=ma200!==null?lastClose>ma200:null;
   const temaSep=Math.abs(t17-t92)/price*100;
   const prevT17=t17a[t17a.length-2];
   const prevT92=t92a[t92a.length-2];
@@ -5483,7 +5501,7 @@ async function calcPair(symbol,tf){
     }
 
   }
-  const _result={price,t17,t92,prevT92,ma200,aboveMA,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
+  const _result={price,t17,t92,prevT92,ma200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
     adx,adxTrending,adxStrong,
