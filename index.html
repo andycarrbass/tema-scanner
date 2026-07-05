@@ -633,6 +633,14 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .order-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;border-left:3px solid var(--border2);transition:border-color 0.2s,box-shadow 0.2s;min-height:220px;}
 .order-card.active-long{border-left-color:var(--green-text);box-shadow:0 0 0 1px rgba(29,158,117,0.15) inset;}
 .order-card.active-short{border-left-color:var(--red-text);box-shadow:0 0 0 1px rgba(192,67,42,0.15) inset;}
+/* TDAS advisory state — takes over the left rail colour from the plain
+   long/short direction above once an advisory is available. Reuses the
+   same state-colour intent as the scanner active placeholder. */
+.order-card.tdas-state-hold{border-left-color:var(--green-text);}
+.order-card.tdas-state-review{border-left-color:var(--amber-text);}
+.order-card.tdas-state-take25,
+.order-card.tdas-state-take50{border-left-color:#D4A839;}
+.order-card.tdas-state-close{border-left-color:var(--red-text);}
 .order-card-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;}
 .order-card-pair{font-size:16px;font-weight:600;color:var(--text);}
 .order-card-badges{display:flex;gap:6px;align-items:center;}
@@ -8062,7 +8070,30 @@ function renderOrderTicketCard(e){
     pnlHtml=`<div class="live-pnl-bar show"><div class="pnl-label">Live P&amp;L</div><div class="pnl-val" style="color:${color};">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%${pnlR!==null?' · '+(pnlR>=0?'+':'')+pnlR.toFixed(2)+'R':''}</div></div>`;
   }
   const isLong=e.signal==='long';
-  const cardClass=`order-card ${isLong?'active-long':'active-short'}`;
+
+  // TDAS advisory — same buildAdvisory(d, {openTrade}) invocation pattern
+  // already used by the active scanner placeholder. liveData is the same
+  // currentScanData[symbol] object buildAdvisory reads d._1hTiming from.
+  let advisory = null;
+  if(liveData){
+    try{ advisory = (typeof buildAdvisory==='function') ? buildAdvisory(liveData, {openTrade:e}) : null; }
+    catch(err){ console.warn('[renderOrderTicketCard] buildAdvisory failed for',e.symbol,err); }
+  }
+  const stateClass = !advisory ? ''
+    : advisory.action==='CLOSE' ? 'tdas-state-close'
+    : advisory.action==='TAKE_PROFIT_50' ? 'tdas-state-take50'
+    : advisory.action==='TAKE_PROFIT_25' ? 'tdas-state-take25'
+    : advisory.action==='REVIEW' ? 'tdas-state-review'
+    : 'tdas-state-hold';
+  const advisoryHtml = advisory
+    ? `<div class="tdas-advisory-block ${stateClass}">`
+      + `<div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:4px;">TDAS Advisory</div>`
+      + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
+      + (advisory.detail ? `<div class="tdas-advisory-detail">${advisory.detail}</div>` : '')
+      + `</div>`
+    : '';
+
+  const cardClass=`order-card ${isLong?'active-long':'active-short'} ${stateClass}`;
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   // Fib stop from live data
   const fibStop=liveData?liveData.fibRetrace618:null;
@@ -8078,8 +8109,9 @@ function renderOrderTicketCard(e){
       </div>
       <div class="otc-meta">Entered ${ts} · ${e.tf.toUpperCase()} setup</div>
     </div>
+    ${advisoryHtml}
     ${pnlHtml}
-    ${e.tradeStage ? `<div style="font-size:11px;margin:4px 0 8px;">Trade Stage: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }">${e.tradeStage}</span></div>` : ''}
+    ${e.tradeStage ? `<div style="font-size:10px;margin:4px 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
     ${(()=>{
       const _t = currentScanData[e.symbol] && currentScanData[e.symbol]._1hTiming;
       if(!_t||!_t.state) return '';
