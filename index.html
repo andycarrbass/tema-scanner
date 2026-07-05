@@ -3001,6 +3001,24 @@ function buildAdvisory(d, entry) {
 // ── Scanner-mode advisory — direct translation of evaluateSetup() output ──
 // No new logic: actionBias already encodes the classification, this only
 // renames enum values to approved display wording.
+// AVOID detail must explain WHY to avoid (the blocker), never a supporting
+// fact — evaluateSetup's reasons[]/blockers[] are populated independently
+// per sub-condition, so a card can be AVOID (regime opposed) while reasons[]
+// still contains e.g. "TEMA bullish confirmed" from an unrelated confirm.
+// Priority: regime-opposition sentence (most common AVOID cause) > first
+// recorded blocker verbatim > generic fallback. Presentation only — does
+// not touch evaluateSetup's blockers/regimeOpposed logic.
+function _avoidDetail(ev, d, dir) {
+  const blockers = ev.blockers || [];
+  const regimeBlocker = blockers.find(b => b.indexOf('Regime opposed') === 0);
+  if (regimeBlocker && d.regime && d.regime.direction) {
+    const regWord = d.regime.direction === 'bullish' ? 'Bullish' : d.regime.direction === 'bearish' ? 'Bearish' : 'Neutral';
+    return regWord + ' HTF regime opposes the ' + dir.toLowerCase() + '.';
+  }
+  if (blockers.length) return blockers[0];
+  return 'Signal conflicts with the current regime.';
+}
+
 function _buildScannerAdvisory(d) {
   const ev = d.evaluation;
   if (!ev || ev.tradeBias === 'NEUTRAL' || ev.actionBias === ACTION_BIAS.NO_SETUP) {
@@ -3009,19 +3027,35 @@ function _buildScannerAdvisory(d) {
   const dir = ev.tradeBias === 'LONG' ? 'LONG' : 'SHORT';
   const sfx = dir === 'LONG' ? '_LONG' : '_SHORT';
 
-  let action, headline, next;
+  let action, headline, next, detail;
   if (ev.actionBias === ACTION_BIAS.AVOID) {
-    action = 'AVOID'; headline = 'AVOID';
+    action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
     next = 'Wait for regime improvement or a cleaner reset before considering entry.';
+    detail = _avoidDetail(ev, d, dir);
   } else if (ev.actionBias === ACTION_BIAS['WATCH' + sfx]) {
     action = 'WATCH'; headline = 'WATCH';
     next = 'Wait for stronger confirmation before considering entry.';
+    // WATCH should explain what's missing/unresolved, not lead with a
+    // supporting fact — warnings[] describes exactly that; reasons[] is
+    // the fallback only when there are genuinely no warnings recorded.
+    detail = (ev.warnings && ev.warnings.length) ? ev.warnings[0]
+      : (ev.reasons && ev.reasons.length) ? ev.reasons[0]
+      : 'Setup forming, confirmation missing.';
   } else if (ev.actionBias === ACTION_BIAS['CONSIDER' + sfx]) {
     action = 'CONSIDER' + sfx; headline = 'CONSIDER ' + dir;
     next = 'Review position size and entry trigger.';
+    // CONSIDER should explain the main support — reasons[0] already does
+    // this correctly (reviewed per Task 3, no change needed).
+    detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
   } else if (ev.actionBias === ACTION_BIAS['STRONG' + sfx]) {
     action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
     next = 'Consider entry if position size and risk are acceptable.';
+    // HIGH CONVICTION should explain strongest confluence — reasons[0] is
+    // already correct here too (reviewed per Task 3, no change needed):
+    // for a genuine STRONG setup nearly every confirm is true, so the
+    // first-populated reason (regime/TEMA/UT/HTF, in that fixed order) is
+    // itself a legitimate top piece of confluence, not an arbitrary pick.
+    detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
   } else {
     return null;
   }
@@ -3032,7 +3066,7 @@ function _buildScannerAdvisory(d) {
   return {
     mode: 'scanner',
     action, headline,
-    detail: (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : ''),
+    detail,
     direction: dir,
     tradeReady,
     readyLabel: tradeReady ? 'TRADE READY' : null,
@@ -3088,16 +3122,17 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   let action, headline, detail;
 
   if (dir === 'short') {
-    // Phase 1C: CLOSE's structural condition uses the last CLOSED 4H candle
-    // vs 200MA (st.aboveMA_closed), not the live-ticker-price version
-    // (st.aboveMA) — consistent with the closed-candle philosophy the rest
-    // of the signal engine (UT Bot, TEMA, regime) already uses. Falls back
-    // to the live-price field only if the closed-candle field is unavailable.
-    const structureReclaimed = st.aboveMA_closed != null ? st.aboveMA_closed === true : st.aboveMA === true;
+    // Phase 1-fix: CLOSE's structural condition must be closed-candle-only —
+    // no fallback to live-ticker-price st.aboveMA. A live-price fallback here
+    // would let CLOSE flicker in/out as price oscillates around the 200MA
+    // intrabar. If aboveMA_closed is unavailable, CLOSE simply does not fire
+    // from this condition — the ladder falls through to TAKE_PROFIT_50/25,
+    // REVIEW, or HOLD as appropriate.
+    const structureReclaimedForClose = st.aboveMA_closed === true;
     const temaCrossAgainst   = st.crossLong === true;  // 4H TEMA now bullish
     const tema92Rising       = st.tema92Slope === 'rising';
 
-    if (utDir === 1 && structureReclaimed) {
+    if (utDir === 1 && structureReclaimedForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
       detail = '4H UT bullish and 4H closed above the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Rising) || utDir === 1)) {
@@ -3126,11 +3161,12 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     }
   } else {
     // ── Mirrored LONG logic — fields are symmetric, safe to mirror ──
-    const structureLost    = st.aboveMA_closed != null ? st.aboveMA_closed === false : st.aboveMA === false;
+    // Mirrored closed-candle-only fix — see short branch comment above.
+    const structureLostForClose = st.aboveMA_closed === false;
     const temaCrossAgainst = st.crossShort === true;  // 4H TEMA now bearish
     const tema92Falling    = st.tema92Slope === 'falling';
 
-    if (utDir === -1 && structureLost) {
+    if (utDir === -1 && structureLostForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
       detail = '4H UT bearish and 4H closed below the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Falling) || utDir === -1)) {
@@ -3161,6 +3197,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
 
   const warnings = [];
   if (!oneHAvailable) warnings.push('1H timing unavailable — using 4H exit ladder only.');
+  if (st.aboveMA_closed == null) warnings.push('Closed 4H 200MA state unavailable — CLOSE rule not evaluated.');
 
   return {
     mode: 'active_trade',
