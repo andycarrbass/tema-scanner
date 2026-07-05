@@ -1695,6 +1695,9 @@ async function loadPairsFromSheets(){
 let signalHistory = safeParse(STORAGE_KEYS.history, []);
 let journal       = safeParse(STORAGE_KEYS.journal, []);
 let modalData = null;
+// TDAS Phase 1B: tracks which symbol's analysis panel is open, so an
+// on-demand 1H timing fetch knows whether it's still safe to re-render.
+let _openAnalysisSymbol = null;
 let selectedDecision = null;
 let selectedOutcome = null;
 let currentScanData = {};
@@ -3004,7 +3007,14 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   const oneH = d._1hTiming || null;
   const oneHAvailable     = !!oneH;
   const oneHTurnedAgainst = oneH ? (dir === 'short' ? oneH.crossLong1h === true  : oneH.crossLong1h === false) : null;
-  const oneHReclaimed     = oneH ? (dir === 'short' ? oneH.aboveMA1h  === true  : oneH.aboveMA1h  === false) : null;
+  // Structure reclaim/loss — Phase 1B broadens this beyond 1H 200MA alone to
+  // include 1H 135SMA (matches the UT Bot timing chart's own trend reference).
+  // Either level qualifying is sufficient — this is "OR", not "AND".
+  const oneHStructureReclaimed = oneH ? (
+    dir === 'short'
+      ? (oneH.aboveMA1h === true || oneH.aboveSma135_1h === true)
+      : (oneH.aboveMA1h === false || oneH.aboveSma135_1h === false)
+  ) : null;
 
   let action, headline, detail;
 
@@ -3021,12 +3031,12 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = (temaCrossAgainst && tema92Rising)
         ? '4H TEMA crossed against short and TEMA 92 is rising.'
         : '4H UT flipped bullish against short.';
-    } else if (inProfit && oneHReclaimed === true) {
+    } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. 4H structure still holds.';
-    } else if (oneHReclaimed === true) {
+    } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal active. 4H structure still holds.';
+      detail = '1H structure reclaimed against short.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = '1H reversal developing. 4H UT still bearish.';
@@ -3054,12 +3064,12 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = (temaCrossAgainst && tema92Falling)
         ? '4H TEMA crossed against long and TEMA 92 is falling.'
         : '4H UT flipped bearish against long.';
-    } else if (inProfit && oneHReclaimed === true) {
+    } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. 4H structure still holds.';
-    } else if (oneHReclaimed === true) {
+    } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal active. 4H structure still holds.';
+      detail = '1H structure lost against long.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = '1H reversal developing. 4H UT still bullish.';
@@ -3076,7 +3086,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   }
 
   const warnings = [];
-  if (!oneHAvailable) warnings.push('1H timing data not yet available for this symbol — exit ladder is 4H-only until it loads (visit the Trade Desk tab to populate it).');
+  if (!oneHAvailable) warnings.push('1H timing unavailable — using 4H exit ladder only.');
 
   return {
     mode: 'active_trade',
@@ -6470,6 +6480,7 @@ function toggleDetail(symbol){
 function openAnalysisPanel(symbol){
   const d = currentScanData[symbol];
   if(!d) return;
+  _openAnalysisSymbol = symbol;
   // TDAS Phase 1.5 — late-binding fallback: compute d.evaluation if absent.
   // Handles stale currentScanData entries produced before Phase 1.5 was deployed,
   // or any path that stores a calcPair result without going through the full pipeline.
@@ -6480,6 +6491,17 @@ function openAnalysisPanel(symbol){
   // Passes resolveJournalEntry(symbol) so classifyLifecycle stays pure.
   if(!d.lifecycle && typeof classifyLifecycle === 'function' && d.evaluation){
     d.lifecycle = classifyLifecycle(d, resolveJournalEntry(symbol));
+  }
+  // TDAS Phase 1B: on-demand 1H timing for active trades — don't make the
+  // user wait for the periodic interval. Fire-and-forget; only re-render if
+  // this call actually produced NEW data (reference check) — prevents a
+  // cache-hit resolve from re-triggering itself in a loop.
+  const _entryForTiming = resolveJournalEntry(symbol);
+  if(_entryForTiming.openTrade && typeof _ensure1HTimingFor === 'function'){
+    const _before1h = d._1hTiming;
+    _ensure1HTimingFor(symbol).then(result => {
+      if(result && result !== _before1h && _openAnalysisSymbol === symbol) openAnalysisPanel(symbol);
+    });
   }
   const overlay = document.getElementById('analysisOverlay');
   const panel   = document.getElementById('analysisPanel');
@@ -6748,6 +6770,7 @@ function closeAnalysisPanel(){
   if(!overlay||!panel) return;
   panel.classList.remove('open');
   overlay.classList.remove('open');
+  _openAnalysisSymbol = null;
 }
 
 // ── Trade tab analysis access ─────────────────────────────────────────────
@@ -8118,6 +8141,21 @@ async function _calc1HTiming(symbol) {
     const aboveMA1h  = ma200_1h !== null ? lastClose1h > ma200_1h : null;
     const maDist1h   = ma200_1h !== null ? (lastClose1h - ma200_1h) / ma200_1h * 100 : null;
 
+    // 1H 135 SMA — matches the UT Bot timing chart's own trend reference.
+    // Phase 1B addition: does not alter UT Bot or 4H signal logic.
+    const sma135_1h      = sma(closedC, 135);
+    const aboveSma135_1h = sma135_1h !== null ? lastClose1h > sma135_1h : null;
+    // Slope: compare against the SMA135 value one bar earlier (same closed
+    // series, one bar shorter) — same measured-slope approach as TEMA 92.
+    const sma135Prev_1h      = sma135_1h !== null ? sma(closedC.slice(0, -1), 135) : null;
+    let sma135Slope_1h = 'unknown';
+    let sma135SlopeDelta_1h = null;
+    if (sma135_1h !== null && sma135Prev_1h !== null) {
+      sma135SlopeDelta_1h = sma135_1h - sma135Prev_1h;
+      const negligible = Math.abs(sma135SlopeDelta_1h) < Math.abs(sma135Prev_1h) * 0.0001;
+      sma135Slope_1h = negligible ? 'flat' : (sma135SlopeDelta_1h > 0 ? 'rising' : 'falling');
+    }
+
     // Get 4H context from currentScanData (must already exist from last scan)
     const d4h = currentScanData[symbol];
     if (!d4h) return null;
@@ -8130,6 +8168,7 @@ async function _calc1HTiming(symbol) {
       crossLong1h,
       aboveMA1h,
       maDist1h,
+      sma135_1h, aboveSma135_1h, sma135Slope_1h, sma135SlopeDelta_1h,
       updatedAt: new Date().toISOString(),
     };
   } catch(e) {
@@ -8148,9 +8187,11 @@ async function _timingRefresh() {
   const t0 = Date.now();
 
   try {
-    const active  = journal.filter(j => !j.deleted && j.decision === 'took' && !j.outcome);
+    // Phase 1B: active trades are now handled by _ensureActiveTrade1HTiming(),
+    // which runs independently of this tab-gated cadence. Keeping them out of
+    // this list avoids two mechanisms fetching the same symbol's 1H data.
     const watches = journal.filter(j => isActiveWatch(j));
-    const symbols = [...new Set([...active, ...watches].map(j => j.symbol))];
+    const symbols = [...new Set(watches.map(j => j.symbol))];
     if (!symbols.length) { _timingBusy = false; return; }
 
     let refreshed = 0, failed = 0;
@@ -8163,14 +8204,10 @@ async function _timingRefresh() {
       } else { failed++; }
     }
 
-    // Re-render affected cards with updated timing state
+    // Re-render affected watch cards with updated timing state
     watches.forEach(e => {
       const el = document.getElementById('wcard-' + e.id);
       if (el) { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(e); el.replaceWith(tmp.firstChild); }
-    });
-    active.forEach(e => {
-      const el = document.getElementById('otcard-' + e.id);
-      if (el) { const tmp = document.createElement('div'); tmp.innerHTML = renderOrderTicketCard(e); el.replaceWith(tmp.firstChild); }
     });
 
     if (DEBUG_MODE) console.log('[1H Timing Refresh]', {
@@ -8181,6 +8218,68 @@ async function _timingRefresh() {
     console.warn('[1H Timing Refresh] error:', e.message);
   } finally {
     _timingBusy = false;
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS PHASE 1B — Guaranteed 1H timing for active trades                 ║
+// ║                                                                          ║
+// ║  Problem: 1H timing previously only loaded via _timingRefresh(), which   ║
+// ║  is gated on the Trade Desk tab being active. Active-trade advisory      ║
+// ║  (buildAdvisory / analysis panel) must not depend on which tab the      ║
+// ║  user has visited — so active trades get their own tab-independent      ║
+// ║  refresh path here. Watches remain on the existing _timingRefresh()     ║
+// ║  cadence, unchanged.                                                     ║
+// ║                                                                          ║
+// ║  _ensure1HTimingFor(symbol) — single-symbol core, freshness-checked.     ║
+// ║  Used both by the interval driver below and on-demand from              ║
+// ║  openAnalysisPanel so the detail view isn't left waiting on a timer.     ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+let _activeTiming1hBusy = false;
+
+// Returns the (possibly cached) 1H timing result for symbol, fetching only
+// if missing or older than TIMING_REFRESH_MS. Never fetches twice for the
+// same still-fresh data — this is the single de-dupe point for both callers.
+async function _ensure1HTimingFor(symbol) {
+  const existing = currentScanData[symbol] && currentScanData[symbol]._1hTiming;
+  const fresh = existing && existing.updatedAt
+    && (Date.now() - new Date(existing.updatedAt).getTime()) < TIMING_REFRESH_MS;
+  if (fresh) return existing;
+  const result = await _calc1HTiming(symbol);
+  if (result) {
+    if (!currentScanData[symbol]) currentScanData[symbol] = {};
+    currentScanData[symbol]._1hTiming = result;
+  }
+  return result;
+}
+
+// Batch driver — runs on its own interval, independent of any tab.
+// Near-zero cost when there are no active trades (returns immediately).
+async function _ensureActiveTrade1HTiming() {
+  if (_activeTiming1hBusy || _timingBusy) return; // avoid overlapping with _timingRefresh too
+  const activeEntries = journal.filter(j => !j.deleted && j.decision === 'took' && !j.outcome);
+  const symbols = [...new Set(activeEntries.map(j => j.symbol))];
+  if (!symbols.length) return;
+
+  _activeTiming1hBusy = true;
+  const t0 = Date.now();
+  try {
+    let refreshed = 0;
+    for (const sym of symbols) {
+      const before = currentScanData[sym] && currentScanData[sym]._1hTiming;
+      const result  = await _ensure1HTimingFor(sym);
+      if (result && result !== before) refreshed++;
+    }
+    // Re-render active trade cards in place if the Trade Desk happens to be open
+    activeEntries.forEach(e => {
+      const el = document.getElementById('otcard-' + e.id);
+      if (el) { const tmp = document.createElement('div'); tmp.innerHTML = renderOrderTicketCard(e); el.replaceWith(tmp.firstChild); }
+    });
+    if (DEBUG_MODE) console.log('[1H Timing] active-trade auto-refresh:', { refreshed, durationMs: Date.now()-t0, symbols: symbols.join(',') });
+  } catch(e) {
+    console.warn('[1H Timing] active-trade auto-refresh error:', e.message);
+  } finally {
+    _activeTiming1hBusy = false;
   }
 }
 
@@ -9435,6 +9534,12 @@ document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false
   // Start confluence background refresh cycle at startup — independent of tab visits
   if(DEBUG_MODE) console.log('[Confluence BG] startup scan scheduled');
   setTimeout(()=>runConfluenceScan({background:true}), 8000); // after scanner settles
+
+  // TDAS Phase 1B: guarantee 1H timing for active trades regardless of tab.
+  // Independent of startTradeDeskAutoRefresh() — runs whether or not the
+  // Trade Desk tab has ever been opened this session.
+  setInterval(_ensureActiveTrade1HTiming, TIMING_REFRESH_MS);
+  setTimeout(_ensureActiveTrade1HTiming, 3000); // populate promptly on load, not after a 5-min wait
 })();
 </script>
 
