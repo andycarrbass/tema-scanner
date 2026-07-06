@@ -3051,24 +3051,28 @@ function _buildScannerAdvisory(d) {
 
   let action, headline, next, detail;
   if (ev.actionBias === ACTION_BIAS.AVOID) {
-    // Counter-regime strong-signal exception (presentation only — does not
-    // touch evaluateSetup/actionBias/scoring). A genuinely strong signal
-    // whose ONLY real problem is regime opposition is worth watching, not
-    // dismissing outright. Weaker signals, or AVOIDs with any additional
-    // blocker beyond regime opposition, keep the blunt AVOID unchanged.
+    // Counter-regime WATCH exception (presentation only — does not touch
+    // evaluateSetup/actionBias/scoring). A meaningful counter-regime setup
+    // whose ONLY real problem is regime opposition is worth monitoring, not
+    // dismissing outright — WATCH means "worth tracking", not "tradeable".
+    // Broadened from an earlier score>=80 threshold (Task 2): that made
+    // WATCH depend almost entirely on score, when a moderate-score setup
+    // with real scanner-TF structure (UT/TEMA support, 200MA position) is
+    // just as worth watching as a high-score one — the score row already
+    // communicates the difference in strength. AVOID remains reserved for
+    // setups with an additional severe blocker, or too weak to track.
     const blockers = ev.blockers || [];
     const regimeBlocker = blockers.find(b => b.indexOf('Regime opposed') === 0);
     const otherSevereBlockers = blockers.filter(b => b.indexOf('Regime opposed') !== 0);
-    const isCounterRegimeStrong = !!regimeBlocker && ev.score >= 80 && otherSevereBlockers.length === 0;
+    const isCounterRegimeWatchable = !!regimeBlocker && ev.score >= 45 && otherSevereBlockers.length === 0;
 
-    if (isCounterRegimeStrong) {
+    if (isCounterRegimeWatchable) {
       action = 'WATCH'; headline = 'WATCH ' + dir;
       next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
-      const regWord = (d.regime && d.regime.direction === 'bullish') ? 'bullish'
-                    : (d.regime && d.regime.direction === 'bearish') ? 'bearish' : 'neutral';
+      const htfLabel = (d.htf || 'HTF').toUpperCase();
       detail = dir === 'LONG'
-        ? 'Strong 4H bounce, but ' + regWord + ' ' + (d.htf||'HTF').toUpperCase() + ' regime opposes.'
-        : 'Strong 4H short signal, but ' + regWord + ' ' + (d.htf||'HTF').toUpperCase() + ' regime opposes.';
+        ? '4H long setup, but ' + htfLabel + ' regime still opposes.'
+        : '4H short setup, but ' + htfLabel + ' regime still opposes.';
     } else {
       action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
       next = 'Wait for regime improvement or a cleaner reset before considering entry.';
