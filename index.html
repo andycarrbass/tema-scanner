@@ -160,6 +160,23 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .trade-ready-title{
   font-size:15px;font-weight:700;letter-spacing:0.4px;color:#D4A839;
 }
+/* Phase 6C: title + direction pill share one row, replacing the old
+   separate subtitle line below. */
+.trade-ready-header{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:8px;flex-wrap:wrap;margin-bottom:8px;
+}
+.trade-ready-header .trade-ready-title{margin-bottom:0;}
+.trade-ready-direction-pill{
+  display:inline-flex;align-items:center;
+  height:22px;padding:0 10px;
+  border-radius:99px;font-size:11px;font-weight:700;letter-spacing:0.3px;
+  white-space:nowrap;flex-shrink:0;
+}
+/* Same colour family as the front-card .sig-pill.pill-long/.pill-short —
+   gold stays reserved for .trade-ready-title alone. */
+.trade-ready-direction-pill.long{background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-bg);}
+.trade-ready-direction-pill.short{background:var(--red-dim);color:var(--red-text);border:1px solid var(--red-bg);}
 .trade-ready-subtitle{
   font-size:11px;font-weight:600;letter-spacing:0.5px;color:var(--text3);
   text-transform:uppercase;margin-bottom:8px;margin-top:1px;
@@ -3403,10 +3420,11 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   opts = opts || {};
 
   const dir = advisory.direction === 'LONG' ? 'LONG' : 'SHORT';
-  const subtitle = dir === 'LONG' ? 'LONG SETUP' : 'SHORT SETUP';
-  // Direction colour is scoped to this subtitle only (.trade-ready-direction),
-  // not a global long/short style — TRADE READY headline stays gold separately.
-  const subtitleClass = 'trade-ready-subtitle trade-ready-direction ' + (dir === 'LONG' ? 'long' : 'short');
+  // Direction pill reuses the same colour family as the front-card
+  // LONG SIGNAL / SHORT SIGNAL pills (.sig-pill.pill-long/.pill-short) —
+  // gold stays reserved for the TRADE READY title alone.
+  const dirPillClass = 'trade-ready-direction-pill ' + (dir === 'LONG' ? 'long' : 'short');
+  const dirPillText = dir === 'LONG' ? '\u25b2 LONG SETUP' : '\u25bc SHORT SETUP';
 
   const rows = [];
   // HTF aligned
@@ -3446,8 +3464,10 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   const rVal      = d.structR != null && d.structR !== '\u2014' ? d.structR + 'R' : null;
 
   return '<div class="trade-ready-checklist">'
-    + '<div class="trade-ready-title">TRADE READY</div>'
-    + '<div class="' + subtitleClass + '">' + subtitle + '</div>'
+    + '<div class="trade-ready-header">'
+      + '<div class="trade-ready-title">TRADE READY</div>'
+      + '<div class="' + dirPillClass + '">' + dirPillText + '</div>'
+    + '</div>'
     + rowsHtml
     + '<div class="trade-ready-plan">'
       + '<div class="ap-row"><span>Entry</span><span>' + entryVal + '</span></div>'
