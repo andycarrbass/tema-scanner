@@ -3645,10 +3645,20 @@ function createTradeReadyPaperTrade(symbol) {
 
   commitEntry(entry);
 
-  // Return the card to its front face — the next scan/refresh will render
-  // the active-trade scanner placeholder for this symbol via the existing,
-  // unmodified isOpenTrade path in renderCard.
-  if (typeof flipTradeReadyCard === 'function') flipTradeReadyCard(symbol);
+  // Fix: commitEntry() synchronously unshifts the new entry onto journal[]
+  // before commitJournalChange's async push/pull even starts — so journal[]
+  // already reflects the new open trade the instant commitEntry() returns.
+  // renderAllJournalDependentUI() (called later, once Sheets sync completes)
+  // never touches scanner cards at all — it only refreshes Journal/Trade
+  // Desk/counts — so nothing was ever going to convert this card on its
+  // own. Re-render THIS card immediately via the same canonical renderCard()
+  // path every other active trade already renders through: isOpenTrade
+  // inside renderCard reads the live journal[] array, finds the entry we
+  // just unshifted, and routes into buildActiveScannerPlaceholderHtml —
+  // no flip-state hack, no full rescan, no new detection system.
+  if (typeof renderCard === 'function' && currentScanData[symbol]) {
+    renderCard(symbol, currentScanData[symbol]);
+  }
 }
 
 // ── calcUTBotPineBootstrapDiagnostic ──────────────────────────────────────
