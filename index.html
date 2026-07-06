@@ -2745,7 +2745,7 @@ function evaluateSetup(d) {
   return {
     setupQuality, tradeBias, actionBias, highProbability, score: sc,
     signalRegimeAligned, htfSupportive, regimeDirection,
-    confirms,
+    confirms, confirmCount,
     reasons, warnings, blockers,
     // Active-trade fields — reserved null until Phase 2 classifyLifecycle()
     tradeQuality: null, exitPressure: null, thesisIntact: null,
@@ -3106,9 +3106,28 @@ function _buildScannerAdvisory(d) {
     return null;
   }
 
-  // tradeReady: reuses evaluateSetup's highProbability flag as the V1 threshold.
-  // Deliberately conservative — see delivery notes for the open threshold question.
-  const tradeReady = !!ev.highProbability;
+  // tradeReady V1 (Phase 2) — decoupled from highProbability, which remains
+  // unchanged and continues to mean something stricter/premium. TRADE READY
+  // now means "enough evidence to act", achievable by CONSIDER_* setups too,
+  // not only STRONG_* (HIGH CONVICTION). Uses ev.actionBias — the raw
+  // evaluation-layer value — rather than the locally relabelled `action`/
+  // `headline` above, so the counter-regime AVOID→WATCH display exception
+  // can never accidentally make a regime-opposed setup tradeReady: its
+  // ev.actionBias is still AVOID underneath regardless of what the card
+  // headline shows.
+  const _tradeReadyActions = [
+    ACTION_BIAS.CONSIDER_LONG, ACTION_BIAS.CONSIDER_SHORT,
+    ACTION_BIAS.STRONG_LONG,   ACTION_BIAS.STRONG_SHORT,
+  ];
+  // confirmCount is available on ev (evaluateSetup now exposes it — additive
+  // metadata only, calculation unchanged). Falls back to setupQuality if it
+  // were ever absent, per the task's fallback instruction.
+  const _confirmCountOk = (ev.confirmCount != null)
+    ? ev.confirmCount >= 3
+    : (ev.setupQuality === 'MODERATE' || ev.setupQuality === 'HIGH');
+  const tradeReady = _tradeReadyActions.indexOf(ev.actionBias) !== -1
+    && (ev.blockers || []).length === 0
+    && _confirmCountOk;
   return {
     mode: 'scanner',
     action, headline,
