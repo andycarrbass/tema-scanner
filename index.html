@@ -204,6 +204,24 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   outline-offset:1px;
 }
 
+/* ── TDAS TRADE READY card flip (Phase 5) ────────────────────────────────
+   V1: simple show/hide toggle, not a 3D flip. Soft opacity transition only
+   — no @keyframes, no pulse, no whole-card glow. Back side gets its own
+   scroll safeguard so unusually long content never breaks card height. */
+.tdas-card-front{
+  display:flex;flex-direction:column;flex:1;min-height:0;
+  transition:opacity 0.12s ease;
+}
+.tdas-card-back{
+  display:none;
+  padding:12px 14px;
+  max-height:440px;
+  overflow-y:auto;
+  transition:opacity 0.12s ease;
+}
+.card.is-flipped .tdas-card-front{display:none;}
+.card.is-flipped .tdas-card-back{display:block;}
+
 
 /* ── Card zones — fixed padding per zone, no variable margins ── */
 .cz{padding:10px 14px;}
@@ -3349,10 +3367,11 @@ function _buildActiveTradeAdvisory(d, openTrade) {
 // ║  3). This will move to the scanner card back once flip is implemented — ║
 // ║  no flip, button, or Bitunix launch behaviour is added in this phase.   ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
-function buildTradeReadyChecklistHtml(symbol, d, advisory) {
+function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   if (!advisory || !advisory.tradeReady) return '';
   const st = d && d.states ? d.states : null;
   if (!st) return '';
+  opts = opts || {};
 
   const dir = advisory.direction === 'LONG' ? 'LONG' : 'SHORT';
   const subtitle = dir === 'LONG' ? 'LONG SETUP' : 'SHORT SETUP';
@@ -3404,11 +3423,18 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory) {
       + '<div class="ap-row"><span>Target</span><span style="color:var(--green-text);">' + targetVal + '</span></div>'
       + (rVal ? '<div class="ap-row"><span>R multiple</span><span>' + rVal + '</span></div>' : '')
     + '</div>'
-    // Future action placeholders — static/disabled only, no wiring yet.
+    // Future action placeholders — PAPER TRADE and LIVE: BITUNIX ORDER are
+    // static/disabled in every context, no wiring yet. Back is functional
+    // only when the caller supplies onBackClick (the scanner-card back —
+    // see renderCard); the detail-view preview call (openAnalysisPanel)
+    // doesn't pass opts, so Back stays a disabled placeholder there too,
+    // since "closing" the panel is already handled by its own ✕ control.
     + '<div class="trade-ready-future-actions">'
-      + '<button class="card-btn secondary" disabled title="Coming soon">BITUNIX ORDER</button>'
-      + '<button class="card-btn secondary" disabled title="Coming soon">Log decision</button>'
-      + '<button class="card-btn secondary" disabled title="Coming soon">Back</button>'
+      + '<button class="card-btn secondary" disabled title="Coming soon">PAPER TRADE</button>'
+      + '<button class="card-btn secondary" disabled title="Coming soon">LIVE: BITUNIX ORDER</button>'
+      + (opts.onBackClick
+          ? '<button class="card-btn secondary" onclick="' + opts.onBackClick + '">Back</button>'
+          : '<button class="card-btn secondary" disabled title="Coming soon">Back</button>')
     + '</div>'
     + '</div>';
 }
@@ -3420,11 +3446,20 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory) {
 // not tradeReady, so callers can concatenate the result unconditionally.
 function buildTradeReadyFrontButtonHtml(symbol, advisory) {
   if (!advisory || !advisory.tradeReady) return '';
-  return '<button class="trade-ready-front-btn" onclick="openAnalysisPanel(\'' + symbol + '\')" '
-    + 'title="Enough evidence to justify a trade decision — opens the TRADE READY checklist" '
-    + 'aria-label="TRADE READY — open trade decision checklist">'
+  return '<button class="trade-ready-front-btn" onclick="event.stopPropagation();flipTradeReadyCard(\'' + symbol + '\')" '
+    + 'title="Enough evidence to justify a trade decision — reveals the TRADE READY checklist" '
+    + 'aria-label="TRADE READY — reveal trade decision checklist">'
     + 'TRADE READY \u2192'
     + '</button>';
+}
+
+// Toggles the flipped state for a single scanner card. V1: simple class
+// toggle, no persistent state across scans/localStorage — a re-render
+// (new scan) naturally resets to front since renderCard rebuilds the DOM.
+function flipTradeReadyCard(symbol) {
+  const el = document.getElementById('c-' + symbol);
+  if (!el) return;
+  el.classList.toggle('is-flipped');
 }
 
 // ── calcUTBotPineBootstrapDiagnostic ──────────────────────────────────────
@@ -6823,7 +6858,16 @@ function renderCard(symbol,d){
     ? buildTradeReadyFrontButtonHtml(symbol, _advisory)
     : '';
 
+  // TDAS TRADE READY Phase 5: back-card content — reuses buildTradeReadyChecklistHtml
+  // unchanged logic; only the Back button becomes functional here (flips to
+  // front) via the opts param, vs. the disabled placeholder used in the
+  // detail-view preview (openAnalysisPanel calls it without opts).
+  const tradeReadyBackHtml = (_advisory && _advisory.tradeReady && typeof buildTradeReadyChecklistHtml==='function')
+    ? buildTradeReadyChecklistHtml(symbol, d, _advisory, { onBackClick: "flipTradeReadyCard('"+symbol+"')" })
+    : '';
+
   el.innerHTML=`
+    <div class="tdas-card-front">
     <div class="cz cz-top card-top">
       <div class="pair">${LABELS[symbol]}${highConviction?' \u2b50':''}</div>
       <span class="htf-badge ${htfAlign}">${htfText}</span>
@@ -6850,6 +6894,8 @@ function renderCard(symbol,d){
     </div>
     <div class="cz-spacer"></div>
     <div class="cz-actions">${tradeReadyBtnHtml}${actionZone}${analysisBtn}</div>
+    </div>
+    ${tradeReadyBackHtml?'<div class="tdas-card-back">'+tradeReadyBackHtml+'</div>':''}
   `;
   }catch(err){
     console.error('[renderCard] crash for',symbol,err);
