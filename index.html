@@ -164,6 +164,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   font-size:11px;font-weight:600;letter-spacing:0.5px;color:var(--text3);
   text-transform:uppercase;margin-bottom:8px;margin-top:1px;
 }
+/* Phase 6B: direction colour scoped to this subtitle only — does not
+   affect any other long/short label in the app. TRADE READY headline
+   above stays gold regardless of direction. */
+.trade-ready-direction.long{color:var(--green-text);}
+.trade-ready-direction.short{color:var(--red-text);}
 .trade-ready-row{
   font-size:13px;color:var(--text2);padding:3px 0;line-height:1.4;
 }
@@ -176,6 +181,20 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .trade-ready-future-actions button{
   flex:1;min-width:90px;opacity:0.5;cursor:not-allowed;font-size:11px;
 }
+/* Phase 6B: Back as a lightweight navigation affordance — same visual
+   weight as the existing "Show full analysis" text link (.analysis-btn),
+   not a boxed button competing with PAPER TRADE / LIVE: BITUNIX ORDER. */
+.trade-ready-back-link{
+  display:block;
+  margin-top:8px;
+  padding:4px 2px;
+  background:none;border:none;
+  font-size:12px;color:var(--text3);
+  cursor:pointer;text-align:left;
+}
+.trade-ready-back-link:hover{color:var(--text2);}
+.trade-ready-back-link:focus-visible{outline:1px solid var(--border3);outline-offset:2px;}
+.trade-ready-back-link:disabled{cursor:not-allowed;opacity:0.6;}
 
 /* ── TDAS TRADE READY front button (Phase 4/6) ───────────────────────────
    Gold/action-coloured, deliberately independent of long/short direction
@@ -3385,6 +3404,9 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
 
   const dir = advisory.direction === 'LONG' ? 'LONG' : 'SHORT';
   const subtitle = dir === 'LONG' ? 'LONG SETUP' : 'SHORT SETUP';
+  // Direction colour is scoped to this subtitle only (.trade-ready-direction),
+  // not a global long/short style — TRADE READY headline stays gold separately.
+  const subtitleClass = 'trade-ready-subtitle trade-ready-direction ' + (dir === 'LONG' ? 'long' : 'short');
 
   const rows = [];
   // HTF aligned
@@ -3425,7 +3447,7 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
 
   return '<div class="trade-ready-checklist">'
     + '<div class="trade-ready-title">TRADE READY</div>'
-    + '<div class="trade-ready-subtitle">' + subtitle + '</div>'
+    + '<div class="' + subtitleClass + '">' + subtitle + '</div>'
     + rowsHtml
     + '<div class="trade-ready-plan">'
       + '<div class="ap-row"><span>Entry</span><span>' + entryVal + '</span></div>'
@@ -3434,18 +3456,20 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
       + (rVal ? '<div class="ap-row"><span>R multiple</span><span>' + rVal + '</span></div>' : '')
     + '</div>'
     // Future action placeholders — PAPER TRADE and LIVE: BITUNIX ORDER are
-    // static/disabled in every context, no wiring yet. Back is functional
-    // only when the caller supplies onBackClick (the scanner-card back —
-    // see renderCard); the detail-view preview call (openAnalysisPanel)
-    // doesn't pass opts, so Back stays a disabled placeholder there too,
-    // since "closing" the panel is already handled by its own ✕ control.
+    // static/disabled in every context, no wiring yet. Back is deliberately
+    // NOT in this row (Phase 6B) — it's a lightweight navigation control,
+    // not a third execution-weight button; see .trade-ready-back-link below.
     + '<div class="trade-ready-future-actions">'
       + '<button class="card-btn secondary" disabled title="Coming soon">PAPER TRADE</button>'
       + '<button class="card-btn secondary" disabled title="Coming soon">LIVE: BITUNIX ORDER</button>'
-      + (opts.onBackClick
-          ? '<button class="card-btn secondary" onclick="' + opts.onBackClick + '">Back</button>'
-          : '<button class="card-btn secondary" disabled title="Coming soon">Back</button>')
     + '</div>'
+    // Back — functional only when the caller supplies onBackClick (the
+    // scanner-card back — see renderCard); the detail-view preview call
+    // (openAnalysisPanel) doesn't pass opts, so Back stays disabled there,
+    // since "closing" the panel is already handled by its own ✕ control.
+    + (opts.onBackClick
+        ? '<button type="button" class="trade-ready-back-link" onclick="' + opts.onBackClick + '">\u25c2 Back</button>'
+        : '<button type="button" class="trade-ready-back-link" disabled title="Coming soon">\u25c2 Back</button>')
     + '</div>';
 }
 
