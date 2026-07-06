@@ -177,12 +177,14 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   flex:1;min-width:90px;opacity:0.5;cursor:not-allowed;font-size:11px;
 }
 
-/* ── TDAS TRADE READY front button (Phase 4) ─────────────────────────────
+/* ── TDAS TRADE READY front button (Phase 4/6) ───────────────────────────
    Gold/action-coloured, deliberately independent of long/short direction
    (those stay green/red elsewhere) — this button means "enough evidence
-   to act", not a direction call. Static only: no pulse, no @keyframes,
-   no 3D transform. Opens the existing analysis panel — not an execution
-   control. */
+   to act", not a direction call. Opens the existing analysis panel — not
+   an execution control.
+   Phase 6: subtle gold pulse via box-shadow only — no scale change, no
+   background flashing, no 3D transform. Slow (2.6s) and soft, calm rather
+   than urgent. Respects prefers-reduced-motion. */
 .trade-ready-front-btn{
   width:100%;
   padding:9px 12px;
@@ -194,6 +196,14 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   background:rgba(212,168,57,0.10);
   border:1px solid rgba(212,168,57,0.45);
   transition:background 0.15s,border-color 0.15s;
+  animation:tdasTradeReadyPulse 2.6s ease-in-out infinite;
+}
+@keyframes tdasTradeReadyPulse{
+  0%, 100%{ box-shadow:0 0 0 0 rgba(212,168,57,0); }
+  50%     { box-shadow:0 0 7px 1px rgba(212,168,57,0.28); }
+}
+@media (prefers-reduced-motion: reduce){
+  .trade-ready-front-btn{ animation:none; }
 }
 .trade-ready-front-btn:hover{
   background:rgba(212,168,57,0.18);
