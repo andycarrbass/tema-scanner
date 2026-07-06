@@ -146,6 +146,64 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    TDAS advisory headline becomes the primary cue. Same shape, quieter. */
 .sig-pill.pill-demoted{opacity:0.65;font-size:10px;height:20px;padding:0 8px;}
 
+/* ── TDAS TRADE READY checklist (Phase 3) ────────────────────────────────
+   Static preview only — no pulse/animation, no 3D flip, no gold button
+   glow. This is the content model that will later move to the scanner
+   card back once flip is implemented. */
+.trade-ready-checklist{
+  border-radius:var(--radius-sm);
+  border:1px solid rgba(212,168,57,0.35);
+  background:rgba(212,168,57,0.06);
+  padding:12px 14px;
+  margin-bottom:2px;
+}
+.trade-ready-title{
+  font-size:15px;font-weight:700;letter-spacing:0.4px;color:#D4A839;
+}
+.trade-ready-subtitle{
+  font-size:11px;font-weight:600;letter-spacing:0.5px;color:var(--text3);
+  text-transform:uppercase;margin-bottom:8px;margin-top:1px;
+}
+.trade-ready-row{
+  font-size:13px;color:var(--text2);padding:3px 0;line-height:1.4;
+}
+.trade-ready-plan{
+  margin-top:8px;padding-top:8px;border-top:1px solid rgba(212,168,57,0.2);
+}
+.trade-ready-future-actions{
+  display:flex;gap:6px;margin-top:10px;flex-wrap:wrap;
+}
+.trade-ready-future-actions button{
+  flex:1;min-width:90px;opacity:0.5;cursor:not-allowed;font-size:11px;
+}
+
+/* ── TDAS TRADE READY front button (Phase 4) ─────────────────────────────
+   Gold/action-coloured, deliberately independent of long/short direction
+   (those stay green/red elsewhere) — this button means "enough evidence
+   to act", not a direction call. Static only: no pulse, no @keyframes,
+   no 3D transform. Opens the existing analysis panel — not an execution
+   control. */
+.trade-ready-front-btn{
+  width:100%;
+  padding:9px 12px;
+  margin-bottom:6px;
+  font-size:13px;font-weight:700;letter-spacing:0.3px;
+  border-radius:var(--radius-sm);
+  cursor:pointer;
+  color:#D4A839;
+  background:rgba(212,168,57,0.10);
+  border:1px solid rgba(212,168,57,0.45);
+  transition:background 0.15s,border-color 0.15s;
+}
+.trade-ready-front-btn:hover{
+  background:rgba(212,168,57,0.18);
+  border-color:rgba(212,168,57,0.65);
+}
+.trade-ready-front-btn:focus-visible{
+  outline:2px solid rgba(212,168,57,0.6);
+  outline-offset:1px;
+}
+
 
 /* ── Card zones — fixed padding per zone, no variable margins ── */
 .cz{padding:10px 14px;}
@@ -3275,6 +3333,98 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     warnings,
     next: '',
   };
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS TRADE READY — Phase 3: static checklist content model             ║
+// ║  buildTradeReadyChecklistHtml(symbol, d, advisory)                       ║
+// ║                                                                          ║
+// ║  Purpose: the decision checklist for a scanner-mode tradeReady setup —   ║
+// ║  "why is this ready to act on", not a diagnostic dump. Read-only, uses   ║
+// ║  only existing d.states/advisory fields — no new calculations beyond    ║
+// ║  simple presence checks. Returns '' whenever advisory.tradeReady is not ║
+// ║  true, so callers can safely concatenate the result unconditionally.    ║
+// ║                                                                          ║
+// ║  Temporary home: previewed inside the full analysis panel only (Phase   ║
+// ║  3). This will move to the scanner card back once flip is implemented — ║
+// ║  no flip, button, or Bitunix launch behaviour is added in this phase.   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function buildTradeReadyChecklistHtml(symbol, d, advisory) {
+  if (!advisory || !advisory.tradeReady) return '';
+  const st = d && d.states ? d.states : null;
+  if (!st) return '';
+
+  const dir = advisory.direction === 'LONG' ? 'LONG' : 'SHORT';
+  const subtitle = dir === 'LONG' ? 'LONG SETUP' : 'SHORT SETUP';
+
+  const rows = [];
+  // HTF aligned
+  if (st.htfAlign === 'aligned') rows.push('HTF aligned');
+  // TEMA state — direction-aware, matches the trade direction being evaluated
+  const temaSupports = dir === 'LONG' ? st.crossLong === true : st.crossShort === true;
+  if (temaSupports) {
+    rows.push('TEMA ' + (dir === 'LONG' ? 'bullish' : 'bearish') + (st.temaWidening ? ' · widening' : ''));
+  }
+  // UT Bot — direction + central freshness label, same classification used everywhere else
+  if (st.utBot) {
+    const utSupports = dir === 'LONG' ? st.utBot.direction === 1 : st.utBot.direction === -1;
+    if (utSupports) {
+      const fresh = classifyUtFreshness(st.utBot.barsAgoFlip);
+      rows.push('UT ' + (dir === 'LONG' ? 'bullish' : 'bearish') + ' · ' + fresh.label);
+    }
+  }
+  // ADX
+  if (st.adxTrending) {
+    rows.push('ADX ' + (st.adx != null ? Math.round(st.adx) + ' · ' : '') + (st.adxStrong ? 'strong' : 'trending'));
+  }
+  // RSI — only included when available AND supportive, per spec
+  const rsiSupportive = dir === 'LONG' ? st.rsiOk_long === true : st.rsiOk_short === true;
+  if (st.rsi != null && rsiSupportive) rows.push('RSI supportive');
+  // No major blockers — advisory.blocking is already the same list tradeReady checked
+  if (!advisory.blocking || advisory.blocking.length === 0) rows.push('No major blockers');
+
+  const rowsHtml = rows.map(r => '<div class="trade-ready-row">\u2713 ' + r + '</div>').join('');
+
+  // Risk plan — existing values only, no new calculation. stop15/target2 are
+  // the same ATR-based levels already shown in the card's own levels box;
+  // structR is already computed in calcPair (structStop/structR), reused
+  // as-is rather than recomputed here.
+  const entryVal  = d.price   != null ? fmt(d.price)   : '\u2014';
+  const stopVal   = d.stop15  != null ? fmt(d.stop15)  : '\u2014';
+  const targetVal = d.target2 != null ? fmt(d.target2) : '\u2014';
+  const rVal      = d.structR != null && d.structR !== '\u2014' ? d.structR + 'R' : null;
+
+  return '<div class="trade-ready-checklist">'
+    + '<div class="trade-ready-title">TRADE READY</div>'
+    + '<div class="trade-ready-subtitle">' + subtitle + '</div>'
+    + rowsHtml
+    + '<div class="trade-ready-plan">'
+      + '<div class="ap-row"><span>Entry</span><span>' + entryVal + '</span></div>'
+      + '<div class="ap-row"><span>Stop</span><span style="color:var(--red-text);">' + stopVal + '</span></div>'
+      + '<div class="ap-row"><span>Target</span><span style="color:var(--green-text);">' + targetVal + '</span></div>'
+      + (rVal ? '<div class="ap-row"><span>R multiple</span><span>' + rVal + '</span></div>' : '')
+    + '</div>'
+    // Future action placeholders — static/disabled only, no wiring yet.
+    + '<div class="trade-ready-future-actions">'
+      + '<button class="card-btn secondary" disabled title="Coming soon">BITUNIX ORDER</button>'
+      + '<button class="card-btn secondary" disabled title="Coming soon">Log decision</button>'
+      + '<button class="card-btn secondary" disabled title="Coming soon">Back</button>'
+    + '</div>'
+    + '</div>';
+}
+
+// ── TDAS TRADE READY — Phase 4: static scanner-front button ────────────────
+// Decision-readiness prompt only — opens the existing analysis panel where
+// the Phase 3 checklist already renders. Not an execution button: no paper
+// trade, no live trade, no Bitunix launch. Returns '' whenever advisory is
+// not tradeReady, so callers can concatenate the result unconditionally.
+function buildTradeReadyFrontButtonHtml(symbol, advisory) {
+  if (!advisory || !advisory.tradeReady) return '';
+  return '<button class="trade-ready-front-btn" onclick="openAnalysisPanel(\'' + symbol + '\')" '
+    + 'title="Enough evidence to justify a trade decision — opens the TRADE READY checklist" '
+    + 'aria-label="TRADE READY — open trade decision checklist">'
+    + 'TRADE READY \u2192'
+    + '</button>';
 }
 
 // ── calcUTBotPineBootstrapDiagnostic ──────────────────────────────────────
@@ -6667,6 +6817,11 @@ function renderCard(symbol,d){
   // Analysis is an instrument-inspection feature, not a signal-only feature.
   // Show for every rendered card — signal state does not gatekeep analysis access.
   const analysisBtn = '<button class="analysis-btn" onclick="openAnalysisPanel(\''+symbol+'\')" style="margin-top:6px;">\u25b6 Show full analysis</button>';
+  // TDAS TRADE READY Phase 4 — static front button, scanner (non-active)
+  // cards only. Returns '' when not tradeReady, per buildTradeReadyFrontButtonHtml.
+  const tradeReadyBtnHtml = (typeof buildTradeReadyFrontButtonHtml==='function')
+    ? buildTradeReadyFrontButtonHtml(symbol, _advisory)
+    : '';
 
   el.innerHTML=`
     <div class="cz cz-top card-top">
@@ -6694,7 +6849,7 @@ function renderCard(symbol,d){
       ${isOpenTrade ? tradeMgmtHtml : entrySignalsHtml}
     </div>
     <div class="cz-spacer"></div>
-    <div class="cz-actions">${actionZone}${analysisBtn}</div>
+    <div class="cz-actions">${tradeReadyBtnHtml}${actionZone}${analysisBtn}</div>
   `;
   }catch(err){
     console.error('[renderCard] crash for',symbol,err);
@@ -6987,8 +7142,18 @@ function openAnalysisPanel(symbol){
       + '</div>';
   }
 
+  // TDAS TRADE READY Phase 3: static checklist preview — detail view only.
+  // buildTradeReadyChecklistHtml already returns '' for every excluded case
+  // (tradeReady false, active trades, WATCH/AVOID, counter-regime WATCH —
+  // all of which have advisory.tradeReady !== true), so calling it
+  // unconditionally here is safe.
+  var _tradeReadyHtml = (typeof buildTradeReadyChecklistHtml === 'function')
+    ? buildTradeReadyChecklistHtml(symbol, d, _advisory)
+    : '';
+
   body.innerHTML = `
     ${_advisoryHtml}
+    ${_tradeReadyHtml}
     <!-- Signal summary -->
     <div class="ap-section">
       <div class="ap-section-title">Signal summary</div>
