@@ -160,6 +160,23 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .trade-ready-title{
   font-size:15px;font-weight:700;letter-spacing:0.4px;color:#D4A839;
 }
+/* Phase 6D: two-line execution-context header — symbol+direction on line 1,
+   TRADE READY state + setup timeframe on line 2. Supersedes the Phase 6C
+   single-row header (.trade-ready-header, still present below but unused). */
+.trade-ready-exec-header{margin-bottom:8px;}
+.trade-ready-symbol-row{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;
+}
+.trade-ready-symbol{
+  font-size:15px;font-weight:700;color:var(--text);letter-spacing:0.2px;
+}
+.trade-ready-state-row{
+  display:flex;align-items:baseline;gap:0;flex-wrap:wrap;
+}
+.trade-ready-state-row .trade-ready-title{display:inline;}
+.trade-ready-setup-tf{
+  font-size:12px;font-weight:600;color:var(--text3);letter-spacing:0.2px;
+}
 /* Phase 6C: title + direction pill share one row, replacing the old
    separate subtitle line below. */
 .trade-ready-header{
@@ -3420,6 +3437,14 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   opts = opts || {};
 
   const dir = advisory.direction === 'LONG' ? 'LONG' : 'SHORT';
+  // Symbol label — same formatting used everywhere else on cards.
+  const symbolLabel = (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : symbol;
+  // Setup timeframe — d does not carry a tf field (only d.htf, the HIGHER
+  // timeframe). The scanner timeframe itself only exists as the dropdown's
+  // current value, so read it the same way renderCard/openAnalysisPanel
+  // already do elsewhere — never invented if the element is unavailable.
+  const _tfEl = (typeof document !== 'undefined') ? document.getElementById('tf') : null;
+  const setupTfLabel = (_tfEl && _tfEl.value) ? _tfEl.value.toUpperCase() + ' SETUP' : null;
   // Direction pill reuses the same colour family as the front-card
   // LONG SIGNAL / SHORT SIGNAL pills (.sig-pill.pill-long/.pill-short) —
   // gold stays reserved for the TRADE READY title alone.
@@ -3464,9 +3489,15 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   const rVal      = d.structR != null && d.structR !== '\u2014' ? d.structR + 'R' : null;
 
   return '<div class="trade-ready-checklist">'
-    + '<div class="trade-ready-header">'
-      + '<div class="trade-ready-title">TRADE READY</div>'
-      + '<div class="' + dirPillClass + '">' + dirPillText + '</div>'
+    + '<div class="trade-ready-exec-header">'
+      + '<div class="trade-ready-symbol-row">'
+        + '<span class="trade-ready-symbol">' + symbolLabel + '</span>'
+        + '<span class="' + dirPillClass + '">' + dirPillText + '</span>'
+      + '</div>'
+      + '<div class="trade-ready-state-row">'
+        + '<span class="trade-ready-title">TRADE READY</span>'
+        + (setupTfLabel ? '<span class="trade-ready-setup-tf"> \u00b7 ' + setupTfLabel + '</span>' : '')
+      + '</div>'
     + '</div>'
     + rowsHtml
     + '<div class="trade-ready-plan">'
