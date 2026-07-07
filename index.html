@@ -2969,6 +2969,36 @@ function resolveJournalEntry(symbol) {
   return { openTrade, openWatch, closedEntry };
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS AUDIT FIX H1 — Canonical duplicate open-trade guard                ║
+// ║  findOpenTrade(symbol)                                                    ║
+// ║                                                                            ║
+// ║  Purpose: a single, explicit "does this symbol already have an open      ║
+// ║  trade" check, used by every take-trade path before committing a new     ║
+// ║  decision:'took' entry — prevents duplicate open trades from a stale     ║
+// ║  flipped TRADE READY card, another tab/device, an old modal left open,   ║
+// ║  or the confluence tab.                                                   ║
+// ║                                                                            ║
+// ║  Definition (matches the pattern already used everywhere else in this    ║
+// ║  file — renderCard, focusTradeDeskCard, renderTradeDesk, etc.):           ║
+// ║    !deleted && symbol matches && decision === 'took' && !outcome          ║
+// ║                                                                            ║
+// ║  Deliberately separate from resolveJournalEntry(): that function is       ║
+// ║  shared/load-bearing (buildAdvisory, classifyLifecycle) and is missing    ║
+// ║  a !deleted check of its own — changing it risks altering active-trade   ║
+// ║  detection elsewhere. findOpenTrade() is a narrow, dedicated guard for    ║
+// ║  trade-creation paths only; it does not change any rendering semantics.  ║
+// ║                                                                            ║
+// ║  Future note: if/when a "Pending Execution" live-trade status is added,  ║
+// ║  this is the one place to extend the definition (e.g. || j.status ===    ║
+// ║  'pending') so pending live trades also block a duplicate — not done     ║
+// ║  now, since that status doesn't exist yet.                               ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function findOpenTrade(symbol) {
+  if (!symbol || typeof journal === 'undefined' || !Array.isArray(journal)) return null;
+  return journal.find(j => j && !j.deleted && j.symbol === symbol && j.decision === 'took' && !j.outcome) || null;
+}
+
 function classifyLifecycle(d, entry) {
   // Guard: must have signal and evaluation to classify
   if (!d || !d.evaluation) {
@@ -3591,10 +3621,20 @@ function createTradeReadyPaperTrade(symbol) {
     return;
   }
 
+  const label = (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : symbol;
+
+  // Audit Fix H1 — block duplicate open trades before even showing the
+  // confirm dialog (a stale flipped TRADE READY card, another tab/device,
+  // or an old modal left open are all real ways this symbol could already
+  // have an open trade by the time this button is clicked).
+  if (typeof findOpenTrade === 'function' && findOpenTrade(symbol)) {
+    alert('Open trade already exists for ' + label + '.\nClose the existing trade before creating another.');
+    return;
+  }
+
   const dir   = advisory.direction === 'LONG' ? 'long' : 'short';
   const tfEl  = (typeof document !== 'undefined') ? document.getElementById('tf') : null;
   const tf    = d.tf || (tfEl && tfEl.value) || '4h';
-  const label = (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : symbol;
 
   const entryPx  = d.price;
   const stopPx   = d.stop15;
@@ -7842,6 +7882,21 @@ function quickTakeFromWatch(symbol){
 function saveEntry(){
   if(!modalData)return;
   if(!selectedDecision){alert('No decision selected.');return;}
+
+  // Audit Fix H1 — block a duplicate open trade. Only applies to 'took';
+  // skip/missed/watching are never blocked. A watch→trade conversion
+  // (window._watchEntryId set) is unaffected since the entry being
+  // converted is decision==='watching', not 'took', so findOpenTrade()
+  // (which only matches 'took') never confuses the two.
+  if(selectedDecision === 'took' && typeof findOpenTrade === 'function'){
+    const _existing = findOpenTrade(modalData.symbol);
+    if(_existing){
+      const _label = (typeof LABELS !== 'undefined' && LABELS[modalData.symbol]) ? LABELS[modalData.symbol] : modalData.symbol;
+      alert('Open trade already exists for ' + _label + '.\nClose the existing trade before creating another.');
+      return;
+    }
+  }
+
   const note     = document.getElementById('modalNote').value.trim();
   const rating   = parseInt(document.getElementById('modalRating').value);
   const tradeType = document.getElementById('modalTradeType') ? document.getElementById('modalTradeType').value : 'paper';
@@ -9732,6 +9787,14 @@ function confLogTrade(sym,tradeType){
   const data=confScanData[sym];
   const h1=data&&data['1h'];
   if(!h1)return;
+
+  // Audit Fix H1 — block a duplicate open trade from the confluence path.
+  if(typeof findOpenTrade === 'function' && findOpenTrade(sym)){
+    const _label = (typeof LABELS !== 'undefined' && LABELS[sym]) ? LABELS[sym] : sym;
+    alert('Open trade already exists for ' + _label + '.\nClose the existing trade before creating another.');
+    return;
+  }
+
   const inp=document.getElementById('conf-entry-'+sym);
   const entryPrice=inp&&inp.value?parseFloat(inp.value):null;
   // Build V1 entry via shared builder
