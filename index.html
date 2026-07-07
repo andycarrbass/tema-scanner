@@ -3412,9 +3412,31 @@ function _buildScannerAdvisory(d) {
   const _confirmCountOk = (ev.confirmCount != null)
     ? ev.confirmCount >= 3
     : (ev.setupQuality === 'MODERATE' || ev.setupQuality === 'HIGH');
+
+  // Advisory Calibration Phase 2 — two additional tradeReady-only gates.
+  // Neither changes the displayed headline/action (a CONSIDER SHORT with
+  // bullish UT still shows as CONSIDER SHORT) — they only prevent the
+  // TRADE READY button from appearing on a setup with an internal conflict
+  // or a very weak score. Uses only existing fields (d.states.utBot.direction,
+  // ev.score) — no new indicator calculation, no change to how either value
+  // is computed.
+  const _st = (d && d.states) || {};
+  const _utBot = _st.utBot || null;
+  // UT direction opposes the trade if: LONG with bearish UT, or SHORT with bullish UT.
+  const _utOpposes = _utBot ? (dir === 'LONG' ? _utBot.direction === -1 : _utBot.direction === 1) : false;
+  // Weak-score gate — 45 matches the existing counter-regime WATCH threshold
+  // used elsewhere in this same function, kept consistent rather than a new number.
+  const _scoreOk = ev.score != null ? ev.score >= 45 : true;
+
+  const _tradeReadyBlockedReasons = [];
+  if (_utOpposes) _tradeReadyBlockedReasons.push('UT opposes direction');
+  if (!_scoreOk)   _tradeReadyBlockedReasons.push('Score below action threshold');
+
   const tradeReady = _tradeReadyActions.indexOf(ev.actionBias) !== -1
     && (ev.blockers || []).length === 0
-    && _confirmCountOk;
+    && _confirmCountOk
+    && !_utOpposes
+    && _scoreOk;
   return {
     mode: 'scanner',
     action, headline,
@@ -3425,6 +3447,9 @@ function _buildScannerAdvisory(d) {
     supporting: ev.reasons  || [],
     blocking:   ev.blockers || [],
     warnings:   ev.warnings || [],
+    // Internal-only, not rendered anywhere as "NOT READY" — a short trail
+    // for why tradeReady came out false, for future diagnostic use.
+    tradeReadyBlockedReasons: _tradeReadyBlockedReasons,
     next,
   };
 }
