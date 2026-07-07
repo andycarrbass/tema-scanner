@@ -3451,12 +3451,13 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   const dir = advisory.direction === 'LONG' ? 'LONG' : 'SHORT';
   // Symbol label — same formatting used everywhere else on cards.
   const symbolLabel = (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : symbol;
-  // Setup timeframe — d does not carry a tf field (only d.htf, the HIGHER
-  // timeframe). The scanner timeframe itself only exists as the dropdown's
-  // current value, so read it the same way renderCard/openAnalysisPanel
-  // already do elsewhere — never invented if the element is unavailable.
+  // Setup timeframe — prefer d.tf (the timeframe this calcPair result was
+  // actually computed on), falling back to the live dropdown only if d.tf
+  // is unavailable. Prevents mislabeling if the user changes the dropdown
+  // after scanning but before flipping this card (Audit Fix H3).
   const _tfEl = (typeof document !== 'undefined') ? document.getElementById('tf') : null;
-  const setupTfLabel = (_tfEl && _tfEl.value) ? _tfEl.value.toUpperCase() + ' SETUP' : null;
+  const _setupTf = d.tf || (_tfEl && _tfEl.value) || null;
+  const setupTfLabel = _setupTf ? _setupTf.toUpperCase() + ' SETUP' : null;
   // Direction pill reuses the same colour family as the front-card
   // LONG SIGNAL / SHORT SIGNAL pills (.sig-pill.pill-long/.pill-short) —
   // gold stays reserved for the TRADE READY title alone.
@@ -6052,7 +6053,7 @@ async function calcPair(symbol,tf){
     }
 
   }
-  const _result={price,t17,t92,prevT92,ma200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
+  const _result={price,t17,t92,prevT92,ma200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,tf,score,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
     adx,adxTrending,adxStrong,
@@ -7563,7 +7564,7 @@ let logChoiceSymbol=null;
 function buildV1Entry(symbol, d, decision, overrides) {
   overrides = overrides || {};
   const _now     = new Date().toISOString();
-  const _tf      = overrides.tf || (document.getElementById('tf') ? document.getElementById('tf').value : '4h');
+  const _tf      = overrides.tf || d.tf || (document.getElementById('tf') ? document.getElementById('tf').value : '4h');
   const _htf     = d.htf || HTF[_tf] || '1d';
   // TDAS Phase 0: read pre-computed states from d.states where available.
   // Falls back to inline derivation for entries built from stale/non-calcPair data.
@@ -7743,7 +7744,12 @@ function logDecision(decision){
 function openModalFull(symbol,decision){
   const d=currentScanData[symbol];
   if(!d||d.error)return;
-  modalData={symbol,data:d,tf:document.getElementById('tf').value};
+  // Prefer d.tf (the timeframe this card's data was actually computed on)
+  // over the live dropdown — same Audit Fix H3 as createTradeReadyPaperTrade
+  // /buildTradeReadyChecklistHtml. modalData.tf feeds into buildV1Entry's
+  // overrides.tf, which takes priority over d.tf there, so getting it right
+  // here matters for the standard Log Decision flow too.
+  modalData={symbol,data:d,tf:d.tf||document.getElementById('tf').value};
   selectedDecision=decision;
   selectedOutcome=null;
   const decLabels={took:'📈 Trade',watching:'👁 Watch',skipped:'✗ Skip signal',missed:'⚡ Missed entry'};
@@ -9229,9 +9235,10 @@ function resetPairs(){
 
 function addToHistory(symbol,d){
   if(d.signal==='neutral')return;
+  const _tf = d.tf || document.getElementById('tf').value;
   const last=signalHistory.filter(h=>h.symbol===symbol).slice(-1)[0];
-  if(last&&last.signal===d.signal&&last.tf===document.getElementById('tf').value)return;
-  signalHistory.unshift({symbol,signal:d.signal,price:d.price,rsi:d.rsi,score:d.score,htfAlign:d.htfAlign,htf:d.htf,tf:document.getElementById('tf').value,time:nowTime(),date:new Date().toLocaleDateString()});
+  if(last&&last.signal===d.signal&&last.tf===_tf)return;
+  signalHistory.unshift({symbol,signal:d.signal,price:d.price,rsi:d.rsi,score:d.score,htfAlign:d.htfAlign,htf:d.htf,tf:_tf,time:nowTime(),date:new Date().toLocaleDateString()});
   if(signalHistory.length>50)signalHistory=signalHistory.slice(0,50);
   saveHistory();
 }
