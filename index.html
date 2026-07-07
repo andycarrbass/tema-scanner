@@ -6115,7 +6115,9 @@ function buildSnapshot(symbol) {
   const d = currentScanData[symbol];
   if (!d) return null;
 
-  const tf_val   = document.getElementById('tf') ? document.getElementById('tf').value : '4H';
+  // Prefer d.tf (the timeframe this card was actually scanned on) over the
+  // live dropdown, which may have changed since the scan (Audit Fix H3B).
+  const tf_val   = d.tf || (document.getElementById('tf') ? document.getElementById('tf').value : '4H');
   const _xcfg    = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
   const exchange  = _xcfg.signalSource
     ? 'Signal candles: '+_xcfg.signalSource+' | UT Bot: '+(UT_BOT_SOURCE_MODE==='heikin_ashi'?'HA source':'standard')+' · KV'+UT_BOT_KEY_VALUE+' ATR'+UT_BOT_ATR_PERIOD+' | Live price: '+(_xcfg.priceSource||_xcfg.label)+' | Execution: '+(_xcfg.executionVenue||_xcfg.label)
@@ -6849,7 +6851,13 @@ function renderCard(symbol,d){
   ) ? `<div class="utbot-reversal-strip">⚠ UT Bot flipped ${utBotFlipDir==='long'?'bullish':'bearish'} against ${signal} signal — possible reversal, review position</div>` : '';
   const structStopFmt=fmt(structStop);
   const atRStop=signal==='long'?structStop<price:structStop>price;
-  const tf_val=document.getElementById('tf').value;
+  // Prefer d.tf (the timeframe this card was actually scanned on) over the
+  // live dropdown — affects entry/exit-signal-row labels below and the
+  // sameTfRecent journal-match check, so changing the dropdown after a scan
+  // no longer changes an already-rendered card's own setup identity
+  // (Audit Fix H3B). Falls back to the dropdown, then '4h', only if d.tf is
+  // unavailable (e.g. stale currentScanData predating this fix).
+  const tf_val=d.tf||document.getElementById('tf').value||'4h';
   // Cross-timeframe: find active watching or open trade for this pair on ANY timeframe
   const activeWatch=journal.find(j=>j.symbol===symbol&&isActiveWatch(j));
   const openTrade=journal.find(j=>!j.deleted&&j.symbol===symbol&&j.decision==='took'&&!j.outcome);
