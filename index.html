@@ -7247,6 +7247,17 @@ function openAnalysisPanel(symbol){
   const volBarW = Math.min((volRatio||0)*50,100);
   const utBotFresh = utFresh || _utBot.recentSignal!=='none';
 
+  // Setup timeframe label — the scanner/setup timeframe (e.g. 1H), distinct
+  // from d.htf (the higher timeframe, e.g. 4H). Same source already used by
+  // the TRADE READY back-card header: the live #tf dropdown value, with a
+  // d.tf fallback for consistency (calcPair doesn't currently set d.tf, but
+  // this mirrors the same defensive pattern used elsewhere rather than
+  // assuming one source only).
+  const _tfEl = (typeof document!=='undefined') ? document.getElementById('tf') : null;
+  const setupTfLabel = (d.tf || (_tfEl && _tfEl.value) || '').toUpperCase();
+  const _setupSuffix = setupTfLabel ? (' \u00b7 ' + setupTfLabel + ' setup') : '';
+  const _setupPrefix = setupTfLabel ? (setupTfLabel + ' ') : '';
+
   // Pre-compute HTF Trend Context section — string concat avoids nested backtick issue
   const _htfLabel=(htf||'HTF').toUpperCase();
   let _tcHtml;
@@ -7281,7 +7292,7 @@ function openAnalysisPanel(symbol){
     if(_lc.state==='REDUCE') _lcColor='var(--amber-text)';
     if(_lc.state==='CONFIRMED'||_lc.state==='HIGH_PROBABILITY') _lcColor='var(--green-text)';
     _lifecycleHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">Lifecycle</div>'
+      +'<div class="ap-section-title">Lifecycle'+_setupSuffix+'</div>'
       +'<div class="ap-row"><span>State</span><span style="color:'+_lcColor+';font-weight:600;">'+_lc.state.replace(/_/g,' ')+'</span></div>'
       +'<div class="ap-row"><span>Stage</span><span style="color:var(--text2);">'+_lc.stage+'</span></div>'
       +'<div class="ap-row"><span>Confidence</span><span style="color:var(--text2);">'+_lc.confidence+'</span></div>'
@@ -7332,7 +7343,7 @@ function openAnalysisPanel(symbol){
     if(_ev.confirms.rsi)   _cbadges.push('✓ RSI');   else _cbadges.push('✗ RSI');
     if(_ev.confirms.regime)_cbadges.push('✓ Regime');else _cbadges.push('✗ Regime');
     _evalHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">Evaluation</div>'
+      +'<div class="ap-section-title">Evaluation'+_setupSuffix+'</div>'
       +'<div class="ap-row"><span>Setup quality</span><span style="color:'+_sqColor+';font-weight:600;">'+_ev.setupQuality+'</span></div>'
       +'<div class="ap-row"><span>Action bias</span><span style="color:'+_abColor+';font-weight:600;">'+_ev.actionBias.replace(/_/g,' ')+'</span></div>'
       +'<div class="ap-row"><span>High probability</span><span style="color:'+_hpColor+';">'+_hpText+'</span></div>'
@@ -7402,7 +7413,7 @@ function openAnalysisPanel(symbol){
     ${_tradeReadyHtml}
     <!-- Signal summary -->
     <div class="ap-section">
-      <div class="ap-section-title">Signal summary</div>
+      <div class="ap-section-title">Signal summary${_setupSuffix}</div>
       <div class="ap-row"><span>Signal</span><span style="color:${signal==='long'?'var(--green-text)':signal==='short'?'var(--red-text)':'var(--text3)'};">${signal==='long'?'▲ Long':signal==='short'?'▼ Short':'Neutral'}</span></div>
       <div class="ap-row"><span>Score</span><span>${score||0}%</span></div>
       <div class="ap-row"><span>HTF alignment</span><span style="color:${htfAlign==='aligned'?'var(--green-text)':htfAlign==='conflict'?'var(--red-text)':'var(--text3)'};">${htfAlign==='aligned'?'Aligned ✓':htfAlign==='conflict'?'Conflict ✗':htfAlign==='insufficient'?'Insufficient data':'Neutral —'}</span></div>
@@ -7417,7 +7428,7 @@ function openAnalysisPanel(symbol){
 
     <!-- Indicator checklist -->
     <div class="ap-section">
-      <div class="ap-section-title">Indicator checklist</div>
+      <div class="ap-section-title">${_setupPrefix}Indicator checklist</div>
       <div class="cond"><span class="dot ${aboveMA===null?'na':c1ok?'ok':'no'}"></span><span style="color:var(--ma200-yellow);">200 MA</span>${aboveMA!==null?' — price '+(aboveMA?'above':'below'):' · insufficient data'}</div>
       <div class="cond"><span class="dot ${signal==='neutral'?'na':(signal==='long'&&aboveTrendSMA)||(signal==='short'&&!aboveTrendSMA)?'ok':signal!=='neutral'?'no':'na'}"></span><span style="color:var(--sma-blue);">${trendSMALabel}</span>${aboveTrendSMA===null?' · insufficient data':' — price '+(aboveTrendSMA?'above':'below')}</div>
       <div class="cond"><span class="dot ${ema50State==='entry'?'ok':ema50State==='reclaimed'?'no':ema50State==='approaching'?'warn':'na'}"></span><span style="color:#a78bfa;">EMA 50</span> · ${ema50Label}</div>
@@ -7431,7 +7442,7 @@ function openAnalysisPanel(symbol){
 
     <!-- TEMA detail -->
     <div class="ap-section">
-      <div class="ap-section-title">TEMA detail</div>
+      <div class="ap-section-title">${_setupPrefix}TEMA detail</div>
       <div class="ap-row"><span>TEMA 17</span><span>${fmt(t17)}</span></div>
       <div class="ap-row"><span>TEMA 92</span><span>${fmt(t92)}</span></div>
       <div class="ap-row"><span>Separation</span><span style="color:${temaWidening?'var(--green-text)':'var(--amber-text)'};">${temaWidening?'▲ Widening':'▼ Converging'}</span></div>
@@ -7440,7 +7451,7 @@ function openAnalysisPanel(symbol){
 
     <!-- RSI / Volume / ADX -->
     <div class="ap-section">
-      <div class="ap-section-title">Momentum &amp; trend</div>
+      <div class="ap-section-title">${_setupPrefix}Momentum &amp; trend</div>
       <div class="ap-row"><span>RSI (14)</span><span style="color:${_rsi!==null?rsiColor(_rsi):'var(--text3)'};">${_rsi!==null?_rsi.toFixed(1):'—'} ${_rsi===null?'':_rsi>70?'Overbought':_rsi<30?'Oversold':'Neutral'}</span></div>
       <div class="ap-row"><span>ADX (14)</span><span style="color:${adxStrong?'var(--green-text)':adxTrending?'var(--amber-text)':'var(--red-text)'};">${_adx} — ${adxStrong?'Strong':adxTrending?'Trending':'Ranging'}</span></div>
       <div class="ap-row"><span>Volume vs avg</span><span style="color:${volOk?'var(--green-text)':'var(--amber-text)'};">${volRatio!==null?volRatio.toFixed(2)+'×':'—'} ${volOk?'':'(weak)'}</span></div>
@@ -7449,7 +7460,7 @@ function openAnalysisPanel(symbol){
 
     <!-- UT Bot detail -->
     <div class="ap-section">
-      <div class="ap-section-title">UT Bot Alert · KV ${UT_BOT_KEY_VALUE} · ATR ${UT_BOT_ATR_PERIOD}${UT_BOT_SOURCE_MODE==='heikin_ashi'?' · HA source':''}</div>
+      <div class="ap-section-title">${_setupPrefix}UT Bot Alert · KV ${UT_BOT_KEY_VALUE} · ATR ${UT_BOT_ATR_PERIOD}${UT_BOT_SOURCE_MODE==='heikin_ashi'?' · HA source':''}</div>
       <div class="ap-row"><span>Direction</span><span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span></div>
       <div class="ap-row"><span>Trail stop level</span><span>${fmt(_utBot.trailLevel)}</span></div>
       <div class="ap-row"><span>Last UT flip</span><span style="color:${utFreshnessColorForKey(classifyUtFreshness(_utBot.barsAgoFlip??99).key)};">${(()=>{const _bars=_utBot.barsAgoFlip??99;const _dirWord=_utBot.direction===1?'Bullish':_utBot.direction===-1?'Bearish':'—';if(_utBot.direction===0)return'No UT Bot data';const _label=classifyUtFreshness(_bars).label;return _bars===0?_dirWord+' ⚡ This bar · '+_label:_dirWord+' · '+_bars+' bars ago · '+_label;})()}</span></div>
@@ -7470,7 +7481,7 @@ function openAnalysisPanel(symbol){
     ${signal!=='neutral'?`
     <!-- Fibonacci levels -->
     <div class="ap-section">
-      <div class="ap-section-title">Fibonacci levels · 50-bar swing</div>
+      <div class="ap-section-title">${_setupPrefix}Fibonacci levels · 50-bar swing</div>
       <div class="ap-row"><span>0.618 retrace <span style="font-size:10px;color:var(--text3);">(entry zone)</span></span><span style="color:#a78bfa;">${fmt(fibRetrace618)}</span></div>
       <div class="ap-row"><span>1.618 ext <span style="font-size:10px;color:var(--text3);">(target)</span></span><span style="color:var(--green-text);">${fmt(fib1618)}</span></div>
       <div class="ap-row"><span>2.618 ext <span style="font-size:10px;color:var(--text3);">(stretch)</span></span><span style="color:var(--green-text);opacity:0.7;">${fmt(fib2618)}</span></div>
@@ -7479,7 +7490,7 @@ function openAnalysisPanel(symbol){
 
     <!-- Risk levels -->
     <div class="ap-section">
-      <div class="ap-section-title">Risk levels · ATR-based</div>
+      <div class="ap-section-title">${_setupPrefix}Risk levels · ATR-based</div>
       <div class="ap-row"><span>${signal==='long'?'Stop (1.5× ATR)':'Target (2× ATR)'}</span><span style="color:${signal==='long'?'var(--red-text)':'var(--green-text)'};">${fmt(signal==='long'?stop15:target2)}</span></div>
       <div class="ap-row"><span>Entry (signal)</span><span>${fmt(price)}</span></div>
       <div class="ap-row"><span>${signal==='long'?'Target (2× ATR)':'Stop (1.5× ATR)'}</span><span style="color:${signal==='long'?'var(--green-text)':'var(--red-text)'};">${fmt(signal==='long'?target2:stop15)}</span></div>
