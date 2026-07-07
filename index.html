@@ -3294,6 +3294,25 @@ function _avoidDetail(ev, d, dir) {
   return 'Signal conflicts with the current regime.';
 }
 
+// Advisory Calibration Phase 1 — explains WHY a STRONG_* setup was capped
+// to CONSIDER instead of displaying as HIGH CONVICTION (ev.highProbability
+// is false). Presentation only: reads existing ev/d.states fields, adds no
+// new indicator calculation, does not touch classifyUtFreshness thresholds.
+// Priority order per spec: score < 75 > ADX ranging > UT stale >
+// HTF not aligned > first warning > generic fallback.
+function _capReasonText(ev, d) {
+  const st = (d && d.states) || {};
+  if (ev.score != null && ev.score < 75) return 'score below premium threshold';
+  if (st.adx != null && !st.adxTrending) return 'ADX ranging';
+  if (st.utBot && typeof classifyUtFreshness === 'function') {
+    const fresh = classifyUtFreshness(st.utBot.barsAgoFlip);
+    if (fresh.rank >= 2) return 'UT signal stale'; // Mature or Stale
+  }
+  if (ev.signalRegimeAligned === false) return 'HTF not aligned';
+  if (ev.warnings && ev.warnings.length) return ev.warnings[0];
+  return 'not high-probability';
+}
+
 function _buildScannerAdvisory(d) {
   const ev = d.evaluation;
   if (!ev || ev.tradeBias === 'NEUTRAL' || ev.actionBias === ACTION_BIAS.NO_SETUP) {
@@ -3347,14 +3366,29 @@ function _buildScannerAdvisory(d) {
     // this correctly (reviewed per Task 3, no change needed).
     detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
   } else if (ev.actionBias === ACTION_BIAS['STRONG' + sfx]) {
-    action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
-    next = 'Consider entry if position size and risk are acceptable.';
-    // HIGH CONVICTION should explain strongest confluence — reasons[0] is
-    // already correct here too (reviewed per Task 3, no change needed):
-    // for a genuine STRONG setup nearly every confirm is true, so the
-    // first-populated reason (regime/TEMA/UT/HTF, in that fixed order) is
-    // itself a legitimate top piece of confluence, not an arbitrary pick.
-    detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
+    if (ev.highProbability === true) {
+      action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
+      next = 'Consider entry if position size and risk are acceptable.';
+      // HIGH CONVICTION should explain strongest confluence — reasons[0] is
+      // already correct here too (reviewed per Task 3, no change needed):
+      // for a genuine STRONG setup nearly every confirm is true, so the
+      // first-populated reason (regime/TEMA/UT/HTF, in that fixed order) is
+      // itself a legitimate top piece of confluence, not an arbitrary pick.
+      detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
+    } else {
+      // Advisory Calibration Phase 1 — presentation-layer cap. actionBias
+      // can be STRONG_* from setupQuality==='HIGH' alone, without passing
+      // the stricter highProbability gate (e.g. confirmCount>=5 but
+      // score<75). Displaying that as HIGH CONVICTION overstated it — cap
+      // to CONSIDER with an explicit reason instead. Does not touch
+      // evaluateSetup/actionBias/highProbability/tradeReady — a capped
+      // setup can still be tradeReady if the existing tradeReady rule
+      // already says so (tradeReady checks actionBias membership in
+      // CONSIDER_*/STRONG_* against the raw ev.actionBias, unaffected here).
+      action = 'CONSIDER' + sfx; headline = 'CONSIDER ' + dir;
+      next = 'Review position size and entry trigger.';
+      detail = 'Strong setup, but conviction capped: ' + _capReasonText(ev, d) + '.';
+    }
   } else {
     return null;
   }
