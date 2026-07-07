@@ -2999,6 +2999,78 @@ function findOpenTrade(symbol) {
   return journal.find(j => j && !j.deleted && j.symbol === symbol && j.decision === 'took' && !j.outcome) || null;
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS AUDIT FIX H4 — Trade plan coherence guard                         ║
+// ║  validateTradePlanCoherence(entry)                                        ║
+// ║                                                                          ║
+// ║  Purpose: catch an incoherent trade plan before it's committed — e.g. a  ║
+// ║  live-ticker price move between scan and click leaving entry/stop/target ║
+// ║  in an impossible arrangement (short entry already below its stop, long  ║
+// ║  entry already past its target, etc.). Does not recalculate stop15/      ║
+// ║  target2/structR/ATR — reads only the final fields buildV1Entry already  ║
+// ║  produced.                                                                ║
+// ║                                                                          ║
+// ║  Known V1 limitation (documented rather than silently assumed away):     ║
+// ║  entry.signalPrice is d.price at the moment buildV1Entry ran — for       ║
+// ║  scanned-but-not-yet-logged symbols this can itself already be a live-   ║
+// ║  refreshed price (see _scannerTickerRefresh, which updates              ║
+// ║  currentScanData[sym].price for every scanned pair, not just active      ║
+// ║  trades/watches). TDAS does not currently preserve the original scan-    ║
+// ║  time price separately from the live-updated one, and this phase does    ║
+// ║  not add that — per the audit's own instruction not to invent a larger   ║
+// ║  system for V1. The drift warning below is still genuinely useful for    ║
+// ║  the modal Log Decision flow (where entryPrice is a manually-typed       ║
+// ║  value compared against the live signal price) and for catching fat-    ║
+// ║  finger entry errors; for paths where entryPrice is set directly from    ║
+// ║  the same live d.price as signalPrice (PAPER TRADE, confluence), the      ║
+// ║  two will typically match and the warning correctly reports no drift —   ║
+// ║  it just cannot detect drift between the original scan and the click     ║
+// ║  in that specific case, since no earlier price is stored to compare      ║
+// ║  against.                                                                 ║
+// ║                                                                          ║
+// ║  Returns: { ok: true|false, warnings: [...] }. ok:false means a hard-    ║
+// ║  fail (entry/stop/target arrangement is impossible for the direction) —  ║
+// ║  callers must block commit. ok:true with warnings.length>0 means a       ║
+// ║  soft warning — callers should confirm() with the user before commit.    ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function validateTradePlanCoherence(entry) {
+  if (!entry) return { ok: false, warnings: ['No trade plan to validate.'] };
+
+  const dir      = entry.signal === 'long' ? 'long' : 'short';
+  const entryPx  = entry.entryPrice != null ? entry.entryPrice : entry.signalPrice;
+  const stopPx   = entry.stopPrice;
+  const targetPx = entry.targetPrice;
+  const warnings = [];
+
+  // ── Hard-fail: entry/stop/target must be internally coherent ───────────
+  if (entryPx != null && stopPx != null && targetPx != null) {
+    const coherent = dir === 'long'
+      ? (stopPx < entryPx && targetPx > entryPx)
+      : (stopPx > entryPx && targetPx < entryPx);
+    if (!coherent) {
+      const dirWord = dir === 'long' ? 'LONG' : 'SHORT';
+      const rule = dir === 'long'
+        ? 'LONG entry must be above stop and below target.'
+        : 'SHORT entry must be below stop and above target.';
+      return { ok: false, warnings: ['Trade plan invalid.\n' + rule] };
+    }
+  }
+
+  // ── Soft warning: price drift vs signal price ───────────────────────────
+  // Prefers an ATR-based threshold when ATR is available; falls back to a
+  // simple 1.5% threshold otherwise. See the limitation noted above.
+  if (entryPx != null && entry.signalPrice != null && entryPx !== entry.signalPrice) {
+    const diff = Math.abs(entryPx - entry.signalPrice);
+    const atr = entry.atr;
+    const threshold = (atr != null && atr > 0) ? atr : (entry.signalPrice * 0.015);
+    if (diff > threshold) {
+      warnings.push('Price has moved since the signal.\nSignal: ' + fmt(entry.signalPrice) + '\nEntry: ' + fmt(entryPx) + '\nContinue creating trade?');
+    }
+  }
+
+  return { ok: true, warnings };
+}
+
 function classifyLifecycle(d, entry) {
   // Guard: must have signal and evaluation to classify
   if (!d || !d.evaluation) {
@@ -3685,6 +3757,17 @@ function createTradeReadyPaperTrade(symbol) {
   entry.tradeReadyRsi                = st.rsi != null ? st.rsi : null;
   entry.tradeReadyWarnings          = (advisory.warnings  || []).join(' | ');
   entry.tradeReadyBlockers          = (advisory.blocking  || []).join(' | ');
+
+  // Audit Fix H4 — coherence guard, after the entry is built (so it reads
+  // the final entry/stop/target fields) but before it's committed.
+  const _coherence = validateTradePlanCoherence(entry);
+  if (!_coherence.ok) {
+    alert(_coherence.warnings[0] || 'Trade plan invalid.');
+    return;
+  }
+  if (_coherence.warnings.length && !confirm(_coherence.warnings[0])) {
+    return;
+  }
 
   commitEntry(entry);
 
@@ -7945,6 +8028,20 @@ function saveEntry(){
     oneHourTimingTimestamp:         _oneHourTimingTimestamp,
   });
 
+  // Audit Fix H4 — coherence guard, 'took' only. Runs before any of the
+  // atomic watch→trade mutation below begins, so a blocked/cancelled plan
+  // never partially mutates the watch entry.
+  if(selectedDecision === 'took'){
+    const _coherence = validateTradePlanCoherence(entry);
+    if(!_coherence.ok){
+      alert(_coherence.warnings[0] || 'Trade plan invalid.');
+      return;
+    }
+    if(_coherence.warnings.length && !confirm(_coherence.warnings[0])){
+      return;
+    }
+  }
+
   // ── Atomic watch → trade commit ───────────────────────────────────────
   // Both mutations (watch closure + new trade entry) must be in-memory
   // before any save/sync/render runs. This prevents partial state in Sheets.
@@ -9804,6 +9901,16 @@ function confLogTrade(sym,tradeType){
     entryPrice: entryPrice,
   });
   entry.journalId = entry.id;
+
+  // Audit Fix H4 — coherence guard, after the entry is built, before commit.
+  const _coherence = validateTradePlanCoherence(entry);
+  if (!_coherence.ok) {
+    alert(_coherence.warnings[0] || 'Trade plan invalid.');
+    return;
+  }
+  if (_coherence.warnings.length && !confirm(_coherence.warnings[0])) {
+    return;
+  }
 
   commitEntry(entry);
   // Re-render card
