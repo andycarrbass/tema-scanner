@@ -215,16 +215,18 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .trade-ready-future-actions button{
   flex:1;min-width:90px;opacity:0.5;cursor:not-allowed;font-size:11px;
 }
-/* Phase 7: an enabled action (currently only PAPER TRADE) looks distinct
-   from the still-disabled LIVE: BITUNIX ORDER placeholder — reuses the
-   same green "confirm" language as other take/confirm buttons elsewhere
-   in the app, not the gold reserved for TRADE READY itself. */
+/* Part D: PAPER TRADE enabled state is neutral grey/slate — still clearly
+   clickable and distinct from the disabled LIVE: BITUNIX ORDER placeholder,
+   but green is deliberately reserved for LIVE: BITUNIX ORDER once that
+   becomes the real execution route. Uses the same neutral "secondary
+   confirm" tone as .card-btn.secondary elsewhere, just brightened enough
+   to read as active rather than disabled. */
 .trade-ready-future-actions button:not(:disabled){
   opacity:1;cursor:pointer;
-  background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-bg);
-  transition:background 0.15s;
+  background:var(--bg4);color:var(--text);border:1px solid var(--border3);
+  transition:background 0.15s,border-color 0.15s;
 }
-.trade-ready-future-actions button:not(:disabled):hover{background:var(--green-bg);}
+.trade-ready-future-actions button:not(:disabled):hover{background:var(--bg3);border-color:var(--border2);}
 /* Phase 6B: Back as a lightweight navigation affordance — same visual
    weight as the existing "Show full analysis" text link (.analysis-btn),
    not a boxed button competing with PAPER TRADE / LIVE: BITUNIX ORDER. */
@@ -8752,10 +8754,12 @@ async function _tdLightweightRefresh(){
 
   _tdRefreshBusy = true;
   try{
-    // Collect symbols needed: active trades + watches
-    const active  = journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&(j.actualEntry||j.price));
+    // Active trades are now handled by _ensureActiveTradeLivePricing(),
+    // which runs independently of this tab-gated cadence — keeping them
+    // out of this list avoids two mechanisms fetching the same symbol's
+    // live price. Watches remain here, tab-gated, unchanged.
     const watches = journal.filter(j=>isActiveWatch(j));
-    const symbols = [...new Set([...active, ...watches].map(j=>j.symbol))];
+    const symbols = [...new Set(watches.map(j=>j.symbol))];
     if(!symbols.length){ _tdRefreshBusy=false; return; }
 
     const prices = await fetchTickerPrices(symbols);
@@ -8765,16 +8769,6 @@ async function _tdLightweightRefresh(){
     // Update currentScanData price so downstream renderers see fresh price
     Object.entries(prices).forEach(([sym,px])=>{
       if(currentScanData[sym]) currentScanData[sym].price = px;
-    });
-
-    // Re-render active trade cards in-place (P&L, R-multiple)
-    active.forEach(e=>{
-      const el=document.getElementById('otcard-'+e.id);
-      if(el){
-        const tmp=document.createElement('div');
-        tmp.innerHTML=renderOrderTicketCard(e);
-        el.replaceWith(tmp.firstChild);
-      }
     });
 
     // Re-render watch cards in-place (current price, entry improvement)
@@ -8796,6 +8790,68 @@ async function _tdLightweightRefresh(){
     console.warn('[TradeDeskRefresh] price fetch failed:', e.message);
   }finally{
     _tdRefreshBusy = false;
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  Guaranteed active-trade live P&L pricing (tab-independent)             ║
+// ║                                                                          ║
+// ║  Problem: _tdLightweightRefresh (above) only ran while the Trade Desk    ║
+// ║  tab was active, and even then only re-rendered Trade Desk cards — it   ║
+// ║  never touched the scanner active-trade placeholder. So a symbol's      ║
+// ║  Live P&L only ever updated at scan time (calcPair's own price fetch)    ║
+// ║  unless the user happened to have Trade Desk open. Same class of tab-   ║
+// ║  gating bug already fixed once for 1H timing (_ensureActiveTrade1HTiming)║
+// ║ — this is the P&L equivalent.                                           ║
+// ║                                                                          ║
+// ║  Price source is unchanged: fetchTickerPrices() → getExchange().        ║
+// ║  fetchTicker() → BitunixAdapter (ACTIVE_EXCHANGE==='bitunix') — this     ║
+// ║  was already Bitunix, not Binance; the bug was refresh cadence/surface   ║
+// ║  coverage, not the wrong exchange. Signal/advisory data (Binance futures ║
+// ║  candles, UT/TEMA/RSI/ADX/regime) is untouched — only current price and  ║
+// ║  P&L for existing active trades are refreshed here.                     ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+let _activeTradePricingBusy = false;
+async function _ensureActiveTradeLivePricing(){
+  if(_activeTradePricingBusy) return;
+  if(document.hidden) return; // browser tab hidden — same guard as the Trade Desk refresh
+  const active = journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&(j.actualEntry||j.price));
+  const symbols = [...new Set(active.map(j=>j.symbol))];
+  if(!symbols.length) return; // near-zero cost when there are no active trades
+
+  _activeTradePricingBusy = true;
+  try{
+    const prices = await fetchTickerPrices(symbols);
+    if(Object.keys(prices).length === 0) return;
+
+    Object.entries(prices).forEach(([sym,px])=>{
+      if(currentScanData[sym]) currentScanData[sym].price = px;
+    });
+
+    // Re-render Trade Desk active cards in place, if present in the DOM
+    // (harmless no-op when Trade Desk hasn't been opened this session).
+    active.forEach(e=>{
+      const el=document.getElementById('otcard-'+e.id);
+      if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderOrderTicketCard(e); el.replaceWith(tmp.firstChild); }
+    });
+
+    // Re-render scanner active-trade placeholders via the same canonical
+    // renderCard() path every active trade already renders through — same
+    // fix pattern as the TRADE READY scanner-conversion fix. Harmless no-op
+    // if the scanner grid isn't currently showing that card.
+    active.forEach(e=>{
+      if(currentScanData[e.symbol] && typeof renderCard==='function'){
+        renderCard(e.symbol, currentScanData[e.symbol]);
+      }
+    });
+
+    updateLivePnL();
+    _tdUpdateTimestamp();
+    if(DEBUG_MODE) console.log('[ActiveTradePricing] refreshed for', symbols.join(','));
+  }catch(e){
+    console.warn('[ActiveTradePricing] refresh error:', e.message);
+  }finally{
+    _activeTradePricingBusy = false;
   }
 }
 
@@ -10287,6 +10343,12 @@ document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false
   // Trade Desk tab has ever been opened this session.
   setInterval(_ensureActiveTrade1HTiming, TIMING_REFRESH_MS);
   setTimeout(_ensureActiveTrade1HTiming, 3000); // populate promptly on load, not after a 5-min wait
+
+  // Guarantee active-trade Live P&L pricing regardless of tab — same
+  // tab-independence fix pattern as the 1H timing guarantee above.
+  // TRADE_DESK_REFRESH_MS (30s) matches the cadence Trade Desk itself used.
+  setInterval(_ensureActiveTradeLivePricing, TRADE_DESK_REFRESH_MS);
+  setTimeout(_ensureActiveTradeLivePricing, 3000);
 })();
 </script>
 
