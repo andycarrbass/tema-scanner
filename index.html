@@ -206,6 +206,18 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .trade-ready-row{
   font-size:13px;color:var(--text2);padding:3px 0;line-height:1.4;
 }
+/* Phase 3: cautions block — sits between confirmations and the risk plan.
+   Amber/warning tone, deliberately not alarming (no red, no animation) —
+   this is caution, not rejection. Renders only when at least one caution
+   exists (empty block is never inserted, per spec). */
+.trade-ready-cautions{
+  margin-top:6px;padding-top:6px;
+  border-top:1px solid rgba(186,117,23,0.25);
+}
+.trade-ready-caution-row{
+  font-size:12px;color:var(--amber-text);padding:2px 0;line-height:1.4;
+}
+.trade-ready-caution-icon{margin-right:2px;}
 .trade-ready-plan{
   margin-top:8px;padding-top:8px;border-top:1px solid rgba(212,168,57,0.2);
 }
@@ -3626,6 +3638,7 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   const dirPillText = dir === 'LONG' ? '\u25b2 LONG SETUP' : '\u25bc SHORT SETUP';
 
   const rows = [];
+  const cautions = [];
   // HTF aligned
   if (st.htfAlign === 'aligned') rows.push('HTF aligned');
   // TEMA state — direction-aware, matches the trade direction being evaluated
@@ -3633,17 +3646,29 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   if (temaSupports) {
     rows.push('TEMA ' + (dir === 'LONG' ? 'bullish' : 'bearish') + (st.temaWidening ? ' · widening' : ''));
   }
-  // UT Bot — direction + central freshness label, same classification used everywhere else
+  // UT Bot — Fresh/Recent is a clean confirmation; Mature/Stale moves to the
+  // cautions block instead of also appearing as a ✓ row (Phase 3: a stale
+  // confirming signal shouldn't visually launder as clean evidence).
   if (st.utBot) {
     const utSupports = dir === 'LONG' ? st.utBot.direction === 1 : st.utBot.direction === -1;
     if (utSupports) {
       const fresh = classifyUtFreshness(st.utBot.barsAgoFlip);
-      rows.push('UT ' + (dir === 'LONG' ? 'bullish' : 'bearish') + ' · ' + fresh.label);
+      const utLabel = 'UT ' + (dir === 'LONG' ? 'bullish' : 'bearish') + ' · ' + fresh.label;
+      if (fresh.rank <= 1) rows.push(utLabel);       // Fresh or Recent
+      else cautions.push(utLabel);                    // Mature or Stale
     }
+    // UT opposing direction isn't handled prominently here — Phase 2 already
+    // makes tradeReady false when UT opposes, so this checklist normally
+    // doesn't render for that case at all.
   }
-  // ADX
-  if (st.adxTrending) {
-    rows.push('ADX ' + (st.adx != null ? Math.round(st.adx) + ' · ' : '') + (st.adxStrong ? 'strong' : 'trending'));
+  // ADX — trending/strong is a confirmation; ranging is a caution. Never both
+  // for the same reading (Phase 3).
+  if (st.adx != null) {
+    if (st.adxTrending) {
+      rows.push('ADX ' + Math.round(st.adx) + ' · ' + (st.adxStrong ? 'strong' : 'trending'));
+    } else {
+      cautions.push('ADX ' + st.adx.toFixed(1) + ' — ranging');
+    }
   }
   // RSI — only included when available AND supportive, per spec
   const rsiSupportive = dir === 'LONG' ? st.rsiOk_long === true : st.rsiOk_short === true;
@@ -3651,7 +3676,36 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   // No major blockers — advisory.blocking is already the same list tradeReady checked
   if (!advisory.blocking || advisory.blocking.length === 0) rows.push('No major blockers');
 
+  // Conviction-capped caution (Phase 1 already produces this exact detail
+  // string for a capped STRONG_* setup — reused here, not re-derived).
+  if (advisory.detail && advisory.detail.indexOf('Strong setup, but conviction capped:') === 0) {
+    const _reason = advisory.detail.slice('Strong setup, but conviction capped: '.length).replace(/\.$/, '');
+    cautions.push('Conviction capped: ' + _reason);
+  }
+
+  // Top 1–2 remaining advisory warnings, excluding anything already covered
+  // by the dedicated UT/ADX caution rows above, to avoid duplicating the
+  // same substance in two places.
+  if (advisory.warnings && advisory.warnings.length) {
+    advisory.warnings
+      .filter(w => {
+        const low = w.toLowerCase();
+        return low.indexOf('adx') === -1 && low.indexOf('ut ') === -1 && low.indexOf('ut bot') === -1;
+      })
+      .slice(0, 2)
+      .forEach(w => cautions.push(w));
+  }
+  // Note: advisory.tradeReadyBlockedReasons is intentionally never read here —
+  // if tradeReady is true (required for this checklist to render at all),
+  // that list should already be empty; and per spec, it must never be
+  // displayed as "not ready" language even if present defensively.
+
   const rowsHtml = rows.map(r => '<div class="trade-ready-row">\u2713 ' + r + '</div>').join('');
+  const cautionsHtml = cautions.length
+    ? '<div class="trade-ready-cautions">'
+      + cautions.map(c => '<div class="trade-ready-caution-row"><span class="trade-ready-caution-icon">\u26a0</span> ' + c + '</div>').join('')
+    + '</div>'
+    : '';
 
   // Risk plan — existing values only, no new calculation. stop15/target2 are
   // the same ATR-based levels already shown in the card's own levels box;
@@ -3674,6 +3728,7 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
       + '</div>'
     + '</div>'
     + rowsHtml
+    + cautionsHtml
     + '<div class="trade-ready-plan">'
       + '<div class="ap-row"><span>Entry</span><span>' + entryVal + '</span></div>'
       + '<div class="ap-row"><span>Stop</span><span style="color:var(--red-text);">' + stopVal + '</span></div>'
