@@ -291,23 +291,64 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   outline-offset:1px;
 }
 
-/* ── TDAS TRADE READY card flip (Phase 5) ────────────────────────────────
+/* ── TDAS TRADE READY card flip (Phase 5, height fix) ────────────────────
    V1: simple show/hide toggle, not a 3D flip. Soft opacity transition only
-   — no @keyframes, no pulse, no whole-card glow. Back side gets its own
-   scroll safeguard so unusually long content never breaks card height. */
+   — no @keyframes, no pulse, no whole-card glow.
+   Height fix: the flipped card is capped to the SAME 460px floor as a
+   regular scanner card (.card's own min-height above), so it never grows
+   taller than its neighbours in the grid. The back face is a flex column
+   with a fixed header (symbol/direction/TRADE READY line) and fixed footer
+   (PAPER TRADE/LIVE + Back) that never scroll away — only the middle
+   evidence/caution/risk-plan region (.trade-ready-scroll) scrolls when
+   content is too long to fit. `min-height:0` on the flex chain is required
+   so the flex algorithm's default min-height:auto doesn't let content
+   silently overflow past the height cap instead of scrolling. */
+.card.is-flipped{
+  height:460px;
+  min-height:460px;
+  max-height:460px;
+  overflow:hidden;
+}
 .tdas-card-front{
   display:flex;flex-direction:column;flex:1;min-height:0;
   transition:opacity 0.12s ease;
 }
 .tdas-card-back{
   display:none;
-  padding:12px 14px;
-  max-height:440px;
-  overflow-y:auto;
   transition:opacity 0.12s ease;
 }
 .card.is-flipped .tdas-card-front{display:none;}
-.card.is-flipped .tdas-card-back{display:block;}
+.card.is-flipped .tdas-card-back{
+  display:flex;
+  flex-direction:column;
+  height:100%;
+  max-height:100%;
+  min-height:0;
+  overflow:hidden;
+  padding:12px 14px;
+}
+/* Outside the flip context (e.g. the detail-view preview in openAnalysisPanel,
+   which reuses the same buildTradeReadyChecklistHtml markup), .tdas-card-back
+   is never present at all — .trade-ready-checklist/.trade-ready-scroll below
+   render at natural height there, no forced scrollbar. */
+.card.is-flipped .tdas-card-back .trade-ready-checklist{
+  display:flex;
+  flex-direction:column;
+  height:100%;
+  min-height:0;
+}
+.card.is-flipped .tdas-card-back .trade-ready-exec-header,
+.card.is-flipped .tdas-card-back .trade-ready-future-actions,
+.card.is-flipped .tdas-card-back .trade-ready-back-link{
+  flex-shrink:0;
+}
+.card.is-flipped .tdas-card-back .trade-ready-scroll{
+  flex:1;
+  min-height:0;
+  overflow-y:auto;
+  -webkit-overflow-scrolling:touch;
+  padding-bottom:4px;
+}
 
 
 /* ── Card zones — fixed padding per zone, no variable margins ── */
@@ -3921,13 +3962,19 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
         + (setupTfLabel ? '<span class="trade-ready-setup-tf"> \u00b7 ' + setupTfLabel + '</span>' : '')
       + '</div>'
     + '</div>'
-    + rowsHtml
-    + cautionsHtml
-    + '<div class="trade-ready-plan">'
-      + '<div class="ap-row"><span>Entry</span><span>' + entryVal + '</span></div>'
-      + '<div class="ap-row"><span>Stop</span><span style="color:var(--red-text);">' + stopVal + '</span></div>'
-      + '<div class="ap-row"><span>Target</span><span style="color:var(--green-text);">' + targetVal + '</span></div>'
-      + (rVal ? '<div class="ap-row"><span>R multiple</span><span>' + rVal + '</span></div>' : '')
+    // Scrollable middle region — confirmations/cautions/risk-plan can be long
+    // (multiple cautions + full risk plan), so this is the only part that
+    // scrolls when content exceeds the flipped card's fixed height; the
+    // header above and action controls below never move out of view.
+    + '<div class="trade-ready-scroll">'
+      + rowsHtml
+      + cautionsHtml
+      + '<div class="trade-ready-plan">'
+        + '<div class="ap-row"><span>Entry</span><span>' + entryVal + '</span></div>'
+        + '<div class="ap-row"><span>Stop</span><span style="color:var(--red-text);">' + stopVal + '</span></div>'
+        + '<div class="ap-row"><span>Target</span><span style="color:var(--green-text);">' + targetVal + '</span></div>'
+        + (rVal ? '<div class="ap-row"><span>R multiple</span><span>' + rVal + '</span></div>' : '')
+      + '</div>'
     + '</div>'
     // Future action placeholders — LIVE: BITUNIX ORDER is static/disabled in
     // every context, no wiring yet (Phase 7 scope is PAPER TRADE only).
