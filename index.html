@@ -1954,6 +1954,12 @@ let modalData = null;
 // TDAS Phase 1B: tracks which symbol's analysis panel is open, so an
 // on-demand 1H timing fetch knows whether it's still safe to re-render.
 let _openAnalysisSymbol = null;
+// Trade Ready → rich modal unification: stashed by createTradeReadyPaperTrade
+// right before it opens the shared Log Decision modal, so saveEntry() can
+// attach Trade Ready metadata to the resulting entry. Cleared immediately
+// after a successful save, and on modal cancel/close, so it never leaks
+// into an unrelated later save for the same or a different symbol.
+let _tradeReadyModalContext = null;
 let selectedDecision = null;
 let selectedOutcome = null;
 let currentScanData = {};
@@ -4023,6 +4029,24 @@ function flipTradeReadyCard(symbol) {
 // ║  Live path (LIVE: BITUNIX ORDER) is explicitly out of scope — the       ║
 // ║  button stays disabled; nothing here opens Bitunix or places an order.  ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TRADE READY → rich modal unification                                    ║
+// ║  createTradeReadyPaperTrade(symbol)                                       ║
+// ║                                                                          ║
+// ║  Repurposed (was: direct confirm()-based create). Now opens the exact    ║
+// ║  same rich Log Decision modal + saveEntry() path used by the scanner     ║
+// ║  front-card "+ Log decision → Trade" flow, prefilled with Trade Ready    ║
+// ║  setup data. This means every existing safety check already wired into  ║
+// ║  saveEntry() — the H1 duplicate-open-trade guard and H4 trade-plan       ║
+// ║  coherence validation — automatically applies here too, without         ║
+// ║  duplicating either. Trade Ready metadata is stashed in                  ║
+// ║  _tradeReadyModalContext and attached to the entry inside saveEntry()    ║
+// ║  once the user actually saves.                                          ║
+// ║                                                                          ║
+// ║  "+ Log decision" itself (openLogChoice/logDecision/openModalFull) is    ║
+// ║  completely untouched by this — it remains the general-purpose path for ║
+// ║  Trade/Watch/Skip/Missed on any card, Trade Ready or not.                ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
 function createTradeReadyPaperTrade(symbol) {
   const d = currentScanData[symbol];
   if (!d) { alert('No scan data available for ' + (symbol||'this symbol') + '. Refresh the scanner and try again.'); return; }
@@ -4035,98 +4059,53 @@ function createTradeReadyPaperTrade(symbol) {
     return;
   }
 
-  const label = (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : symbol;
-
-  // Audit Fix H1 — block duplicate open trades before even showing the
-  // confirm dialog (a stale flipped TRADE READY card, another tab/device,
-  // or an old modal left open are all real ways this symbol could already
-  // have an open trade by the time this button is clicked).
+  // Duplicate-open-trade guard, checked up front so the user isn't shown a
+  // modal that would just be blocked on Save (saveEntry() also has this
+  // same guard as a second, authoritative check at save time).
   if (typeof findOpenTrade === 'function' && findOpenTrade(symbol)) {
+    const label = (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : symbol;
     alert('Open trade already exists for ' + label + '.\nClose the existing trade before creating another.');
     return;
   }
 
-  const dir   = advisory.direction === 'LONG' ? 'long' : 'short';
-  const tfEl  = (typeof document !== 'undefined') ? document.getElementById('tf') : null;
-  const tf    = d.tf || (tfEl && tfEl.value) || '4h';
-
-  const entryPx  = d.price;
-  const stopPx   = d.stop15;
-  const targetPx = d.target2;
-  const rLabel   = (d.structR != null && d.structR !== '\u2014') ? (d.structR + 'R') : null;
-
-  const confirmMsg = 'Create paper trade?\n\n'
-    + label + ' \u00b7 ' + dir.toUpperCase() + ' \u00b7 ' + tf.toUpperCase() + ' setup\n'
-    + 'Entry: '  + (entryPx  != null ? fmt(entryPx)  : '\u2014') + '\n'
-    + 'Stop: '   + (stopPx   != null ? fmt(stopPx)   : '\u2014') + '\n'
-    + 'Target: ' + (targetPx != null ? fmt(targetPx) : '\u2014')
-    + (rLabel ? ('\nR multiple: ' + rLabel) : '');
-
-  if (!confirm(confirmMsg)) return;
-
-  // Canonical entry builder — identical to every other 'took' path
-  // (modal Take, confluence Take, quick-take from watch).
-  const entry = buildV1Entry(symbol, d, 'took', {
-    tf,
-    tradeType: 'paper',
-    entryPrice: entryPx,
-    note: 'TRADE READY paper trade \u2014 ' + (advisory.headline || ''),
-  });
-  entry.journalId = entry.id;
-
-  // Additive TRADE READY provenance/metadata — assigned directly onto the
-  // entry object rather than via buildV1Entry's overrides (which only reads
-  // its own named fields, so unknown keys there would silently be dropped).
-  // These are plain extra properties on the local journal entry: safe and
-  // additive at the app layer. Whether the Apps Script backend maps them
-  // into spreadsheet columns depends on that separate script, which this
-  // file does not control — flagged in delivery notes.
+  // Stash Trade Ready metadata — saveEntry() attaches these fields onto the
+  // entry object right after buildV1Entry runs, then clears this context.
+  // Same field set/derivation as before, just captured here instead of at
+  // direct-commit time.
   const ev = d.evaluation || {};
   const st = d.states || {};
   const utBot = st.utBot || null;
-  entry.tradeReadySource            = 'TRADE_READY_CARD';
-  entry.tradeReadyAdvisoryHeadline  = advisory.headline || null;
-  entry.tradeReadyActionBias        = ev.actionBias || null;
-  entry.tradeReadySetupQuality      = ev.setupQuality || null;
-  entry.tradeReadyRegime            = (d.regime && d.regime.label) || null;
-  entry.tradeReadyHtfAlign          = d.htfAlign || null;
-  entry.tradeReadyTemaState         = st.temaState || null;
-  entry.tradeReadyUtDirection       = utBot ? (utBot.direction === 1 ? 'bullish' : utBot.direction === -1 ? 'bearish' : null) : null;
-  entry.tradeReadyUtFreshness       = utBot ? classifyUtFreshness(utBot.barsAgoFlip).label : null;
-  entry.tradeReadyUtBarsAgo         = utBot ? utBot.barsAgoFlip : null;
-  entry.tradeReadyAdx               = st.adx != null ? st.adx : null;
-  entry.tradeReadyAdxState          = st.adxStrong ? 'strong' : st.adxTrending ? 'trending' : 'ranging';
-  entry.tradeReadyRsi                = st.rsi != null ? st.rsi : null;
-  entry.tradeReadyWarnings          = (advisory.warnings  || []).join(' | ');
-  entry.tradeReadyBlockers          = (advisory.blocking  || []).join(' | ');
+  _tradeReadyModalContext = {
+    symbol,
+    tradeReadySource:           'TRADE_READY_CARD',
+    tradeReadyAdvisoryHeadline: advisory.headline || null,
+    tradeReadyActionBias:       ev.actionBias || null,
+    tradeReadySetupQuality:     ev.setupQuality || null,
+    tradeReadyRegime:           (d.regime && d.regime.label) || null,
+    tradeReadyHtfAlign:         d.htfAlign || null,
+    tradeReadyTemaState:        st.temaState || null,
+    tradeReadyUtDirection:      utBot ? (utBot.direction === 1 ? 'bullish' : utBot.direction === -1 ? 'bearish' : null) : null,
+    tradeReadyUtFreshness:      utBot ? classifyUtFreshness(utBot.barsAgoFlip).label : null,
+    tradeReadyUtBarsAgo:        utBot ? utBot.barsAgoFlip : null,
+    tradeReadyAdx:              st.adx != null ? st.adx : null,
+    tradeReadyAdxState:         st.adxStrong ? 'strong' : st.adxTrending ? 'trending' : 'ranging',
+    tradeReadyRsi:              st.rsi != null ? st.rsi : null,
+    tradeReadyWarnings:         (advisory.warnings || []).join(' | '),
+    tradeReadyBlockers:         (advisory.blocking || []).join(' | '),
+  };
 
-  // Audit Fix H4 — coherence guard, after the entry is built (so it reads
-  // the final entry/stop/target fields) but before it's committed.
-  const _coherence = validateTradePlanCoherence(entry);
-  if (!_coherence.ok) {
-    alert(_coherence.warnings[0] || 'Trade plan invalid.');
-    return;
-  }
-  if (_coherence.warnings.length && !confirm(_coherence.warnings[0])) {
-    return;
-  }
+  // Open the same rich modal + path as "+ Log decision → Trade". This
+  // already prefills symbol, timeframe (d.tf-preferring, Audit Fix H3),
+  // direction/signal price (via d.signal/d.price in the modal meta line),
+  // and defaults trade type to Paper — see openModalFull(). Not touched
+  // here; only the entry-price field gets an extra Trade-Ready-specific
+  // prefill immediately below, since the general Log Decision flow
+  // deliberately leaves that blank for the user to type their actual fill.
+  window._lastLogSymbol = symbol;
+  openModalFull(symbol, 'took');
 
-  commitEntry(entry);
-
-  // Fix: commitEntry() synchronously unshifts the new entry onto journal[]
-  // before commitJournalChange's async push/pull even starts — so journal[]
-  // already reflects the new open trade the instant commitEntry() returns.
-  // renderAllJournalDependentUI() (called later, once Sheets sync completes)
-  // never touches scanner cards at all — it only refreshes Journal/Trade
-  // Desk/counts — so nothing was ever going to convert this card on its
-  // own. Re-render THIS card immediately via the same canonical renderCard()
-  // path every other active trade already renders through: isOpenTrade
-  // inside renderCard reads the live journal[] array, finds the entry we
-  // just unshifted, and routes into buildActiveScannerPlaceholderHtml —
-  // no flip-state hack, no full rescan, no new detection system.
-  if (typeof renderCard === 'function' && currentScanData[symbol]) {
-    renderCard(symbol, currentScanData[symbol]);
-  }
+  const _entryEl = document.getElementById('modalEntryPrice');
+  if (_entryEl && d.price != null) _entryEl.value = d.price;
 }
 
 // ── calcUTBotPineBootstrapDiagnostic ──────────────────────────────────────
@@ -8308,7 +8287,7 @@ function _onConfluenceSaveDone(sym){
   cardEl.replaceWith(tmp.firstChild);
 }
 
-function closeModal(){document.getElementById('modalOverlay').style.display='none';modalData=null;}
+function closeModal(){document.getElementById('modalOverlay').style.display='none';modalData=null;_tradeReadyModalContext=null;}
 function selectDecision(dec){selectedDecision=dec;}
 function selectOutcome(out){selectedOutcome=out;}
 
@@ -8407,6 +8386,33 @@ function saveEntry(){
   // Both mutations (watch closure + new trade entry) must be in-memory
   // before any save/sync/render runs. This prevents partial state in Sheets.
   entry.journalId = entry.id;
+
+  // Trade Ready metadata — attached only when this save originated from the
+  // Trade Ready PAPER TRADE button (createTradeReadyPaperTrade stashes this
+  // context right before opening this same modal). Cleared immediately
+  // after use so it never leaks into an unrelated later save for the same
+  // or a different symbol. Assigned directly onto the entry object rather
+  // than via buildV1Entry's overrides (which only reads its own named
+  // fields, so unknown keys there would be silently dropped) — same
+  // approach the old direct-create path used.
+  if (selectedDecision === 'took' && _tradeReadyModalContext && _tradeReadyModalContext.symbol === modalData.symbol) {
+    entry.tradeReadySource           = _tradeReadyModalContext.tradeReadySource;
+    entry.tradeReadyAdvisoryHeadline = _tradeReadyModalContext.tradeReadyAdvisoryHeadline;
+    entry.tradeReadyActionBias       = _tradeReadyModalContext.tradeReadyActionBias;
+    entry.tradeReadySetupQuality     = _tradeReadyModalContext.tradeReadySetupQuality;
+    entry.tradeReadyRegime           = _tradeReadyModalContext.tradeReadyRegime;
+    entry.tradeReadyHtfAlign         = _tradeReadyModalContext.tradeReadyHtfAlign;
+    entry.tradeReadyTemaState        = _tradeReadyModalContext.tradeReadyTemaState;
+    entry.tradeReadyUtDirection      = _tradeReadyModalContext.tradeReadyUtDirection;
+    entry.tradeReadyUtFreshness      = _tradeReadyModalContext.tradeReadyUtFreshness;
+    entry.tradeReadyUtBarsAgo        = _tradeReadyModalContext.tradeReadyUtBarsAgo;
+    entry.tradeReadyAdx              = _tradeReadyModalContext.tradeReadyAdx;
+    entry.tradeReadyAdxState         = _tradeReadyModalContext.tradeReadyAdxState;
+    entry.tradeReadyRsi              = _tradeReadyModalContext.tradeReadyRsi;
+    entry.tradeReadyWarnings         = _tradeReadyModalContext.tradeReadyWarnings;
+    entry.tradeReadyBlockers         = _tradeReadyModalContext.tradeReadyBlockers;
+    _tradeReadyModalContext = null;
+  }
 
   let _watchId = null;
   if(selectedDecision === 'took' && window._watchEntryId){
