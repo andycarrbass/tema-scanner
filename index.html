@@ -3505,6 +3505,31 @@ function buildHtfSupportPhrase(d, openTrade, direction) {
   return null;
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  Stop-loss breach override                                               ║
+// ║  getStopBreachState(openTrade, currentPrice)                             ║
+// ║                                                                          ║
+// ║  Audit finding (Task 1): openTrade.stop / openTrade.stopPrice is the     ║
+// ║  ATR-based stop already used by both Trade Desk's "ATR Stop" display     ║
+// ║  and the R-multiple risk-distance calculation (riskPx = |entryPx -       ║
+// ║  trade.stop|) elsewhere in this file — so it's the correct "recorded     ║
+// ║  stop" to check against, not the separately-stored fib stop. No new      ║
+// ║  calculation: reads the value already stored on the journal entry at     ║
+// ║  trade-creation time.                                                    ║
+// ║  Defensive: returns breached:false whenever direction, stop, or          ║
+// ║  currentPrice is missing/invalid — never triggers on incomplete data.   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function getStopBreachState(openTrade, currentPrice) {
+  if (!openTrade) return { breached: false, direction: null, stop: null, currentPrice: null };
+  const direction = openTrade.signal === 'long' ? 'long' : openTrade.signal === 'short' ? 'short' : null;
+  const stop = openTrade.stop != null ? openTrade.stop : (openTrade.stopPrice != null ? openTrade.stopPrice : null);
+  if (direction == null || stop == null || !isFinite(stop) || currentPrice == null || !isFinite(currentPrice)) {
+    return { breached: false, direction, stop, currentPrice };
+  }
+  const breached = direction === 'long' ? currentPrice <= stop : currentPrice >= stop;
+  return { breached, direction, stop, currentPrice };
+}
+
 // ── Active-trade advisory — V1 exit ladder (short, and mirrored long) ─────
 // Reads only d.states (4H) and d._1hTiming (1H — may be absent if
 // _calc1HTiming hasn't run for this symbol yet; treated as unknown, never
@@ -3560,7 +3585,18 @@ function _buildActiveTradeAdvisory(d, openTrade) {
 
   let action, headline, detail;
 
-  if (dir === 'short') {
+  // ── Stop-loss breach override — highest priority risk control. Checked
+  // before any structural/TEMA/HTF nuance below; if breached, none of the
+  // softer HOLD/REVIEW/TAKE PROFIT branches run. Uses `price` (already
+  // Bitunix-live-priced by _ensureActiveTradeLivePricing for active trades —
+  // see that function's own header comment) and the recorded stop already
+  // stored on the journal entry — no recalculation of either.
+  const _stopBreach = getStopBreachState(openTrade, price);
+
+  if (_stopBreach.breached) {
+    action = 'CLOSE'; headline = 'CLOSE';
+    detail = 'Recorded stop breached.';
+  } else if (dir === 'short') {
     // Phase 1-fix: CLOSE's structural condition must be closed-candle-only —
     // no fallback to live-ticker-price st.aboveMA. A live-price fallback here
     // would let CLOSE flicker in/out as price oscillates around the 200MA
