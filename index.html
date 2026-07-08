@@ -3312,6 +3312,49 @@ function _avoidDetail(ev, d, dir) {
 // new indicator calculation, does not touch classifyUtFreshness thresholds.
 // Priority order per spec: score < 75 > ADX ranging > UT stale >
 // HTF not aligned > first warning > generic fallback.
+// Advisory: RSI-stretched HIGH CONVICTION cap. Setup-timeframe RSI only
+// (d.states.rsi) — HTF RSI is not used as the primary gate for this V1.
+// Direction may still be correct; timing is no longer premium.
+//
+// Hard cap:  SHORT rsi<=32 / LONG rsi>=68 — always caps, regardless of
+//            other evidence (Task 6: momentum trades must not be stifled
+//            by the composite cap, but the hard cap is a firm line).
+// Composite: SHORT rsi<=38 / LONG rsi>=62 AND at least one quality issue
+//            (ADX ranging, UT genuinely Stale — not Mature, or HTF not
+//            cleanly supportive) — caps only when timing AND quality both
+//            look weak; a strong-momentum setup at the same RSI level is
+//            not capped (Task 6 validation examples).
+function _htfNotCleanFor(dir, d) {
+  const tc = d && d.htfTrendContext;
+  if (!tc || !tc.key) return true; // unavailable — treated as a quality issue, not fabricated support
+  const cleanKey = dir === 'LONG' ? 'bullish' : 'bearish';
+  return tc.key !== cleanKey; // bearish-weak/mixed-*/opposite-direction/etc. all count
+}
+function _isRsiStretchedCap(dir, d) {
+  const st = (d && d.states) || {};
+  const rsi = st.rsi;
+  if (rsi == null) return false;
+  if (dir === 'SHORT') {
+    if (rsi <= 32) return true; // hard cap
+    if (rsi <= 38) {
+      const adxRanging = st.adx != null && !st.adxTrending;
+      const utStale = !!(st.utBot && typeof classifyUtFreshness === 'function' && classifyUtFreshness(st.utBot.barsAgoFlip).key === 'stale');
+      const htfNotClean = _htfNotCleanFor('SHORT', d);
+      return adxRanging || utStale || htfNotClean;
+    }
+    return false;
+  }
+  // LONG
+  if (rsi >= 68) return true; // hard cap
+  if (rsi >= 62) {
+    const adxRanging = st.adx != null && !st.adxTrending;
+    const utStale = !!(st.utBot && typeof classifyUtFreshness === 'function' && classifyUtFreshness(st.utBot.barsAgoFlip).key === 'stale');
+    const htfNotClean = _htfNotCleanFor('LONG', d);
+    return adxRanging || utStale || htfNotClean;
+  }
+  return false;
+}
+
 function _capReasonText(ev, d) {
   const st = (d && d.states) || {};
   if (ev.score != null && ev.score < 75) return 'score below premium threshold';
@@ -3378,7 +3421,11 @@ function _buildScannerAdvisory(d) {
     // this correctly (reviewed per Task 3, no change needed).
     detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
   } else if (ev.actionBias === ACTION_BIAS['STRONG' + sfx]) {
-    if (ev.highProbability === true) {
+    // RSI-stretched cap (Advisory: RSI timing) — computed once, used by
+    // both branches below. Direction/signal itself is unaffected; this only
+    // gates the HIGH CONVICTION promotion, same as the highProbability cap.
+    const _rsiCapped = _isRsiStretchedCap(dir, d);
+    if (ev.highProbability === true && !_rsiCapped) {
       action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
       next = 'Consider entry if position size and risk are acceptable.';
       // HIGH CONVICTION should explain strongest confluence — reasons[0] is
@@ -3399,7 +3446,15 @@ function _buildScannerAdvisory(d) {
       // CONSIDER_*/STRONG_* against the raw ev.actionBias, unaffected here).
       action = 'CONSIDER' + sfx; headline = 'CONSIDER ' + dir;
       next = 'Review position size and entry trigger.';
-      detail = 'Strong setup, but conviction capped: ' + _capReasonText(ev, d) + '.';
+      // RSI-stretch gets its own trader-facing sentence (direction intact,
+      // timing not premium) rather than the generic "conviction capped:"
+      // wording used for other cap reasons (score/ADX/UT/HTF) — preferred
+      // per spec over routing it through _capReasonText.
+      detail = _rsiCapped
+        ? (dir === 'LONG'
+            ? 'Bullish setup intact; cleaner entry after RSI cools toward 50.'
+            : 'Bearish setup intact; cleaner entry if RSI recovers toward 50.')
+        : 'Strong setup, but conviction capped: ' + _capReasonText(ev, d) + '.';
     }
   } else {
     return null;
@@ -3813,6 +3868,13 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   if (advisory.detail && advisory.detail.indexOf('Strong setup, but conviction capped:') === 0) {
     const _reason = advisory.detail.slice('Strong setup, but conviction capped: '.length).replace(/\.$/, '');
     cautions.push('Conviction capped: ' + _reason);
+  } else if (advisory.detail && /cleaner entry/i.test(advisory.detail) && /RSI/i.test(advisory.detail)) {
+    // RSI-stretched cap uses its own trader-facing sentence (not the generic
+    // "conviction capped:" prefix above), detected here by pattern so the
+    // checklist doesn't need to re-derive the RSI-stretch condition itself.
+    cautions.push(dir === 'LONG'
+      ? 'RSI stretched \u2014 cleaner long entry may come after RSI cools toward 50'
+      : 'RSI stretched \u2014 cleaner short entry may come after recovery toward 50');
   }
 
   // Top 1–2 remaining advisory warnings, excluding anything already covered
