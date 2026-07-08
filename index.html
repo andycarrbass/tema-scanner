@@ -3466,6 +3466,45 @@ function _buildScannerAdvisory(d) {
   };
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  Active-advisory HTF support phrase                                     ║
+// ║  buildHtfSupportPhrase(d, openTrade, direction)                          ║
+// ║                                                                          ║
+// ║  Audit finding (Task 1): d.htfTrendContext is genuinely HTF-derived —    ║
+// ║  built in calcPair from ht17/ht92 (HTF TEMA values on the higher-        ║
+// ║  timeframe candle series) and the HTF 200MA position. So "HTF TEMA       ║
+// ║  supports direction" IS safely derivable from htfTrendContext.key.       ║
+// ║  There is NO equivalent HTF-level UT Bot anywhere in this codebase —     ║
+// ║  calcUTBot is only ever called on setup-timeframe candles — so this      ║
+// ║  function never claims HTF UT support, only HTF TEMA or the broader     ║
+// ║  htfTrendContext/htfAlign "context" as a safer fallback. Returns null    ║
+// ║  when nothing can be safely claimed (never fabricates support).         ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function buildHtfSupportPhrase(d, openTrade, direction) {
+  const htfTag = (d.htf || 'HTF').toUpperCase();
+  const tc = d.htfTrendContext;
+  if (tc && tc.key) {
+    // Keys where the HTF 200MA regime itself doesn't oppose this direction
+    // (may still be a pullback/bounce, i.e. TEMA not confirming — that's
+    // exactly what distinguishes 'context' from 'TEMA' below).
+    const bullishRegimeKeys = ['bullish', 'bullish-weak', 'mixed-bullish'];
+    const bearishRegimeKeys = ['bearish', 'bearish-weak', 'mixed-bearish'];
+    const regimeSupports = direction === 'long'
+      ? bullishRegimeKeys.indexOf(tc.key) !== -1
+      : bearishRegimeKeys.indexOf(tc.key) !== -1;
+    if (!regimeSupports) return null; // HTF regime opposes or is neutral — no claim
+    const temaConfirms = direction === 'long'
+      ? (tc.key === 'bullish' || tc.key === 'bullish-weak')
+      : (tc.key === 'bearish' || tc.key === 'bearish-weak');
+    if (temaConfirms) return htfTag + ' TEMA still supports ' + direction + '.';
+    return htfTag + ' context still supports ' + direction + '.'; // mixed-* — regime-level only
+  }
+  // No htfTrendContext at all — fall back to the coarser htfAlign field,
+  // only when it happens to agree with the trade direction.
+  if (d.htfAlign === 'aligned') return htfTag + ' context still supports ' + direction + '.';
+  return null;
+}
+
 // ── Active-trade advisory — V1 exit ladder (short, and mirrored long) ─────
 // Reads only d.states (4H) and d._1hTiming (1H — may be absent if
 // _calc1HTiming hasn't run for this symbol yet; treated as unknown, never
@@ -3551,18 +3590,22 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = '1H reversal developing. ' + _tfTag + ' UT still bearish.';
     } else if (temaCrossAgainst && utDir === -1) {
       action = 'REVIEW'; headline = 'REVIEW';
-      // Both halves of this sentence read the same setup-timeframe state
-      // (st.crossLong/st.utBot) — there is no HTF-level TEMA/UT check in
-      // this function, so both mentions correctly use the same _tfTag
-      // rather than implying a cross-timeframe confirmation that isn't
-      // actually verified (see delivery notes).
-      detail = _tfTag + ' TEMA crossed against trade; ' + _tfTag + ' UT still supports short.';
+      // Setup-timeframe TEMA has crossed against the trade, but setup-tf UT
+      // still supports it — genuine HTF TEMA/context evidence (if available
+      // via buildHtfSupportPhrase) replaces the old same-timeframe "UT still
+      // supports" framing, which only restated the same st.utBot field
+      // already implied by "still bearish" — see delivery notes.
+      const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'short');
+      detail = _tfTag + ' TEMA crossed against trade; ' + (_htfPhrase || 'review short.');
     } else if (st.htfAlign === 'conflict') {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
       action = 'HOLD'; headline = 'HOLD';
-      detail = _tfTag + ' TEMA and UT still support short.';
+      const _htfPhraseHold = buildHtfSupportPhrase(d, openTrade, 'short');
+      detail = _htfPhraseHold
+        ? (_tfTag + ' trade intact; ' + _htfPhraseHold)
+        : (_tfTag + ' TEMA and UT still support short.');
     }
   } else {
     // ── Mirrored LONG logic — fields are symmetric, safe to mirror ──
@@ -3590,15 +3633,19 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = '1H reversal developing. ' + _tfTag + ' UT still bullish.';
     } else if (temaCrossAgainst && utDir === 1) {
       action = 'REVIEW'; headline = 'REVIEW';
-      // See short-branch comment above — both mentions use the same
-      // setup-timeframe state, so both correctly use the same _tfTag.
-      detail = _tfTag + ' TEMA crossed against trade; ' + _tfTag + ' UT still supports long.';
+      // See short-branch comment above — genuine HTF evidence (TEMA or
+      // broader context) replaces the old same-timeframe restatement.
+      const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'long');
+      detail = _tfTag + ' TEMA crossed against trade; ' + (_htfPhrase || 'review long.');
     } else if (st.htfAlign === 'conflict') {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
       action = 'HOLD'; headline = 'HOLD';
-      detail = _tfTag + ' TEMA and UT still support long.';
+      const _htfPhraseHold = buildHtfSupportPhrase(d, openTrade, 'long');
+      detail = _htfPhraseHold
+        ? (_tfTag + ' trade intact; ' + _htfPhraseHold)
+        : (_tfTag + ' TEMA and UT still support long.');
     }
   }
 
