@@ -3520,14 +3520,23 @@ function buildHtfSupportPhrase(d, openTrade, direction) {
 // ║  currentPrice is missing/invalid — never triggers on incomplete data.   ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 function getStopBreachState(openTrade, currentPrice) {
-  if (!openTrade) return { breached: false, direction: null, stop: null, currentPrice: null };
+  if (!openTrade) return { breached: false, direction: null, stop: null, currentPrice: null, breachPct: null };
   const direction = openTrade.signal === 'long' ? 'long' : openTrade.signal === 'short' ? 'short' : null;
   const stop = openTrade.stop != null ? openTrade.stop : (openTrade.stopPrice != null ? openTrade.stopPrice : null);
   if (direction == null || stop == null || !isFinite(stop) || currentPrice == null || !isFinite(currentPrice)) {
-    return { breached: false, direction, stop, currentPrice };
+    return { breached: false, direction, stop, currentPrice, breachPct: null };
   }
   const breached = direction === 'long' ? currentPrice <= stop : currentPrice >= stop;
-  return { breached, direction, stop, currentPrice };
+  // breachPct is display-only — never used to decide `breached` above, which
+  // remains the same binary comparison it always was. Only computed when
+  // stop is a finite positive number (avoids divide-by-zero/nonsense %).
+  let breachPct = null;
+  if (breached && stop > 0) {
+    breachPct = direction === 'long'
+      ? ((stop - currentPrice) / stop) * 100
+      : ((currentPrice - stop) / stop) * 100;
+  }
+  return { breached, direction, stop, currentPrice, breachPct };
 }
 
 // ── Active-trade advisory — V1 exit ladder (short, and mirrored long) ─────
@@ -3595,7 +3604,19 @@ function _buildActiveTradeAdvisory(d, openTrade) {
 
   if (_stopBreach.breached) {
     action = 'CLOSE'; headline = 'CLOSE';
-    detail = 'Recorded stop breached.';
+    // Enrich with recorded stop price + breach % where safely available.
+    // Purely display — does not affect the `breached` trigger above, which
+    // is already decided. Never adds this detail to any other advisory state.
+    if (_stopBreach.stop != null && typeof fmt === 'function') {
+      const _stopStr = fmt(_stopBreach.stop);
+      if (_stopBreach.breachPct != null && isFinite(_stopBreach.breachPct) && _stopBreach.breachPct >= 0.05) {
+        detail = 'Stop ' + _stopStr + ' breached by ' + _stopBreach.breachPct.toFixed(1) + '%.';
+      } else {
+        detail = 'Stop ' + _stopStr + ' breached.';
+      }
+    } else {
+      detail = 'Recorded stop breached.';
+    }
   } else if (dir === 'short') {
     // Phase 1-fix: CLOSE's structural condition must be closed-candle-only —
     // no fallback to live-ticker-price st.aboveMA. A live-price fallback here
