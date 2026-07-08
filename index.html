@@ -3470,19 +3470,24 @@ function _buildScannerAdvisory(d) {
 // ║  Active-advisory HTF support phrase                                     ║
 // ║  buildHtfSupportPhrase(d, openTrade, direction)                          ║
 // ║                                                                          ║
-// ║  Audit finding (Task 1): d.htfTrendContext is genuinely HTF-derived —    ║
-// ║  built in calcPair from ht17/ht92 (HTF TEMA values on the higher-        ║
-// ║  timeframe candle series) and the HTF 200MA position. So "HTF TEMA       ║
-// ║  supports direction" IS safely derivable from htfTrendContext.key.       ║
-// ║  There is NO equivalent HTF-level UT Bot anywhere in this codebase —     ║
-// ║  calcUTBot is only ever called on setup-timeframe candles — so this      ║
-// ║  function never claims HTF UT support, only HTF TEMA or the broader     ║
-// ║  htfTrendContext/htfAlign "context" as a safer fallback. Returns null    ║
-// ║  when nothing can be safely claimed (never fabricates support).         ║
+// ║  d.htfTrendContext is genuinely HTF-derived — built in calcPair from     ║
+// ║  ht17/ht92 (HTF TEMA values on the higher-timeframe candle series) and   ║
+// ║  the HTF 200MA position, so "HTF TEMA supports direction" is safely      ║
+// ║  derivable from htfTrendContext.key. d.htfUtBot is now also genuinely    ║
+// ║  HTF-derived — calcUTBot run locally on the same already-fetched HTF     ║
+// ║  candles, same settings/source mode as setup UT (see calcPair). Uses     ║
+// ║  direction only for V1 (no freshness overclaim in the card text — see    ║
+// ║  Task 5). Never lets HTF UT alone override an opposing HTF regime: the   ║
+// ║  regime-opposition check runs first and short-circuits to null           ║
+// ║  regardless of what HTF UT shows. Returns null when nothing can be       ║
+// ║  safely claimed (never fabricates support).                              ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 function buildHtfSupportPhrase(d, openTrade, direction) {
   const htfTag = (d.htf || 'HTF').toUpperCase();
   const tc = d.htfTrendContext;
+  const htUt = d.htfUtBot;
+  const utSupports = htUt ? (direction === 'long' ? htUt.direction === 1 : htUt.direction === -1) : false;
+
   if (tc && tc.key) {
     // Keys where the HTF 200MA regime itself doesn't oppose this direction
     // (may still be a pullback/bounce, i.e. TEMA not confirming — that's
@@ -3492,16 +3497,21 @@ function buildHtfSupportPhrase(d, openTrade, direction) {
     const regimeSupports = direction === 'long'
       ? bullishRegimeKeys.indexOf(tc.key) !== -1
       : bearishRegimeKeys.indexOf(tc.key) !== -1;
-    if (!regimeSupports) return null; // HTF regime opposes or is neutral — no claim
+    if (!regimeSupports) return null; // HTF regime opposes or is neutral — no claim, even if UT alone supports
     const temaConfirms = direction === 'long'
       ? (tc.key === 'bullish' || tc.key === 'bullish-weak')
       : (tc.key === 'bearish' || tc.key === 'bearish-weak');
+    if (temaConfirms && utSupports) return htfTag + ' TEMA and UT still support ' + direction + '.';
     if (temaConfirms) return htfTag + ' TEMA still supports ' + direction + '.';
+    if (utSupports) return htfTag + ' UT supports ' + direction + '; context mixed.';
     return htfTag + ' context still supports ' + direction + '.'; // mixed-* — regime-level only
   }
   // No htfTrendContext at all — fall back to the coarser htfAlign field,
   // only when it happens to agree with the trade direction.
-  if (d.htfAlign === 'aligned') return htfTag + ' context still supports ' + direction + '.';
+  if (d.htfAlign === 'aligned') {
+    if (utSupports) return htfTag + ' UT still supports ' + direction + '.';
+    return htfTag + ' context still supports ' + direction + '.';
+  }
   return null;
 }
 
@@ -5507,6 +5517,24 @@ async function calcPair(symbol,tf){
   // giving ≥200 closed bars needed for SMA200.
   const hc=rawH.slice(0,-1).map(k=>k.close);
   const sma200ok=hc.length>=200;
+
+  // HTF UT Bot — same settings and source mode as setup-timeframe UT Bot
+  // (UT_BOT_KEY_VALUE, UT_BOT_ATR_PERIOD, UT_BOT_SOURCE_MODE), computed
+  // purely locally from rawH — the SAME HTF candles already fetched above
+  // for htfTrendContext/SMA200. No new fetchKlines call, no extra warmup:
+  // reuses the same ≥200-closed-bar HTF series already required for SMA200,
+  // which is already far more than UT Bot's own ATR(10) warmup needs.
+  const htClosedCandlesNormal = rawH.slice(0,-1);
+  const htUtSourceCandles = UT_BOT_SOURCE_MODE === 'heikin_ashi'
+    ? buildHeikinAshiCandles(htClosedCandlesNormal)
+    : htClosedCandlesNormal;
+  const htUtHighs  = htUtSourceCandles.map(c=>c.high);
+  const htUtLows   = htUtSourceCandles.map(c=>c.low);
+  const htUtCloses = htUtSourceCandles.map(c=>c.close);
+  const htUtTimes  = htUtSourceCandles.map(c=>c.time);
+  const htfUtBot = htUtCloses.length > (UT_BOT_ATR_PERIOD + 2)
+    ? calcUTBot(htUtHighs, htUtLows, htUtCloses, UT_BOT_KEY_VALUE, UT_BOT_ATR_PERIOD, htUtTimes, null)
+    : null;
   const ht17a=tema(hc,17),ht92a=tema(hc,92);
   const ht17=ht17a[ht17a.length-1],ht92=ht92a[ht92a.length-1];
   const _htfSma200=sma(hc,200);
@@ -6420,7 +6448,7 @@ async function calcPair(symbol,tf){
     minsRemaining,secsRemaining,candleClosePct,
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
     tradeStage,tradeAgeHours,
-    htfTrendContext,htfWidening};
+    htfTrendContext,htfWidening,htfUtBot};
   // TDAS Phase 0: attach compute-once state object — all builders read from d.states
   _result.states = computeStates(_result);
   // TDAS Phase 1: classify market regime from Phase-0 states — pure, no re-derivation
@@ -7602,7 +7630,7 @@ function openAnalysisPanel(symbol){
     utBot,utLongConfirm,utShortConfirm,utFresh,adx,adxTrending,adxStrong,
     trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,
     fib1618,fib2618,fibRetrace618,swingH50,swingL50,temaWidening,highConviction,
-    htfTrendContext,htfWidening
+    htfTrendContext,htfWidening,htfUtBot
   } = d;
   const _utBot = safeUtBot(utBot);
   const _adx = safeNum(adx);
@@ -7638,6 +7666,7 @@ function openAnalysisPanel(symbol){
         +(_isB?'Below '+_htfLabel+' SMA200 \u2014 bearish':'Above '+_htfLabel+' SMA200 \u2014 bullish')+'</span></div>'
       +'<div class="ap-row"><span>TEMA momentum</span><span style="color:'+(htfWidening?'var(--green-text)':'var(--amber-text)')+';">'
         +(_isB?'Bearish':'Bullish')+' \u00b7 '+(htfWidening?'widening':'converging')+'</span></div>'
+      +(htfUtBot ? '<div class="ap-row"><span>UT Bot</span><span style="color:'+(htfUtBot.direction===1?'var(--green-text)':'var(--red-text)')+';">'+(htfUtBot.direction===1?'Bullish':'Bearish')+(htfUtBot.barsAgoFlip!=null?' \u00b7 '+htfUtBot.barsAgoFlip+' bars since flip':'')+'</span></div>' : '')
       +'<div class="ap-row" style="padding-top:4px;"><span style="color:var(--text3);font-size:11px;font-style:italic;">'+htfTrendContext.desc+'</span></div>'
       +'</div>';
   }else{
