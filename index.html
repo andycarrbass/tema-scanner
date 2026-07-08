@@ -3871,6 +3871,8 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   // No major blockers — advisory.blocking is already the same list tradeReady checked
   if (!advisory.blocking || advisory.blocking.length === 0) rows.push('No major blockers');
 
+  let _rsiCautionAdded = false;
+
   // Conviction-capped caution (Phase 1 already produces this exact detail
   // string for a capped STRONG_* setup — reused here, not re-derived).
   if (advisory.detail && advisory.detail.indexOf('Strong setup, but conviction capped:') === 0) {
@@ -3880,22 +3882,40 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
     // RSI-stretched cap uses its own trader-facing sentence (not the generic
     // "conviction capped:" prefix above), detected here by pattern so the
     // checklist doesn't need to re-derive the RSI-stretch condition itself.
+    // "Over-extended" replaces "stretched" — better trader language that
+    // describes timing without implying the direction itself is invalid.
     cautions.push(dir === 'LONG'
-      ? 'RSI stretched \u2014 cleaner long entry may come after RSI cools toward 50'
-      : 'RSI stretched \u2014 cleaner short entry may come after recovery toward 50');
+      ? 'RSI over-extended \u2014 cleaner long entry may come after RSI cools toward 50'
+      : 'RSI over-extended \u2014 cleaner short entry may come after recovery toward 50');
+    _rsiCautionAdded = true;
   }
 
   // Top 1–2 remaining advisory warnings, excluding anything already covered
-  // by the dedicated UT/ADX caution rows above, to avoid duplicating the
-  // same substance in two places.
+  // by the dedicated UT/ADX caution rows above, AND excluding RSI entirely
+  // here — RSI is unified into exactly one caution below rather than being
+  // pushed verbatim, since ev.warnings can separately contain an older
+  // generic "RSI approaching oversold/overbought — momentum may be
+  // stretched" warning that previously duplicated the newer RSI-cap
+  // caution (both firing for the same underlying timing issue).
   if (advisory.warnings && advisory.warnings.length) {
+    const _hasGenericRsiWarning = advisory.warnings.some(w => w.toLowerCase().indexOf('rsi') !== -1);
     advisory.warnings
       .filter(w => {
         const low = w.toLowerCase();
-        return low.indexOf('adx') === -1 && low.indexOf('ut ') === -1 && low.indexOf('ut bot') === -1;
+        return low.indexOf('adx') === -1 && low.indexOf('ut ') === -1 && low.indexOf('ut bot') === -1 && low.indexOf('rsi') === -1;
       })
       .slice(0, 2)
       .forEach(w => cautions.push(w));
+
+    // Exactly one RSI caution — from the RSI-cap detail above if it fired,
+    // otherwise from a generic RSI warning's mere presence (its own exact
+    // wording is discarded in favour of the unified, direction-aware text).
+    if (!_rsiCautionAdded && _hasGenericRsiWarning) {
+      cautions.push(dir === 'LONG'
+        ? 'RSI over-extended \u2014 cleaner long entry may come after RSI cools toward 50'
+        : 'RSI over-extended \u2014 cleaner short entry may come after recovery toward 50');
+      _rsiCautionAdded = true;
+    }
   }
   // Note: advisory.tradeReadyBlockedReasons is intentionally never read here —
   // if tradeReady is true (required for this checklist to render at all),
