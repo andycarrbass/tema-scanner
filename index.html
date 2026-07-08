@@ -1413,6 +1413,18 @@ function isActiveWatch(j){
     && !j.closeTimestamp;
 }
 
+// ── Superseded watch predicate ───────────────────────────────────────────
+// A watch becomes superseded once it is converted into a Trade — saveEntry()
+// already stamps the original watch row with outcome='taken' at conversion
+// time (see the "Atomic watch → trade commit" step). This is distinct from
+// deleted: the row is preserved for audit/history, not hidden by user intent,
+// so it must never set j.deleted. Reusing the existing outcome='taken' stamp
+// means no new fields or Sheets columns are required — outcome already
+// round-trips through Sheets sync via the existing 'Outcome' column.
+function isSupersededWatch(j){
+  return j.decision === 'watching' && j.outcome === 'taken';
+}
+
 // ── Note formatting helper ────────────────────────────────────────────────
 // Stores notes as a single-line timeline: "Watch: X | Trade: Y | Close: Z"
 // Normalises any legacy multiline notes on first append.
@@ -1638,7 +1650,6 @@ function normaliseSheets(e){
     // Tombstone — soft-delete propagation
     deleted:         _b(e.deleted||e.Deleted||false),
     deletedAt:       e.deletedAt||e['Deleted At']||e.DeletedAt||null,
-    deletedReason:   e.deletedReason||e['Deleted Reason']||e.DeletedReason||null,
 
     // Entry quality — watch→trade improvement capture
     entryImprovementPct:            _n(e.entryImprovementPct||e['Entry Improvement %']),
@@ -8717,7 +8728,7 @@ function renderJournal(){
   const filterVal=currentJournalFilter||'completed';
   const filterMap={
     completed:e=>!e.deleted&&e.decision==='took'&&!!e.outcome&&e.outcome!=='cancelled',
-    all:      e=>!e.deleted,
+    all:      e=>!e.deleted&&!isSupersededWatch(e),
     watching: e=>isActiveWatch(e),
     active:   e=>!e.deleted&&e.decision==='took'&&!e.outcome,
     took:     e=>!e.deleted&&e.decision==='took'&&!e.outcome,
@@ -8899,7 +8910,6 @@ function deleteEntry(id){
   const _now=new Date().toISOString();
   entry.deleted       = true;
   entry.deletedAt     = _now;
-  entry.deletedReason = entry.deletedReason || 'user_hidden';
   entry.updatedAt     = _now;
   entry.syncStatus    = 'pending';
   sessionDirtyIds.add(entry.id);
@@ -9667,7 +9677,7 @@ function exportJournal(){
     'Outcome','Exit Price','PnL %','R-Multiple',
     'Signal Timestamp','Entry Timestamp','Close Timestamp',
     'Notes',
-    'Deleted','Deleted At','Deleted Reason',
+    'Deleted','Deleted At',
     'Entry Improvement %','Entry Improvement Label','Entry Improvement From Watch Price',
     '1H Timing State','1H Timing Direction','1H Timing Timestamp'
   ];
@@ -9690,7 +9700,6 @@ function exportJournal(){
     '"'+(e.note||'').replace(/"/g,'""')+'"',
     sf(e.deleted?'TRUE':'FALSE'),
     sf(e.deletedAt||''),
-    sf(e.deletedReason||''),
     nf(e.entryImprovementPct,2),
     sf(e.entryImprovementLabel||''),
     nf(e.entryImprovementFromWatchPrice,4),
