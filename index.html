@@ -3508,6 +3508,17 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       : (oneH.aboveMA1h === false || oneH.aboveSma135_1h === false)
   ) : null;
 
+  // Advisory Calibration Phase 4 — dynamic setup-timeframe/HTF labels for
+  // wording only (no trigger logic below changed). openTrade.tf is preferred
+  // over d.tf: it's the timeframe this trade was actually opened on and
+  // never changes, whereas d.tf reflects whatever the scanner dropdown was
+  // last set to — if the user rescans a different timeframe after opening
+  // this trade, d.tf would drift out of sync with the trade's own history.
+  const _tfEl = (typeof document !== 'undefined') ? document.getElementById('tf') : null;
+  const _setupTf = (openTrade.tf || d.tf || (_tfEl && _tfEl.value) || '').toUpperCase();
+  const _tfTag = _setupTf || 'Setup TF';
+  const _htfTag = (d.htf || (typeof HTF !== 'undefined' && _setupTf ? HTF[_setupTf.toLowerCase()] : null) || 'HTF').toUpperCase();
+
   let action, headline, detail;
 
   if (dir === 'short') {
@@ -3523,30 +3534,35 @@ function _buildActiveTradeAdvisory(d, openTrade) {
 
     if (utDir === 1 && structureReclaimedForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
-      detail = '4H UT bullish and 4H closed above the 200MA.';
+      detail = _tfTag + ' UT bullish and ' + _tfTag + ' closed above the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Rising) || utDir === 1)) {
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = (temaCrossAgainst && tema92Rising)
-        ? '4H TEMA crossed against short and TEMA 92 is rising.'
-        : '4H UT flipped bullish against short.';
+        ? _tfTag + ' TEMA crossed against short and TEMA 92 is rising.'
+        : _tfTag + ' UT flipped bullish against short.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
-      detail = '1H reversal active. 4H structure still holds.';
+      detail = '1H reversal active. ' + _tfTag + ' structure still holds.';
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = '1H structure reclaimed against short.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal developing. 4H UT still bearish.';
+      detail = '1H reversal developing. ' + _tfTag + ' UT still bearish.';
     } else if (temaCrossAgainst && utDir === -1) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = 'TEMA warning active. UT still supports short.';
+      // Both halves of this sentence read the same setup-timeframe state
+      // (st.crossLong/st.utBot) — there is no HTF-level TEMA/UT check in
+      // this function, so both mentions correctly use the same _tfTag
+      // rather than implying a cross-timeframe confirmation that isn't
+      // actually verified (see delivery notes).
+      detail = _tfTag + ' TEMA crossed against trade; ' + _tfTag + ' UT still supports short.';
     } else if (st.htfAlign === 'conflict') {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = 'HTF weakening. No primary exit trigger yet.';
+      detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
       action = 'HOLD'; headline = 'HOLD';
-      detail = '4H UT remains bearish. Structure still supports short.';
+      detail = _tfTag + ' TEMA and UT still support short.';
     }
   } else {
     // ── Mirrored LONG logic — fields are symmetric, safe to mirror ──
@@ -3557,30 +3573,32 @@ function _buildActiveTradeAdvisory(d, openTrade) {
 
     if (utDir === -1 && structureLostForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
-      detail = '4H UT bearish and 4H closed below the 200MA.';
+      detail = _tfTag + ' UT bearish and ' + _tfTag + ' closed below the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Falling) || utDir === -1)) {
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = (temaCrossAgainst && tema92Falling)
-        ? '4H TEMA crossed against long and TEMA 92 is falling.'
-        : '4H UT flipped bearish against long.';
+        ? _tfTag + ' TEMA crossed against long and TEMA 92 is falling.'
+        : _tfTag + ' UT flipped bearish against long.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
-      detail = '1H reversal active. 4H structure still holds.';
+      detail = '1H reversal active. ' + _tfTag + ' structure still holds.';
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = '1H structure lost against long.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal developing. 4H UT still bullish.';
+      detail = '1H reversal developing. ' + _tfTag + ' UT still bullish.';
     } else if (temaCrossAgainst && utDir === 1) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = 'TEMA warning active. UT still supports long.';
+      // See short-branch comment above — both mentions use the same
+      // setup-timeframe state, so both correctly use the same _tfTag.
+      detail = _tfTag + ' TEMA crossed against trade; ' + _tfTag + ' UT still supports long.';
     } else if (st.htfAlign === 'conflict') {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = 'HTF weakening. No primary exit trigger yet.';
+      detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
       action = 'HOLD'; headline = 'HOLD';
-      detail = '4H UT remains bullish. Structure still supports long.';
+      detail = _tfTag + ' TEMA and UT still support long.';
     }
   }
 
