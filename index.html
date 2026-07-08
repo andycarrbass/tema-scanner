@@ -291,63 +291,30 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   outline-offset:1px;
 }
 
-/* ── TDAS TRADE READY card flip (Phase 5, height fix) ────────────────────
+/* ── TDAS TRADE READY card flip (Phase 5) ────────────────────────────────
    V1: simple show/hide toggle, not a 3D flip. Soft opacity transition only
    — no @keyframes, no pulse, no whole-card glow.
-   Height fix: the flipped card is capped to the SAME 460px floor as a
-   regular scanner card (.card's own min-height above), so it never grows
-   taller than its neighbours in the grid. The back face is a flex column
-   with a fixed header (symbol/direction/TRADE READY line) and fixed footer
-   (PAPER TRADE/LIVE + Back) that never scroll away — only the middle
-   evidence/caution/risk-plan region (.trade-ready-scroll) scrolls when
-   content is too long to fit. `min-height:0` on the flex chain is required
-   so the flex algorithm's default min-height:auto doesn't let content
-   silently overflow past the height cap instead of scrolling. */
-.card.is-flipped{
-  height:460px;
-  min-height:460px;
-  max-height:460px;
-  overflow:hidden;
-}
+   No internal scroll and no fixed height cap: the back face flows
+   naturally, just like the front face does. .card already provides a
+   min-height:460px FLOOR (not a ceiling) — a regular scanner card can and
+   does render taller than that when its content needs more room, and the
+   flipped card now behaves identically rather than being capped shorter
+   than its own content. .trade-ready-scroll (built by
+   buildTradeReadyChecklistHtml) is kept as a markup wrapper for structural
+   clarity, but is no longer a scrolling region — see its rule below. */
 .tdas-card-front{
   display:flex;flex-direction:column;flex:1;min-height:0;
   transition:opacity 0.12s ease;
 }
 .tdas-card-back{
   display:none;
+  padding:12px 14px;
   transition:opacity 0.12s ease;
 }
 .card.is-flipped .tdas-card-front{display:none;}
-.card.is-flipped .tdas-card-back{
-  display:flex;
-  flex-direction:column;
-  height:100%;
-  max-height:100%;
-  min-height:0;
-  overflow:hidden;
-  padding:12px 14px;
-}
-/* Outside the flip context (e.g. the detail-view preview in openAnalysisPanel,
-   which reuses the same buildTradeReadyChecklistHtml markup), .tdas-card-back
-   is never present at all — .trade-ready-checklist/.trade-ready-scroll below
-   render at natural height there, no forced scrollbar. */
-.card.is-flipped .tdas-card-back .trade-ready-checklist{
-  display:flex;
-  flex-direction:column;
-  height:100%;
-  min-height:0;
-}
-.card.is-flipped .tdas-card-back .trade-ready-exec-header,
-.card.is-flipped .tdas-card-back .trade-ready-future-actions,
-.card.is-flipped .tdas-card-back .trade-ready-back-link{
-  flex-shrink:0;
-}
-.card.is-flipped .tdas-card-back .trade-ready-scroll{
-  flex:1;
-  min-height:0;
-  overflow-y:auto;
-  -webkit-overflow-scrolling:touch;
-  padding-bottom:4px;
+.card.is-flipped .tdas-card-back{display:block;}
+.trade-ready-scroll{
+  overflow:visible; /* explicitly not a scroll region — content flows naturally */
 }
 
 
