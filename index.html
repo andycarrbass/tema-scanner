@@ -1638,6 +1638,7 @@ function normaliseSheets(e){
     // Tombstone — soft-delete propagation
     deleted:         _b(e.deleted||e.Deleted||false),
     deletedAt:       e.deletedAt||e['Deleted At']||e.DeletedAt||null,
+    deletedReason:   e.deletedReason||e['Deleted Reason']||e.DeletedReason||null,
 
     // Entry quality — watch→trade improvement capture
     entryImprovementPct:            _n(e.entryImprovementPct||e['Entry Improvement %']),
@@ -8891,15 +8892,16 @@ function autoLogDecision(symbol, decision, overrides) {
   return entry;
 }
 function deleteEntry(id){
-  if(!confirm('Delete this entry?'))return;
+  if(!confirm('Hide this journal entry? It will be soft-deleted and hidden from the Journal, but preserved for audit history.'))return;
   const entry=journal.find(j=>j.id===id);
   if(!entry)return;
   // Soft-delete: stamp tombstone, keep in journal for sync propagation
   const _now=new Date().toISOString();
-  entry.deleted   = true;
-  entry.deletedAt = _now;
-  entry.updatedAt = _now;
-  entry.syncStatus= 'pending';
+  entry.deleted       = true;
+  entry.deletedAt     = _now;
+  entry.deletedReason = entry.deletedReason || 'user_hidden';
+  entry.updatedAt     = _now;
+  entry.syncStatus    = 'pending';
   sessionDirtyIds.add(entry.id);
   console.log('[WRITE] action started: deleteEntry', entry.id);
   commitJournalChange('deleteEntry', entry.id);
@@ -9665,7 +9667,7 @@ function exportJournal(){
     'Outcome','Exit Price','PnL %','R-Multiple',
     'Signal Timestamp','Entry Timestamp','Close Timestamp',
     'Notes',
-    'Deleted','Deleted At',
+    'Deleted','Deleted At','Deleted Reason',
     'Entry Improvement %','Entry Improvement Label','Entry Improvement From Watch Price',
     '1H Timing State','1H Timing Direction','1H Timing Timestamp'
   ];
@@ -9688,6 +9690,7 @@ function exportJournal(){
     '"'+(e.note||'').replace(/"/g,'""')+'"',
     sf(e.deleted?'TRUE':'FALSE'),
     sf(e.deletedAt||''),
+    sf(e.deletedReason||''),
     nf(e.entryImprovementPct,2),
     sf(e.entryImprovementLabel||''),
     nf(e.entryImprovementFromWatchPrice,4),
