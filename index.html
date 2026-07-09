@@ -3631,9 +3631,13 @@ function getStopBreachState(openTrade, currentPrice) {
 }
 
 // ── Active-trade advisory — V1 exit ladder (short, and mirrored long) ─────
-// Reads only d.states (4H) and d._1hTiming (1H — may be absent if
-// _calc1HTiming hasn't run for this symbol yet; treated as unknown, never
-// assumed bullish/bearish). Does not fetch, does not recalculate TEMA/UT/ADX.
+// Reads only d.states (the timeframe this calcPair result — d — was itself
+// computed on, i.e. d.tf; historically always 4H, no longer guaranteed now
+// that a card can be viewed/rescanned on a different timeframe than the one
+// the open trade was originally entered on) and d._1hTiming (1H — may be
+// absent if _calc1HTiming hasn't run for this symbol yet; treated as
+// unknown, never assumed bullish/bearish). Does not fetch, does not
+// recalculate TEMA/UT/ADX.
 function _buildActiveTradeAdvisory(d, openTrade) {
   const st = d.states;
   if (!st) return null;
@@ -3650,7 +3654,8 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   }
   const inProfit = pnlPct != null && pnlPct > 0;
 
-  // 4H inputs
+  // Setup-tf inputs — from d.states, i.e. whatever d.tf represents (see
+  // function header comment above; historically always 4H, not guaranteed now)
   const utDir = st.utBot ? st.utBot.direction : 0; // 1 bullish trail, -1 bearish trail
   // Freshness still governs display/warning severity elsewhere (unchanged —
   // see classifyUtFreshness call sites in card/analysis rendering) but is
@@ -3678,9 +3683,25 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   // never changes, whereas d.tf reflects whatever the scanner dropdown was
   // last set to — if the user rescans a different timeframe after opening
   // this trade, d.tf would drift out of sync with the trade's own history.
+  //
+  // TDAS V4.4 Advisory Contradiction Fix — root cause: every phrase below
+  // that describes an `st`-derived condition (TEMA cross, UT direction,
+  // 200MA close state) was labelled with _tfTag (openTrade.tf) even though
+  // `st` is `d.states`, which is computed on d.tf — the CURRENT scan's
+  // timeframe, not necessarily the timeframe the trade was opened on. When
+  // a trade opened on 4H is later viewed/rescanned on 1H, d.tf becomes '1h'
+  // and d.htf (its HTF) becomes '4h' — so `st.crossLong` genuinely reflects
+  // 1H TEMA, but was being printed as "4H TEMA crossed against trade",
+  // while buildHtfSupportPhrase's genuinely-HTF "4H TEMA and UT still
+  // support short" (from d.htf) coincidentally shares the same "4H" label.
+  // Both statements were individually correct on their own data — the bug
+  // was a mislabelled tag, not a logic error. Fix: _stateTfTag (from d.tf)
+  // labels every st-derived phrase below; _htfTag (from d.htf, unchanged)
+  // continues to label genuinely-HTF phrases; _setupTf/openTrade.tf is kept
+  // only as the HTF-lookup fallback it already was, not for st-derived text.
   const _tfEl = (typeof document !== 'undefined') ? document.getElementById('tf') : null;
   const _setupTf = (openTrade.tf || d.tf || (_tfEl && _tfEl.value) || '').toUpperCase();
-  const _tfTag = _setupTf || 'Setup TF';
+  const _stateTfTag = (d.tf || _setupTf || 'Setup TF').toUpperCase();
   const _htfTag = (d.htf || (typeof HTF !== 'undefined' && _setupTf ? HTF[_setupTf.toLowerCase()] : null) || 'HTF').toUpperCase();
 
   let action, headline, detail;
@@ -3716,35 +3737,39 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     // from this condition — the ladder falls through to TAKE_PROFIT_50/25,
     // REVIEW, or HOLD as appropriate.
     const structureReclaimedForClose = st.aboveMA_closed === true;
-    const temaCrossAgainst   = st.crossLong === true;  // 4H TEMA now bullish
+    const temaCrossAgainst   = st.crossLong === true;  // setup-tf TEMA now bullish — see _stateTfTag
     const tema92Rising       = st.tema92Slope === 'rising';
 
     if (utDir === 1 && structureReclaimedForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
-      detail = _tfTag + ' UT bullish and ' + _tfTag + ' closed above the 200MA.';
+      detail = _stateTfTag + ' UT bullish and ' + _stateTfTag + ' closed above the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Rising) || utDir === 1)) {
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = (temaCrossAgainst && tema92Rising)
-        ? _tfTag + ' TEMA crossed against short and TEMA 92 is rising.'
-        : _tfTag + ' UT flipped bullish against short.';
+        ? _stateTfTag + ' TEMA crossed against short and TEMA 92 is rising.'
+        : _stateTfTag + ' UT flipped bullish against short.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
-      detail = '1H reversal active. ' + _tfTag + ' structure still holds.';
+      detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = '1H structure reclaimed against short.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal developing. ' + _tfTag + ' UT still bearish.';
+      detail = '1H reversal developing. ' + _stateTfTag + ' UT still bearish.';
     } else if (temaCrossAgainst && utDir === -1) {
       action = 'REVIEW'; headline = 'REVIEW';
       // Setup-timeframe TEMA has crossed against the trade, but setup-tf UT
-      // still supports it — genuine HTF TEMA/context evidence (if available
-      // via buildHtfSupportPhrase) replaces the old same-timeframe "UT still
-      // supports" framing, which only restated the same st.utBot field
-      // already implied by "still bearish" — see delivery notes.
+      // still supports it. Genuine HTF TEMA/context evidence (via
+      // buildHtfSupportPhrase) is shown when available — it's stronger,
+      // higher-timeframe evidence than restating the same-tf UT status.
+      // When no HTF evidence is available, fall back to the same-tf UT
+      // fact directly (never "review short." — that told the reader
+      // nothing) — this is always true here, since utDir === -1 is this
+      // branch's own trigger condition, and it's carefully worded as UT,
+      // never TEMA, so it can never contradict the TEMA-crossed clause.
       const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'short');
-      detail = _tfTag + ' TEMA crossed against trade; ' + (_htfPhrase || 'review short.');
+      detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports short.'));
     } else if (st.htfAlign === 'conflict') {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
@@ -3752,39 +3777,41 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       action = 'HOLD'; headline = 'HOLD';
       const _htfPhraseHold = buildHtfSupportPhrase(d, openTrade, 'short');
       detail = _htfPhraseHold
-        ? (_tfTag + ' trade intact; ' + _htfPhraseHold)
-        : (_tfTag + ' TEMA and UT still support short.');
+        ? (_stateTfTag + ' trade intact; ' + _htfPhraseHold)
+        : (_stateTfTag + ' TEMA and UT still support short.');
     }
   } else {
     // ── Mirrored LONG logic — fields are symmetric, safe to mirror ──
     // Mirrored closed-candle-only fix — see short branch comment above.
     const structureLostForClose = st.aboveMA_closed === false;
-    const temaCrossAgainst = st.crossShort === true;  // 4H TEMA now bearish
+    const temaCrossAgainst = st.crossShort === true;  // setup-tf TEMA now bearish — see _stateTfTag
     const tema92Falling    = st.tema92Slope === 'falling';
 
     if (utDir === -1 && structureLostForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
-      detail = _tfTag + ' UT bearish and ' + _tfTag + ' closed below the 200MA.';
+      detail = _stateTfTag + ' UT bearish and ' + _stateTfTag + ' closed below the 200MA.';
     } else if (inProfit && ((temaCrossAgainst && tema92Falling) || utDir === -1)) {
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = (temaCrossAgainst && tema92Falling)
-        ? _tfTag + ' TEMA crossed against long and TEMA 92 is falling.'
-        : _tfTag + ' UT flipped bearish against long.';
+        ? _stateTfTag + ' TEMA crossed against long and TEMA 92 is falling.'
+        : _stateTfTag + ' UT flipped bearish against long.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
-      detail = '1H reversal active. ' + _tfTag + ' structure still holds.';
+      detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = '1H structure lost against long.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal developing. ' + _tfTag + ' UT still bullish.';
+      detail = '1H reversal developing. ' + _stateTfTag + ' UT still bullish.';
     } else if (temaCrossAgainst && utDir === 1) {
       action = 'REVIEW'; headline = 'REVIEW';
-      // See short-branch comment above — genuine HTF evidence (TEMA or
-      // broader context) replaces the old same-timeframe restatement.
+      // See short-branch comment above — genuine HTF evidence is shown when
+      // available; otherwise falls back to the same-tf UT fact, which is
+      // always true here (utDir === 1 is this branch's own trigger
+      // condition) and never contradicts the TEMA-crossed clause.
       const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'long');
-      detail = _tfTag + ' TEMA crossed against trade; ' + (_htfPhrase || 'review long.');
+      detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports long.'));
     } else if (st.htfAlign === 'conflict') {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
@@ -3792,14 +3819,14 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       action = 'HOLD'; headline = 'HOLD';
       const _htfPhraseHold = buildHtfSupportPhrase(d, openTrade, 'long');
       detail = _htfPhraseHold
-        ? (_tfTag + ' trade intact; ' + _htfPhraseHold)
-        : (_tfTag + ' TEMA and UT still support long.');
+        ? (_stateTfTag + ' trade intact; ' + _htfPhraseHold)
+        : (_stateTfTag + ' TEMA and UT still support long.');
     }
   }
 
   const warnings = [];
-  if (!oneHAvailable) warnings.push('1H timing unavailable — using 4H exit ladder only.');
-  if (st.aboveMA_closed == null) warnings.push('Closed 4H 200MA state unavailable — CLOSE rule not evaluated.');
+  if (!oneHAvailable) warnings.push('1H timing unavailable — using ' + _stateTfTag + ' exit ladder only.');
+  if (st.aboveMA_closed == null) warnings.push('Closed ' + _stateTfTag + ' 200MA state unavailable — CLOSE rule not evaluated.');
 
   return {
     mode: 'active_trade',
