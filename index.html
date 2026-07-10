@@ -9479,18 +9479,16 @@ let _tdRefreshBusy  = false;
 
 // ── Trade Desk status bar (TDAS V4.5 Task 3) ───────────────────────────────
 // Single consolidated status area, mirroring Scanner's _updateScannerStatusBar
-// in spirit and style. Diagnosed before writing this: Trade Desk prices
-// genuinely auto-refresh every 30s (both watch and active-trade cards, via
-// _tdLightweightRefresh / _ensureActiveTradeLivePricing — the latter is
-// tab-independent). Active-trade advisories ARE recalculated on every render
-// including that same 30s price tick, and their 1H-timing sub-component
-// genuinely refreshes every 5 minutes tab-independently (_ensureActiveTrade1HTiming)
-// — but the CORE TEMA/UT/ADX/regime state that actually drives HOLD/REVIEW/
-// CLOSE only updates via Scanner's own scan cycle (_scanLastMs, a shared
-// global Scanner already tracks), which pauses while Scanner isn't the
-// active tab. There is no Trade-Desk-specific mechanism that independently
-// recalculates that core signal state, so claiming "auto 5m" for advisories
-// here would be inaccurate. Uses the honest fallback wording instead.
+// in spirit and style. Trade Desk prices auto-refresh every 30s (both watch
+// and active-trade cards, via _tdLightweightRefresh / _ensureActiveTradeLivePricing
+// — the latter is tab-independent). As of the Task 3 second follow-up,
+// _tdSignalRefresh() genuinely recalculates the core TEMA/UT/ADX/regime
+// state driving HOLD/REVIEW/CLOSE for active-trade and watch symbols every
+// 5 minutes while Trade Desk is active — so "auto 5m" is now accurate once
+// _tdSignalLastMs has been set. Before that first successful refresh (e.g.
+// right after page load), falls back to the honest "last scan" wording
+// using Scanner's own _scanLastMs, per the original diagnosis: advisories
+// were previously only as fresh as Scanner's last scan.
 let _tdPriceLastMs = 0;
 function _updateTradeDeskStatusBar(){
   const el = document.getElementById('tdLastSync');
@@ -9506,9 +9504,11 @@ function _updateTradeDeskStatusBar(){
   const pricesLine =
     'Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '+priceTime+'</span>'+sep+'auto 30s';
 
-  const signalsLine = _scanLastMs
-    ? 'Signals/advisories: last scan '+new Date(_scanLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
-    : '';
+  const signalsLine = _tdSignalLastMs
+    ? 'Signals/advisories: refreshed @ '+new Date(_tdSignalLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+sep+'auto 5m'
+    : (_scanLastMs
+        ? 'Signals/advisories: last scan '+new Date(_scanLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
+        : '');
 
   el.style.display = 'block';
   el.innerHTML =
@@ -9857,25 +9857,134 @@ async function _ensureActiveTrade1HTiming() {
   }
 }
 
+// ── Trade Desk advisory/signal refresh (TDAS V4.5 Task 3, second follow-up) ─
+// Diagnosis before writing this: _buildActiveTradeAdvisory (HOLD/REVIEW/
+// CLOSE) reads d.states, d.tf, d.htf, d.htfTrendContext, d.htfUtBot, and
+// d._1hTiming — all of it except _1hTiming comes straight out of a single
+// calcPair(symbol, tf) call. calcPair() is fully self-contained: it takes
+// symbol/tf as plain parameters, fetches its own candles/price, and returns
+// a result object — it never reads the global PAIRS list or touches
+// _scanRunning/_scanGeneration (those are runScan()'s own bookkeeping, not
+// calcPair's), so calling it directly for a handful of symbols is safe and
+// doesn't require any Scanner-side changes. The only real risk is wasting
+// API calls by racing a genuine Scanner scan — guarded below by skipping
+// outright if _scanRunning is true, matching Scanner's own auto-signal-tick
+// philosophy (skip rather than queue/wait).
+// _1hTiming is NOT part of calcPair's return value — it's a separate field
+// maintained by _ensureActiveTrade1HTiming on its own 5-minute cycle — so it
+// must be explicitly carried forward onto the fresh result, or a symbol's
+// 1H-timing state would silently vanish every time this refresh runs.
+const TRADE_DESK_SIGNAL_REFRESH_MS = 5 * 60 * 1000; // 5 minutes — matches Scanner's own signal cadence
+let tradeDeskSignalTimer  = null;
+let _tdSignalRefreshBusy  = false;
+let _tdSignalLastMs       = 0; // distinct from _tdPriceLastMs — only set once this refresh has actually succeeded at least once
+
+async function _tdSignalRefresh(){
+  if(_tdSignalRefreshBusy) return; // prevent self-overlap
+  const tab = document.getElementById('tab-trade');
+  if(!tab || !tab.classList.contains('active')) return; // Trade Desk not the visible tab
+  if(document.hidden) return; // browser tab/window hidden
+  if(_scanRunning){
+    if(DEBUG_MODE) console.log('[TradeDeskSignalRefresh] Scanner scan already in progress — skipping this cycle');
+    return;
+  }
+
+  // Build a deduped symbol → tf map. Active trades are added AFTER watches
+  // so they take priority if the same symbol somehow appears in both —
+  // currentScanData is keyed by symbol only (not symbol+tf), so exactly one
+  // timeframe has to win, and the active trade's advisory matters more.
+  const fallbackTf = document.getElementById('tf').value;
+  const symTf = {};
+  journal.filter(j=>isActiveWatch(j)).forEach(j=>{ symTf[j.symbol] = j.tf || fallbackTf; });
+  journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome).forEach(j=>{ symTf[j.symbol] = j.tf || fallbackTf; });
+
+  const symbols = Object.keys(symTf);
+  if(!symbols.length) return; // nothing to refresh — near-zero cost
+
+  _tdSignalRefreshBusy = true;
+  const t0 = Date.now();
+  try{
+    const results = await Promise.allSettled(symbols.map(sym => calcPair(sym, symTf[sym])));
+    let refreshed = 0, failed = 0;
+
+    results.forEach((r, i) => {
+      const sym = symbols[i];
+      if(r.status === 'fulfilled'){
+        const prev1hTiming = currentScanData[sym] && currentScanData[sym]._1hTiming;
+        currentScanData[sym] = r.value;
+        if(prev1hTiming) currentScanData[sym]._1hTiming = prev1hTiming; // preserve — not recomputed here
+        refreshed++;
+      } else {
+        failed++; // non-destructive: currentScanData[sym] and its card are left exactly as they were
+        if(DEBUG_MODE) console.warn('[TradeDeskSignalRefresh]', sym, 'failed — keeping previous state:', r.reason?.message);
+      }
+    });
+
+    // Re-render only symbols that actually succeeded, in place. A failed
+    // symbol's card is never touched — no "Load failed", nothing blanked.
+    results.forEach((r, i) => {
+      if(r.status !== 'fulfilled') return;
+      const sym = symbols[i];
+      const activeEntry = journal.find(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&j.symbol===sym);
+      if(activeEntry){
+        const el = document.getElementById('otcard-'+activeEntry.id);
+        if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderOrderTicketCard(activeEntry); el.replaceWith(tmp.firstChild); }
+      }
+      const watchEntry = journal.find(j=>isActiveWatch(j)&&j.symbol===sym);
+      if(watchEntry){
+        const el = document.getElementById('wcard-'+watchEntry.id);
+        if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderWatchCard(watchEntry); el.replaceWith(tmp.firstChild); }
+      }
+      // Same pattern _ensureActiveTradeLivePricing already uses — keep the
+      // Scanner active-trade placeholder in sync too, harmless no-op if
+      // that card isn't currently in the DOM.
+      if(activeEntry && typeof renderCard==='function') renderCard(sym, currentScanData[sym]);
+    });
+
+    // Status timestamp only advances on at least a partial success — if
+    // every symbol failed, the previous successful refresh time is kept
+    // (per spec), rather than claiming a refresh happened when it didn't.
+    if(refreshed > 0){
+      _tdSignalLastMs = Date.now();
+      _updateTradeDeskStatusBar();
+    }
+    if(DEBUG_MODE) console.log('[TradeDeskSignalRefresh]', {refreshed, failed, durationMs: Date.now()-t0, symbols: symbols.join(',')});
+  }catch(e){
+    console.warn('[TradeDeskSignalRefresh] unexpected error:', e.message);
+  }finally{
+    _tdSignalRefreshBusy = false;
+  }
+}
+
 function startTradeDeskAutoRefresh(){
   stopTradeDeskAutoRefresh();
   tradeDeskTimer = setInterval(_tdLightweightRefresh, TRADE_DESK_REFRESH_MS);
   _timingTimer   = setInterval(_timingRefresh, TIMING_REFRESH_MS);
+  tradeDeskSignalTimer = setInterval(_tdSignalRefresh, TRADE_DESK_SIGNAL_REFRESH_MS);
   // Pause when browser tab hidden, resume when visible
   document.removeEventListener('visibilitychange', _tdVisibilityHandler);
   document.addEventListener('visibilitychange', _tdVisibilityHandler);
   // Run timing refresh immediately on start so cards show state without waiting 5 min
   setTimeout(_timingRefresh, 2000);
+  // Deliberately NOT running _tdSignalRefresh immediately on start — same
+  // reasoning as Scanner's own signal auto-refresh: no forced fetch burst
+  // on tab switch, and no "burst on browser refocus" (see _tdVisibilityHandler
+  // below, which also does not trigger this refresh). The regular 5-minute
+  // cadence picks it up naturally.
 }
 function _tdVisibilityHandler(){
   if(!document.hidden){
     _tdLightweightRefresh();
     _timingRefresh(); // also update timing on tab resume
+    // _tdSignalRefresh() intentionally NOT triggered here — avoids a signal
+    // refresh burst on every tab/window refocus; the 5-minute timer alone
+    // drives it, matching Scanner's resume behaviour for its own signal tick.
   }
 }
 function stopTradeDeskAutoRefresh(){
   if(tradeDeskTimer){clearInterval(tradeDeskTimer);tradeDeskTimer=null;}
   if(_timingTimer){clearInterval(_timingTimer);_timingTimer=null;}
+  if(tradeDeskSignalTimer){clearInterval(tradeDeskSignalTimer);tradeDeskSignalTimer=null;}
 }
 function exportJournal(){
   // V1 schema CSV export — canonical field names with legacy fallbacks
