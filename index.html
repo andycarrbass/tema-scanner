@@ -366,6 +366,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .htf-badge.aligned{background:var(--green-bg);color:var(--green-text);}
 .htf-badge.conflict{background:var(--red-bg);color:var(--red-text);}
 .htf-badge.neutral{background:var(--bg4);color:var(--text3);}
+.sl-be-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--amber-bg);color:var(--amber-text);letter-spacing:0.3px;margin-top:4px;cursor:default;}
 .price{font-size:26px;font-weight:500;letter-spacing:-0.5px;line-height:1.1;}
 
 /* ── Price + pill inline row ── */
@@ -7113,6 +7114,16 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
       + '</div>'
     : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-headline">HOLD</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
 
+  // SL to BE — same rule as renderOrderTicketCard (TDAS V4.5 Task 1): reuses
+  // pnlR already computed above for the Live P&L line, suppressed whenever
+  // advisory.action is 'CLOSE' (covers both a genuine stop-loss breach and
+  // the ladder's own structural CLOSE — see renderOrderTicketCard's comment
+  // for the full reasoning). Never shown for losing/sub-1R trades.
+  const _slToBe = pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  const slToBeHtml = _slToBe
+    ? '<span class="sl-be-pill" title="Price has moved +1R. Consider moving stop to break even.">SL to BE</span>'
+    : '';
+
   return {
     stateClass,
     html: `
@@ -7137,6 +7148,7 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
       <div class="cz" style="padding-top:8px;padding-bottom:6px;">
         <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:2px;">Live P&amp;L</div>
         <div style="font-family:var(--mono);font-size:15px;font-weight:700;color:${pnlColor};">${pnlStr}</div>
+        ${slToBeHtml}
       </div>
       <div class="cz-spacer"></div>
       <div class="cz-actions">
@@ -9303,10 +9315,11 @@ function renderOrderTicketCard(e){
   const livePrice=liveData?liveData.price:null;
   const entryPx=e.actualEntry||e.price;
   let pnlHtml='';
+  let pnlR=null; // hoisted — reused by the SL-to-BE pill below, not recalculated
   if(livePrice&&entryPx){
     const pnlPct=e.signal==='long'?((livePrice-entryPx)/entryPx*100):((entryPx-livePrice)/entryPx*100);
     const riskPx=e.stop!=null?Math.abs(entryPx-e.stop):null;
-    const pnlR=riskPx?(e.signal==='long'?(livePrice-entryPx)/riskPx:(entryPx-livePrice)/riskPx):null;
+    pnlR=riskPx?(e.signal==='long'?(livePrice-entryPx)/riskPx:(entryPx-livePrice)/riskPx):null;
     const color=pnlPct>0?'var(--green-text)':pnlPct<0?'var(--red-text)':'var(--text2)';
     pnlHtml=`<div class="live-pnl-bar show"><div class="pnl-label">Live P&amp;L</div><div class="pnl-val" style="color:${color};">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%${pnlR!==null?' · '+(pnlR>=0?'+':'')+pnlR.toFixed(2)+'R':''}</div></div>`;
   }
@@ -9331,6 +9344,22 @@ function renderOrderTicketCard(e){
       + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
       + (advisory.detail ? `<div class="tdas-advisory-detail">${advisory.detail}</div>` : '')
       + `</div>`
+    : '';
+
+  // SL to BE — small secondary risk-management prompt (TDAS V4.5 Task 1).
+  // Reuses pnlR (the exact same live R already shown in the Live P&L bar
+  // above) — not recalculated. Suppressed whenever advisory.action is
+  // 'CLOSE': this covers both a genuine stop-loss breach (getStopBreachState,
+  // checked first inside _buildActiveTradeAdvisory, highest priority) and
+  // the ladder's own structural CLOSE signal — advisory.action doesn't
+  // distinguish the two, but suggesting "move stop to break even" makes no
+  // sense once the advisory is already telling the trade to close entirely,
+  // so gating on CLOSE broadly is the correct, safe behaviour either way.
+  // Never shown for losing/sub-1R trades; never replaces or alters the main
+  // advisory headline/detail above.
+  const _slToBe = pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  const slToBeHtml = _slToBe
+    ? `<span class="sl-be-pill" title="Price has moved +1R. Consider moving stop to break even.">SL to BE</span>`
     : '';
 
   const cardClass=`order-card ${isLong?'active-long':'active-short'} ${stateClass}`;
@@ -9365,6 +9394,7 @@ function renderOrderTicketCard(e){
     </div>
     ${advisoryHtml}
     ${pnlHtml}
+    ${slToBeHtml}
     ${e.tradeStage ? `<div style="font-size:10px;margin:4px 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
     ${(()=>{
       const _t = currentScanData[e.symbol] && currentScanData[e.symbol]._1hTiming;
