@@ -9479,16 +9479,20 @@ let _tdRefreshBusy  = false;
 
 // ── Trade Desk status bar (TDAS V4.5 Task 3) ───────────────────────────────
 // Single consolidated status area, mirroring Scanner's _updateScannerStatusBar
-// in spirit and style. Trade Desk prices auto-refresh every 30s (both watch
-// and active-trade cards, via _tdLightweightRefresh / _ensureActiveTradeLivePricing
-// — the latter is tab-independent). As of the Task 3 second follow-up,
+// in spirit, style, and line order (signals/advisories first, then prices,
+// then data — matching Scanner exactly). Trade Desk prices auto-refresh
+// every 30s (both watch and active-trade cards, via _tdLightweightRefresh /
+// _ensureActiveTradeLivePricing — the latter is tab-independent).
 // _tdSignalRefresh() genuinely recalculates the core TEMA/UT/ADX/regime
 // state driving HOLD/REVIEW/CLOSE for active-trade and watch symbols every
-// 5 minutes while Trade Desk is active — so "auto 5m" is now accurate once
+// 5 minutes while Trade Desk is active — so "auto 5m" is accurate once
 // _tdSignalLastMs has been set. Before that first successful refresh (e.g.
 // right after page load), falls back to the honest "last scan" wording
-// using Scanner's own _scanLastMs, per the original diagnosis: advisories
-// were previously only as fresh as Scanner's last scan.
+// using Scanner's own _scanLastMs. Age colour reuses Scanner's exact
+// tiered thresholds (_SCAN_AGE_THRESHOLDS) rather than hardcoding green
+// always, for genuine styling parity — Trade Desk spans symbols on
+// multiple timeframes, so the '4h' tier is used as the default, same
+// fallback Scanner itself uses for an unrecognised timeframe.
 let _tdPriceLastMs = 0;
 function _updateTradeDeskStatusBar(){
   const el = document.getElementById('tdLastSync');
@@ -9501,19 +9505,35 @@ function _updateTradeDeskStatusBar(){
   const priceTime = new Date(_tdPriceLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const sep = '<span style="margin:0 6px;color:var(--border3);">&middot;</span>';
 
-  const pricesLine =
-    'Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '+priceTime+'</span>'+sep+'auto 30s';
+  // Signals/advisories — age (tiered colour, same thresholds Scanner uses),
+  // absolute timestamp, and cadence (only once genuinely auto-refreshing).
+  const signalTs    = _tdSignalLastMs || _scanLastMs;
+  const signalLabel = _tdSignalLastMs ? 'refreshed @' : 'last scan';
+  let signalsLine = '';
+  if(signalTs){
+    const ageMins = Math.floor((Date.now() - signalTs) / 60000);
+    const ageStr  = ageMins === 0 ? 'just now'
+                  : ageMins === 1 ? '1 min old'
+                  : ageMins + ' min old';
+    const thresh   = _SCAN_AGE_THRESHOLDS['4h'];
+    const ageColor = ageMins < thresh.green ? 'var(--green-text)'
+                   : ageMins < thresh.amber ? 'var(--amber-text)'
+                   : 'var(--red-text)';
+    const clock = new Date(signalTs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    signalsLine =
+      '<div>Signals/advisories: <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span>'
+      + sep + signalLabel + ' ' + clock
+      + (_tdSignalLastMs ? sep+'auto 5m' : '')
+      + '</div>';
+  }
 
-  const signalsLine = _tdSignalLastMs
-    ? 'Signals/advisories: refreshed @ '+new Date(_tdSignalLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})+sep+'auto 5m'
-    : (_scanLastMs
-        ? 'Signals/advisories: last scan '+new Date(_scanLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
-        : '');
+  const pricesLine =
+    '<div style="margin-top:2px;">Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '+priceTime+'</span>'+sep+'auto 30s</div>';
 
   el.style.display = 'block';
   el.innerHTML =
-    '<div>'+pricesLine+'</div>'
-    + (signalsLine ? '<div style="margin-top:2px;">'+signalsLine+'</div>' : '')
+    signalsLine
+    + pricesLine
     + '<div style="margin-top:4px;opacity:0.8;">Data: signals '+_sigSrc+' &middot; prices '+_priceSrc+'</div>';
 }
 
