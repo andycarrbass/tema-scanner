@@ -6648,6 +6648,13 @@ async function calcPair(symbol,tf){
 
 // ── Format ──────────────────────────────────────────────────────────────
 function fmt(p){if(p>=10000)return'$'+p.toLocaleString('en-US',{maximumFractionDigits:0});if(p>=1000)return'$'+p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});if(p>=1)return'$'+p.toFixed(3);return'$'+p.toFixed(5);}
+// Point-distance formatter — no "$" prefix, for values the user thinks of
+// as points rather than a price (e.g. stop-loss distance). Kept separate
+// from fmt() since fmt() is used 60+ times elsewhere for actual prices.
+// TDAS V4.4.2 tweak: simplified to two tiers per user preference — >=1
+// always shows exactly 2 decimals (with thousands separators for large
+// values), <1 keeps the previous 5-decimal small-price precision.
+function fmtPts(p){if(p>=1)return p.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});return p.toFixed(5);}
 function pct(n,d=2){return(n>=0?'+':'')+n.toFixed(d)+'%';}
 function rsiColor(r){if(r>70)return'var(--red-text)';if(r<30)return'var(--green-text)';return'var(--text)';}
 function tsNow(){return new Date().toLocaleString();}
@@ -9328,8 +9335,22 @@ function renderOrderTicketCard(e){
 
   const cardClass=`order-card ${isLong?'active-long':'active-short'} ${stateClass}`;
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-  // Fib stop from live data
-  const fibStop=liveData?liveData.fibRetrace618:null;
+  // SL Risk — replaces the unused Fib Stop display (TDAS V4.4.2). Uses the
+  // same entryPx (e.actualEntry||e.price) already used for P&L above, and
+  // e.stop (ATR stop), so it's always consistent with what ATR Stop shows.
+  // Absolute value by design: if a stop is ever found on the "wrong" side
+  // of entry (e.g. mid-adjustment), this still shows a safe, non-breaking
+  // magnitude rather than a confusing negative number or a "—" that would
+  // hide otherwise-available data.
+  const _slRiskPts = (entryPx!=null && e.stop!=null)
+    ? Math.abs(isLong ? (entryPx - e.stop) : (e.stop - entryPx))
+    : null;
+  const _slRiskPct = (entryPx!=null && e.stop!=null && entryPx)
+    ? Math.abs(isLong ? ((entryPx - e.stop)/entryPx*100) : ((e.stop - entryPx)/entryPx*100))
+    : null;
+  const _slRiskHtml = (_slRiskPts!=null && _slRiskPct!=null)
+    ? (_slRiskPct.toFixed(2)+'% / '+fmtPts(_slRiskPts)+'pts')
+    : '—';
   return `<div class="${cardClass}" id="otcard-${e.id}">
     <div class="otc-header">
       <div class="otc-line1">
@@ -9355,7 +9376,7 @@ function renderOrderTicketCard(e){
       <div class="tl-item"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
       <div class="tl-item"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
       <div class="tl-item"><div class="tl-label">ATR Stop</div><div class="tl-val" style="color:var(--red-text);">${e.stop!=null?fmt(e.stop):'—'}</div></div>
-      <div class="tl-item"><div class="tl-label">Fib Stop</div><div class="tl-val" style="color:#a78bfa;">${fibStop?fmt(fibStop):'—'}</div></div>
+      <div class="tl-item"><div class="tl-label">SL Risk</div><div class="tl-val" style="color:#a78bfa;">${_slRiskHtml}</div></div>
       <div class="tl-item"><div class="tl-label">1st Target <span style="font-size:9px;color:var(--text3);">Fib 1.618</span></div><div class="tl-val" style="color:var(--green-text);">${e.target!=null?fmt(e.target):'—'}</div></div>
       <div class="tl-item"><div class="tl-label">Score</div><div class="tl-val">${e.score}%</div></div>
     </div>
