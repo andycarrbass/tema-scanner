@@ -1080,7 +1080,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">Watches developing · Active trades · Live P&amp;L</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <span id="tdLastSync" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></span>
+      <div id="tdLastSync" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></div>
       <button onclick="exportTrades()" style="font-size:12px;padding:6px 11px;">&#8595; Export</button>
     </div>
   </div>
@@ -9456,7 +9456,7 @@ async function updateTradeDeskPnL(){
       el.replaceWith(tmp.firstChild);
     }
   });
-  _tdUpdateTimestamp();
+  _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
 }
 
 async function refreshTradeDesk(){
@@ -9477,13 +9477,43 @@ const TRADE_DESK_REFRESH_MS = 30000; // 30 seconds
 let tradeDeskTimer  = null;
 let _tdRefreshBusy  = false;
 
-function _tdUpdateTimestamp(){
+// ── Trade Desk status bar (TDAS V4.5 Task 3) ───────────────────────────────
+// Single consolidated status area, mirroring Scanner's _updateScannerStatusBar
+// in spirit and style. Diagnosed before writing this: Trade Desk prices
+// genuinely auto-refresh every 30s (both watch and active-trade cards, via
+// _tdLightweightRefresh / _ensureActiveTradeLivePricing — the latter is
+// tab-independent). Active-trade advisories ARE recalculated on every render
+// including that same 30s price tick, and their 1H-timing sub-component
+// genuinely refreshes every 5 minutes tab-independently (_ensureActiveTrade1HTiming)
+// — but the CORE TEMA/UT/ADX/regime state that actually drives HOLD/REVIEW/
+// CLOSE only updates via Scanner's own scan cycle (_scanLastMs, a shared
+// global Scanner already tracks), which pauses while Scanner isn't the
+// active tab. There is no Trade-Desk-specific mechanism that independently
+// recalculates that core signal state, so claiming "auto 5m" for advisories
+// here would be inaccurate. Uses the honest fallback wording instead.
+let _tdPriceLastMs = 0;
+function _updateTradeDeskStatusBar(){
   const el = document.getElementById('tdLastSync');
-  if(el){
-    const now = new Date();
-    const hms = now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    el.textContent = 'Last sync: ' + hms;
-  }
+  if(!el) return;
+  if(!_tdPriceLastMs){ el.innerHTML=''; return; } // nothing refreshed yet this session
+
+  const _cfg = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
+  const _sigSrc   = _cfg.signalSource || _cfg.label || ACTIVE_EXCHANGE;
+  const _priceSrc = _cfg.priceSource  || _cfg.label || ACTIVE_EXCHANGE;
+  const priceTime = new Date(_tdPriceLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const sep = '<span style="margin:0 6px;color:var(--border3);">&middot;</span>';
+
+  const pricesLine =
+    'Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '+priceTime+'</span>'+sep+'auto 30s';
+
+  const signalsLine = _scanLastMs
+    ? 'Signals/advisories: last scan '+new Date(_scanLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
+    : '';
+
+  el.innerHTML =
+    '<div>'+pricesLine+'</div>'
+    + (signalsLine ? '<div style="margin-top:2px;">'+signalsLine+'</div>' : '')
+    + '<div style="margin-top:4px;opacity:0.8;">Data: signals '+_sigSrc+' &middot; prices '+_priceSrc+'</div>';
 }
 
 async function _tdLightweightRefresh(){
@@ -9524,7 +9554,7 @@ async function _tdLightweightRefresh(){
     // Also refresh inline P&L spans (journal tab trade summary)
     updateLivePnL();
 
-    _tdUpdateTimestamp();
+    _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
     if(DEBUG_MODE) console.log('[TradeDeskRefresh] prices updated for', symbols.join(','));
   }catch(e){
     console.warn('[TradeDeskRefresh] price fetch failed:', e.message);
@@ -9586,7 +9616,7 @@ async function _ensureActiveTradeLivePricing(){
     });
 
     updateLivePnL();
-    _tdUpdateTimestamp();
+    _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
     if(DEBUG_MODE) console.log('[ActiveTradePricing] refreshed for', symbols.join(','));
   }catch(e){
     console.warn('[ActiveTradePricing] refresh error:', e.message);
@@ -10683,7 +10713,7 @@ async function globalRefresh(){
     updateJournalCount();
     await _tdLightweightRefresh();
     await _timingRefresh();
-    _tdUpdateTimestamp();
+    _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
     if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
     setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
     console.log('[Global Refresh] complete');
