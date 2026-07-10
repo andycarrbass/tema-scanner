@@ -4146,6 +4146,16 @@ function createTradeReadyPaperTrade(symbol) {
     return;
   }
 
+  // Tag the originating Watch entry, if this symbol currently has one —
+  // same lookup quickTakeFromWatch() uses. Without this, saveEntry()'s
+  // existing "Atomic watch → trade commit" step (gated entirely on
+  // window._watchEntryId being set) never fires for trades created via
+  // this route, so the original Watch never gets marked outcome='taken'
+  // and stays visible on the Trading Desk after conversion. This reuses
+  // that same existing commit path — no separate lifecycle mechanism.
+  const watchEntry = journal.find(j => j.symbol === symbol && isActiveWatch(j));
+  if (watchEntry) window._watchEntryId = watchEntry.id;
+
   // Stash Trade Ready metadata — saveEntry() attaches these fields onto the
   // entry object right after buildV1Entry runs, then clears this context.
   // Same field set/derivation as before, just captured here instead of at
