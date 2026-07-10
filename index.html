@@ -1080,11 +1080,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">Watches developing · Active trades · Live P&amp;L</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <div id="tdLastSync" style="font-size:11px;color:var(--text3);font-family:var(--mono);"></div>
       <button onclick="exportTrades()" style="font-size:12px;padding:6px 11px;">&#8595; Export</button>
     </div>
   </div>
   <div id="trade-desk-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;"></div>
+  <div id="tdLastSync" style="display:none;font-size:11px;color:var(--text3);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);"></div>
   <div class="trade-desk-grid" id="tradeDeskGrid">
     <!-- Watch cards column -->
     <div class="trade-col" id="watchCol">
@@ -9495,7 +9495,7 @@ let _tdPriceLastMs = 0;
 function _updateTradeDeskStatusBar(){
   const el = document.getElementById('tdLastSync');
   if(!el) return;
-  if(!_tdPriceLastMs){ el.innerHTML=''; return; } // nothing refreshed yet this session
+  if(!_tdPriceLastMs){ el.style.display='none'; el.innerHTML=''; return; } // nothing refreshed yet this session
 
   const _cfg = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
   const _sigSrc   = _cfg.signalSource || _cfg.label || ACTIVE_EXCHANGE;
@@ -9510,6 +9510,7 @@ function _updateTradeDeskStatusBar(){
     ? 'Signals/advisories: last scan '+new Date(_scanLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
     : '';
 
+  el.style.display = 'block';
   el.innerHTML =
     '<div>'+pricesLine+'</div>'
     + (signalsLine ? '<div style="margin-top:2px;">'+signalsLine+'</div>' : '')
