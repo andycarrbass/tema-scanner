@@ -11000,43 +11000,47 @@ function _updateScannerStatusBar(){
   if(!bar) return;
   if(!_scanLastMs){ bar.style.display='none'; return; }
 
-  const ageMins = Math.floor((Date.now() - _scanLastMs) / 60000);
-  const ageStr  = ageMins === 0 ? 'just now'
-                : ageMins === 1 ? '1 min old'
-                : ageMins + ' min old';
-  const thresh  = _SCAN_AGE_THRESHOLDS[_scanLastTf] || _SCAN_AGE_THRESHOLDS['4h'];
-  const ageColor = ageMins < thresh.green ? 'var(--green-text)'
-                 : ageMins < thresh.amber ? 'var(--amber-text)'
-                 : 'var(--red-text)';
-  const lastScanClock = new Date(_scanLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  try{
+    const ageMins = Math.floor((Date.now() - _scanLastMs) / 60000);
+    const ageStr  = ageMins === 0 ? 'just now'
+                  : ageMins === 1 ? '1 min old'
+                  : ageMins + ' min old';
+    const thresh  = _SCAN_AGE_THRESHOLDS[_scanLastTf] || _SCAN_AGE_THRESHOLDS['4h'];
+    const ageColor = ageMins < thresh.green ? 'var(--green-text)'
+                   : ageMins < thresh.amber ? 'var(--amber-text)'
+                   : 'var(--red-text)';
+    const lastScanClock = new Date(_scanLastMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 
-  const sep = '<span style="margin:0 8px;color:var(--border3);">&middot;</span>';
-  // Source label adapts to active exchange configuration
-  const _cfg = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
-  const _sigSrc  = _cfg.signalSource  || _cfg.label || ACTIVE_EXCHANGE;
-  const _priceSrc = _cfg.priceSource  || _cfg.label || ACTIVE_EXCHANGE;
+    const sep = '<span style="margin:0 8px;color:var(--border3);">&middot;</span>';
+    // Source label adapts to active exchange configuration
+    const _cfg = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
+    const _sigSrc  = _cfg.signalSource  || _cfg.label || ACTIVE_EXCHANGE;
+    const _priceSrc = _cfg.priceSource  || _cfg.label || ACTIVE_EXCHANGE;
 
-  // Signals line — age, absolute last-scan clock time, auto-refresh cadence.
-  // Source name deliberately not repeated here — it lives once in the Data
-  // line below (TDAS V4.5 Task 2 consolidation).
-  const signalsLine =
-    '<div>Signals: <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span>'
-    + sep + 'last scan ' + lastScanClock
-    + sep + 'auto 5m'
-    + '</div>';
+    // Signals line — age, absolute last-scan clock time, auto-refresh cadence.
+    // Source name deliberately not repeated here — it lives once in the Data
+    // line below (TDAS V4.5 Task 2 consolidation).
+    const signalsLine =
+      '<div>Signals: <span style="color:'+ageColor+';font-weight:600;">'+ageStr+'</span>'
+      + sep + 'last scan ' + lastScanClock
+      + sep + 'auto 5m'
+      + '</div>';
 
-  // Prices line — only shown once a live price fetch has actually happened.
-  const pricesLine = _livePriceMs
-    ? '<div style="margin-top:2px;">Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '
-      + new Date(_livePriceMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
-      + '</span>' + sep + 'auto 30s</div>'
-    : '';
+    // Prices line — only shown once a live price fetch has actually happened.
+    const pricesLine = _livePriceMs
+      ? '<div style="margin-top:2px;">Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '
+        + new Date(_livePriceMs).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit'})
+        + '</span>' + sep + 'auto 30s</div>'
+      : '';
 
-  const dataLine =
-    '<div style="margin-top:6px;opacity:0.8;">Data: signals '+_sigSrc+' &middot; prices '+_priceSrc+'</div>';
+    const dataLine =
+      '<div style="margin-top:6px;opacity:0.8;">Data: signals '+_sigSrc+' &middot; prices '+_priceSrc+'</div>';
 
-  bar.style.display = 'block';
-  bar.innerHTML = signalsLine + pricesLine + dataLine;
+    bar.style.display = 'block';
+    bar.innerHTML = signalsLine + pricesLine + dataLine;
+  }catch(e){
+    if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE) console.warn('[ScannerStatusBar] update error:', e.message);
+  }
 }
 
 // Tick every 30s to keep signal age current — zero API calls
@@ -11059,30 +11063,71 @@ const SCANNER_SIGNAL_REFRESH_MS = 5 * 60 * 1000; // 5 minutes
 let scannerPriceTimer  = null;
 let scannerSignalTimer = null;
 
+// Resume cooldown — TDAS V4.5 Task 2 follow-up (mobile "Failed to load" fix).
+// Root cause: mobile browsers suspend/abort in-flight network requests while
+// a tab is backgrounded (locked screen, app-switch, etc.) far more
+// aggressively than desktop. _scannerVisibilityHandler previously fired an
+// immediate _scannerTickerRefresh() the instant the tab became visible
+// again — the worst possible moment to hit the network, since mobile
+// sockets/DNS may not have finished reconnecting yet. Worse, if a
+// scannerSignalTimer tick (the 5-minute runScan() auto-refresh — the ONLY
+// new trigger capable of producing visible error cards, since
+// _scannerTickerRefresh's own failures are always silent) happened to land
+// in that same just-resumed window, calcPair() could genuinely reject for
+// many/most symbols at once, rendering as widespread "Failed to load" cards
+// across the grid — exactly the reported symptom, and specific to mobile
+// because desktop browsers rarely suspend background tabs this way.
+// Fix: track the last time the page was observed hidden, and require a
+// short settle window to pass before any auto-refresh tick (price or
+// signal) is allowed to proceed. The regular 30s/5m cadence is otherwise
+// unchanged — this only delays ticks that land right at a resume boundary.
+const SCANNER_RESUME_COOLDOWN_MS = 2000;
+let _scannerLastHiddenAt = 0;
+
 function _scannerAutoRefreshGate(){
   const tab = document.getElementById('tab-scanner');
   if(!tab || !tab.classList.contains('active')) return false; // Scanner not the visible tab
   if(document.hidden) return false; // browser tab/window hidden
+  if(_scannerLastHiddenAt && (Date.now() - _scannerLastHiddenAt) < SCANNER_RESUME_COOLDOWN_MS) return false; // just resumed — let the network settle
   return true;
 }
 
 function _scannerAutoPriceTick(){
-  if(!_scannerAutoRefreshGate()) return;
-  _scannerTickerRefresh(); // has its own queue-guard against overlapping an in-progress scan
+  try{
+    if(!_scannerAutoRefreshGate()) return;
+    _scannerTickerRefresh(); // has its own queue-guard against overlapping an in-progress scan
+  }catch(e){
+    if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE) console.warn('[ScannerAutoRefresh] price tick error:', e.message);
+  }
 }
 
 function _scannerAutoSignalTick(){
-  if(!_scannerAutoRefreshGate()) return;
-  if(_scanRunning) return; // skip rather than queue/overlap — runScan() would no-op anyway, kept explicit for clarity
-  runScan();
+  try{
+    if(!_scannerAutoRefreshGate()) return;
+    if(_scanRunning) return; // skip rather than queue/overlap — runScan() would no-op anyway, kept explicit for clarity
+    runScan();
+  }catch(e){
+    if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE) console.warn('[ScannerAutoRefresh] signal tick error:', e.message);
+  }
 }
 
 function _scannerVisibilityHandler(){
-  // On resume, nudge prices immediately rather than waiting up to 30s —
-  // mirrors _tdVisibilityHandler's resume behaviour. Deliberately does NOT
-  // force an immediate signal rescan on every tab/window refocus.
-  if(!document.hidden && _scannerAutoRefreshGate()){
-    _scannerTickerRefresh();
+  try{
+    if(document.hidden){
+      _scannerLastHiddenAt = Date.now();
+      return;
+    }
+    // Becoming visible again. If we were actually hidden, the cooldown gate
+    // above will correctly no-op this call for SCANNER_RESUME_COOLDOWN_MS —
+    // the next regular 30s price tick will pick it up once the network has
+    // had a moment to settle, rather than hitting it in the same instant
+    // the tab resumed. Deliberately does NOT force an immediate signal
+    // rescan on every tab/window refocus.
+    if(_scannerAutoRefreshGate()){
+      _scannerTickerRefresh();
+    }
+  }catch(e){
+    if(typeof DEBUG_MODE!=='undefined'&&DEBUG_MODE) console.warn('[ScannerAutoRefresh] visibility handler error:', e.message);
   }
 }
 
