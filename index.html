@@ -1664,6 +1664,45 @@ function normaliseSheets(e){
     // V3 Analytics preparation fields — default gracefully for older rows
     schemaVersion: parseInt(e.schemaVersion||e['Schema Version'])||1,
     trendRegime:   e.trendRegime||e['Trend Regime']||null,
+
+    // ── Batch 1 preservation fields (TDAS V4.4 Task 5) ────────────────────
+    // Trade Ready provenance — blank/null for entries that didn't originate
+    // from the Trade Ready card, which is expected and fine.
+    tradeReadySource:           e.tradeReadySource||e['Trade Ready Source']||null,
+    tradeReadyAdvisoryHeadline: e.tradeReadyAdvisoryHeadline||e['Trade Ready Headline']||null,
+    tradeReadyActionBias:       e.tradeReadyActionBias||e['Trade Ready Action Bias']||null,
+    tradeReadySetupQuality:     e.tradeReadySetupQuality||e['Trade Ready Setup Quality']||null,
+    tradeReadyRegime:           e.tradeReadyRegime||e['Trade Ready Regime']||null,
+    tradeReadyHtfAlign:         e.tradeReadyHtfAlign||e['Trade Ready HTF Align']||null,
+    tradeReadyTemaState:        e.tradeReadyTemaState||e['Trade Ready TEMA State']||null,
+    tradeReadyUtDirection:      e.tradeReadyUtDirection||e['Trade Ready UT Direction']||null,
+    // Label string ('Fresh'/'Recent'/'Mature'/'Stale'/'None'), NOT the
+    // numeric bars-ago count — that's tradeReadyUtBarsAgo below. Keep as a
+    // plain string; do not run through _n().
+    tradeReadyUtFreshness:      e.tradeReadyUtFreshness||e['Trade Ready UT Freshness']||null,
+    tradeReadyUtBarsAgo:        _n(e.tradeReadyUtBarsAgo!=null?e.tradeReadyUtBarsAgo:e['Trade Ready UT Bars Ago']),
+    tradeReadyAdx:              _n(e.tradeReadyAdx!=null?e.tradeReadyAdx:e['Trade Ready ADX']),
+    tradeReadyAdxState:         e.tradeReadyAdxState||e['Trade Ready ADX State']||null,
+    tradeReadyRsi:              _n(e.tradeReadyRsi!=null?e.tradeReadyRsi:e['Trade Ready RSI']),
+    // Already pipe-joined strings at write time (see saveEntry's
+    // _tradeReadyModalContext construction) — not arrays, so no JSON
+    // parsing here. If a future version starts storing structured
+    // array/object data in these columns, this line will need revisiting.
+    tradeReadyWarnings:         e.tradeReadyWarnings||e['Trade Ready Warnings']||'',
+    tradeReadyBlockers:         e.tradeReadyBlockers||e['Trade Ready Blockers']||'',
+
+    // Lifecycle / linking — Watch→Trade conversion metadata
+    parentWatchId:  _n(e.parentWatchId!=null?e.parentWatchId:e['Parent Watch ID']),
+    linkedTradeId:  _n(e.linkedTradeId!=null?e.linkedTradeId:e['Linked Trade ID']),
+    status:         e.status||e.Status||null,
+
+    // Regime / source / config metadata
+    signalSource:   e.signalSource||e['Signal Source']||null,
+    priceSource:    e.priceSource||e['Price Source']||null,
+    executionVenue: e.executionVenue||e['Execution Venue']||null,
+    utSourceMode:   e.utSourceMode||e['UT Source Mode']||null,
+    utKeyValue:     _n(e.utKeyValue!=null?e.utKeyValue:e['UT Key Value']),
+    utAtrPeriod:    _n(e.utAtrPeriod!=null?e.utAtrPeriod:e['UT ATR Period']),
   };
   // Transitional aliases — must mirror buildV1Entry so UI renders correctly
   // after pullFromSheets() replaces in-memory journal entries.
