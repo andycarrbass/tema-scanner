@@ -10880,6 +10880,17 @@ async function globalRefresh(){
     updateJournalCount();
     await _tdLightweightRefresh();
     await _timingRefresh();
+    // TDAS V4.5 bug fix — globalRefresh()'s Trade-tab branch was written
+    // before _tdSignalRefresh() existed (that was added in a later task,
+    // wired only into the 5-minute timer). Manual Re-scan on Trade Desk was
+    // therefore only ever refreshing prices + 1H timing — both of which are
+    // already kept fresh automatically by tab-independent timers — so
+    // clicking the button visibly did nothing. _tdSignalRefresh() already
+    // has its own guards (tab-active, page-visible, _scanRunning,
+    // self-overlap), so calling it directly here is exactly as safe as its
+    // timer-driven invocation; it also updates the status bar's
+    // "Signals/advisories" line itself on success.
+    await _tdSignalRefresh();
     _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
     if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
     setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
