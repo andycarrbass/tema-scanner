@@ -375,6 +375,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .htf-badge.conflict{background:var(--red-bg);color:var(--red-text);}
 .htf-badge.neutral{background:var(--bg4);color:var(--text3);}
 .sl-be-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--amber-bg);color:var(--amber-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
+.tp1-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--green-bg);color:var(--green-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
 .price{font-size:26px;font-weight:500;letter-spacing:-0.5px;line-height:1.1;}
 
 /* ── Price + pill inline row ── */
@@ -7113,13 +7114,29 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
     : advisory.action==='REVIEW' ? 'tdas-state-review'
     : 'tdas-state-hold';
 
+  // TP1 — Fib 1.618 target reached (TDAS V4.5 Task 4, V1: display-only, no
+  // persistence, not clickable). Uses openTrade.target — the same Fib 1.618
+  // target field the Trade Desk card displays — and price (d.price), the
+  // same current price already driving the Live P&L line above. The
+  // openTrade.target vs entryPx comparison doubles as the "wrong side of
+  // entry" validation.
+  const _tp1Reached = (
+    price!=null && openTrade.target!=null &&
+    (openTrade.signal==='long' ? (openTrade.target > entryPx && price >= openTrade.target)
+                                : (openTrade.target < entryPx && price <= openTrade.target))
+  ) && (!advisory || advisory.action!=='CLOSE');
+  const tp1Html = _tp1Reached
+    ? '<span class="tp1-pill" title="Fib 1.618 target reached. Consider partial profit or tightening stop.">TP1</span>'
+    : '';
+
   // SL to BE — small secondary risk-management prompt (TDAS V4.5 Task 1;
   // moved into the advisory header row in the Task 1 follow-up). Reuses
   // pnlR already computed above for the Live P&L line, suppressed whenever
   // advisory.action is 'CLOSE' (covers both a genuine stop-loss breach and
   // the ladder's own structural CLOSE — see renderOrderTicketCard's comment
-  // for the full reasoning). Never shown for losing/sub-1R trades.
-  const _slToBe = pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  // for the full reasoning). Also suppressed once TP1 has been reached —
+  // priority is CLOSE > TP1 > SL to BE. Never shown for losing/sub-1R trades.
+  const _slToBe = !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
   const slToBeHtml = _slToBe
     ? '<span class="sl-be-pill" title="Price has moved +1R. Consider moving stop to break even.">SL to BE</span>'
     : '';
@@ -7128,11 +7145,12 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
     ? '<div class="tdas-advisory-block '+stateClass+'">'
       + '<div class="tdas-advisory-header-row">'
       + '<div class="tdas-advisory-headline">'+advisory.headline+'</div>'
+      + tp1Html
       + slToBeHtml
       + '</div>'
       + (advisory.detail ? '<div class="tdas-advisory-detail">'+advisory.detail+'</div>' : '')
       + '</div>'
-    : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-header-row"><div class="tdas-advisory-headline">HOLD</div>'+slToBeHtml+'</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
+    : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-header-row"><div class="tdas-advisory-headline">HOLD</div>'+tp1Html+slToBeHtml+'</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
 
   return {
     stateClass,
@@ -9348,6 +9366,22 @@ function renderOrderTicketCard(e){
     : advisory.action==='TAKE_PROFIT_25' ? 'tdas-state-take25'
     : advisory.action==='REVIEW' ? 'tdas-state-review'
     : 'tdas-state-hold';
+  // TP1 — Fib 1.618 target reached (TDAS V4.5 Task 4, V1: display-only, no
+  // persistence, not clickable). Uses e.target — the exact same value shown
+  // in the "1st Target Fib 1.618" ticket-levels field — and livePrice, the
+  // same current price already driving Live P&L above. The e.target vs
+  // entryPx comparison doubles as the "wrong side of entry" validation: a
+  // long's target must be above entry, a short's below, or the field is
+  // treated as invalid/absent rather than trusted blindly.
+  const _tp1Reached = (
+    livePrice!=null && e.target!=null &&
+    (isLong ? (e.target > entryPx && livePrice >= e.target)
+            : (e.target < entryPx && livePrice <= e.target))
+  ) && (!advisory || advisory.action!=='CLOSE');
+  const tp1Html = _tp1Reached
+    ? `<span class="tp1-pill" title="Fib 1.618 target reached. Consider partial profit or tightening stop.">TP1</span>`
+    : '';
+
   // SL to BE — small secondary risk-management prompt (TDAS V4.5 Task 1;
   // moved into the advisory header row in the Task 1 follow-up). Reuses
   // pnlR (the exact same live R already shown in the Live P&L bar below) —
@@ -9358,9 +9392,11 @@ function renderOrderTicketCard(e){
   // distinguish the two, but suggesting "move stop to break even" makes no
   // sense once the advisory is already telling the trade to close entirely,
   // so gating on CLOSE broadly is the correct, safe behaviour either way.
-  // Never shown for losing/sub-1R trades; never replaces or alters the main
-  // advisory headline/detail text.
-  const _slToBe = pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  // Also suppressed once TP1 has been reached — priority is CLOSE > TP1 >
+  // SL to BE, since past TP1 the relevant prompt is partial profit / tighten
+  // stop, not simply moving to break even. Never replaces or alters the
+  // main advisory headline/detail text.
+  const _slToBe = !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
   const slToBeHtml = _slToBe
     ? `<span class="sl-be-pill" title="Price has moved +1R. Consider moving stop to break even.">SL to BE</span>`
     : '';
@@ -9369,6 +9405,7 @@ function renderOrderTicketCard(e){
     ? `<div class="tdas-advisory-block ${stateClass}">`
       + `<div class="tdas-advisory-header-row">`
       + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
+      + tp1Html
       + slToBeHtml
       + `</div>`
       + (advisory.detail ? `<div class="tdas-advisory-detail">${advisory.detail}</div>` : '')
