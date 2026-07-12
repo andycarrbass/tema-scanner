@@ -138,27 +138,87 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .tdas-state-high .tdas-advisory-headline{color:#D4A839;}
 .tdas-advisory-detail{font-size:12px;color:var(--text2);line-height:1.4;}
 
-/* ── TDAS Phase 2A — Technical Summary block ("what does the chart say")
-   Visually distinct from but subordinate to the Evaluation block above:
-   smaller label, tighter padding, no min-height floor. Colour reflects
-   directional majority only — same green/red/amber/grey vocabulary used
-   elsewhere in the app, not a new palette. */
+/* ── TDAS Phase 2A/2B — Technical Summary block ("what does the chart say")
+   V4.5.2: upgraded to match the approved Evaluation/advisory box's visual
+   weight — same border-radius, same padding, same headline font-size/
+   weight as .tdas-advisory-headline — so it reads as a proper first-class
+   block, not a weak secondary panel. Colour reflects directional majority
+   only, using the exact same rgba tint families as the Evaluation block's
+   consider/avoid/watch states (green=bullish/long family, red=bearish/
+   short family, amber=mixed/conflicted, muted grey=weak) — not a new
+   palette, so the two blocks feel like siblings. Still intentionally
+   secondary to the Evaluation block: no state-coloured left accent, no
+   "TRADE READY"-style badge, and it sits above the Evaluation block in the
+   card, which remains the primary action block. */
 .tdas-techsummary-block{
   border-radius:var(--radius-sm);
-  padding:7px 10px;
+  padding:9px 11px;
   background:var(--bg3);
   border:1px solid var(--border);
 }
-.tdas-techsummary-label{font-size:10.5px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:2px;}
-.tdas-techsummary-detail{font-size:11px;color:var(--text2);line-height:1.4;}
+.tdas-techsummary-label{font-size:15px;font-weight:700;letter-spacing:0.2px;margin-bottom:3px;text-transform:uppercase;}
+.tdas-techsummary-detail{font-size:12px;color:var(--text2);line-height:1.4;}
+.tdas-techsummary-block.tech-bullish{border-color:rgba(29,158,117,0.3);background:rgba(29,158,117,0.06);}
 .tdas-techsummary-block.tech-bullish .tdas-techsummary-label{color:var(--green-text);}
+.tdas-techsummary-block.tech-bearish{border-color:rgba(192,67,42,0.35);background:rgba(192,67,42,0.07);}
 .tdas-techsummary-block.tech-bearish .tdas-techsummary-label{color:var(--red-text);}
+.tdas-techsummary-block.tech-mixed,
+.tdas-techsummary-block.tech-conflicted{border-color:rgba(186,117,23,0.35);background:rgba(186,117,23,0.07);}
 .tdas-techsummary-block.tech-mixed .tdas-techsummary-label,
 .tdas-techsummary-block.tech-conflicted .tdas-techsummary-label{color:var(--amber-text);}
+.tdas-techsummary-block.tech-weak{border-color:var(--border2);background:var(--bg3);}
 .tdas-techsummary-block.tech-weak .tdas-techsummary-label{color:var(--text3);}
 
-/* ── TDAS Phase 2A — RSI / 200MA compact filter line ─────────────────── */
-.tdas-filter-line{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;font-weight:600;padding:0 1px;}
+/* Height consistency — mirrors the existing .tdas-advisory-block rule
+   immediately below, same treatment, so the two blocks share a footprint. */
+.card:not(.tdas-card-active) .tdas-techsummary-block{
+  min-height:76px;
+  box-sizing:border-box;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+}
+.card:not(.tdas-card-active) .tdas-techsummary-detail{
+  display:-webkit-box;
+  -webkit-line-clamp:2;
+  -webkit-box-orient:vertical;
+  overflow:hidden;
+  word-break:break-word;
+}
+
+/* ── TDAS Phase 2B (V4.5.2) — Technical checklist box ────────────────────
+   Contains the 4-dot row + RSI/ADX/200MA filter line together in one
+   subtle, low-emphasis, mostly-transparent box — tidier grouping, less
+   floating text, reads clearly as supporting evidence beneath the two main
+   decision blocks rather than competing with them. */
+.tdas-checklist-box{
+  border-radius:var(--radius-sm);
+  padding:8px 10px;
+  background:transparent;
+  border:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+}
+.tdas-filter-line{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;font-weight:600;padding:0 1px;}
+
+/* ── TDAS Phase 2B (V4.5.2) — split session / candle-countdown pills ─────
+   Two independent small pills, same style family as .htf-badge, replacing
+   the old single-background .candle-bar treatment on the front card only.
+   .candle-bar/.candle-countdown themselves are untouched (still used by
+   the active-trade scanner placeholder — buildActiveScannerPlaceholderHtml
+   — and must not change). Presentation only: session text/colour and
+   countdown minutes/seconds/urgency are the exact same values as before. */
+.session-candle-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.session-pill,.candle-pill{
+  display:inline-flex;align-items:center;
+  font-size:11px;font-weight:600;
+  padding:3px 9px;border-radius:99px;
+  white-space:nowrap;
+  background:var(--bg3);border:1px solid var(--border2);
+}
+.candle-pill{font-family:var(--mono);color:var(--text2);}
+.candle-pill.urgent{color:var(--amber-text);border-color:rgba(212,168,57,0.35);background:rgba(212,168,57,0.08);}
 
 /* ── TDAS Scanner advisory block height consistency ─────────────────────
    Scoped to non-active scanner/watch cards only, via :not(.tdas-card-active).
@@ -509,6 +569,13 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .dot-row{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;overflow:hidden;}
 .dot-item{display:flex;align-items:center;gap:4px;white-space:nowrap;flex-shrink:0;}
 .dot-item-label{font-size:11px;color:var(--text3);font-weight:500;}
+/* V4.5.2 — slightly larger dots for the 4-item Technical checklist row
+   (ADX moved out into the numeric filter line, leaving more room). Modifier
+   classes only — base .dot/.dot-row/.dot-item (used elsewhere, e.g. Full
+   Analysis's Indicator checklist) are unaffected. */
+.dot-row.dot-row-lg{gap:14px;}
+.dot.dot-lg{width:8px;height:8px;}
+.dot-item.dot-item-lg .dot-item-label{font-size:11.5px;color:var(--text2);font-weight:600;}
 .sd{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
 .sd.ok{background:var(--green);}
 .sd.bad{background:var(--red);}
@@ -1316,7 +1383,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.1';
+const APP_BUILD = 'V4.5.2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -7560,24 +7627,28 @@ function buildTechnicalSummaryHtml(d){
 }
 
 // ── Decision dots — "why" ─────────────────────────────────────────────
-// ● Regime  ● HTF  ● TEMA  ● UT  ● ADX
-// Reuses the existing .dot / .dot-row / .dot-item CSS (previously defined
-// but unused anywhere in the markup). Reads d.evaluation.confirms for the
-// true/false core signal, plus raw d.states fields only to distinguish
-// "conflicting" (red) from "unavailable/insufficient data" (grey) from
-// "caution/mixed" (amber) — confirms itself is unchanged/untouched.
-// Dots are grey/na across the board whenever there is no active trade bias
-// (neutral signal), since confirms are meaningless without one.
+// ● Regime  ● HTF  ● TEMA  ● UT
+// V4.5.2: ADX removed from the dots row (it's a trend-strength/reliability
+// filter, not a directional confirmation dot — moved into the numeric
+// filter line instead, see buildFilterLineHtml). Remaining 4 dots are
+// slightly larger (.dot-lg / .dot-row-lg modifiers) now there's more room.
+// Reuses the existing .dot / .dot-row / .dot-item CSS. Reads
+// d.evaluation.confirms for the true/false core signal, plus raw d.states
+// fields only to distinguish "conflicting" (red) from "unavailable/
+// insufficient data" (grey) from "caution/mixed" (amber) — confirms itself
+// is unchanged/untouched. Dots are grey/na across the board whenever there
+// is no active trade bias (neutral signal), since confirms are meaningless
+// without one.
 function buildDecisionDotsHtml(d){
   const ev = d && d.evaluation;
   const st = (d && d.states) || {};
   const hasBias = !!(ev && ev.tradeBias && ev.tradeBias!=='NEUTRAL' && ev.confirms);
 
   function item(cls,label){
-    return '<div class="dot-item"><span class="dot '+cls+'"></span><span class="dot-item-label">'+label+'</span></div>';
+    return '<div class="dot-item dot-item-lg"><span class="dot dot-lg '+cls+'"></span><span class="dot-item-label">'+label+'</span></div>';
   }
 
-  let regimeCls='na', htfCls='na', temaCls='na', utCls='na', adxCls='na';
+  let regimeCls='na', htfCls='na', temaCls='na', utCls='na';
 
   if(hasBias){
     const reg = d.regime || {};
@@ -7593,27 +7664,29 @@ function buildDecisionDotsHtml(d){
 
     const utDir = st.utBot && st.utBot.direction;
     utCls = (!utDir) ? 'na' : (ev.confirms.utBot ? 'ok' : 'no');
-
-    adxCls = (st.adx==null) ? 'na' : (ev.confirms.adx ? 'ok' : 'warn');
   }
 
-  return '<div class="dot-row">'
+  return '<div class="dot-row dot-row-lg">'
     + item(regimeCls,'Regime')
     + item(htfCls,'HTF')
     + item(temaCls,'TEMA')
     + item(utCls,'UT')
-    + item(adxCls,'ADX')
     + '</div>';
 }
 
-// ── RSI / 200MA compact filter line — key user trade filters ────────────
+// ── RSI / ADX / 200MA compact filter line — key user trade filters ──────
 // Simple, non-overengineered thresholds per spec: near/above/below 50 for
-// RSI directional read, standard 70/30 extension caution. Reads d.states
-// only — no new indicator calculation. tfLabel is the same tf_val already
-// resolved in renderCard (d.tf with dropdown/'4h' fallback).
+// RSI directional read, standard 70/30 extension caution; ADX trending vs
+// ranging (same boolean already used elsewhere, no new threshold). Reads
+// d.states only — no new indicator calculation. tfLabel is the same tf_val
+// already resolved in renderCard (d.tf with dropdown/'4h' fallback).
+// V4.5.2: ADX added here (moved out of the dots row — see
+// buildDecisionDotsHtml) since it's a trend-strength/reliability filter,
+// not a directional confirmation.
 function buildFilterLineHtml(d, tfLabel){
   const st = (d && d.states) || {};
   const rsi = (st.rsi!=null && isFinite(st.rsi)) ? st.rsi : null;
+  const adx = (st.adx!=null && isFinite(st.adx)) ? st.adx : null;
   const aboveMA = (typeof st.aboveMA==='boolean') ? st.aboveMA : null;
   const signal = d && d.signal;
   const tf = (tfLabel||'').toUpperCase();
@@ -7627,7 +7700,16 @@ function buildFilterLineHtml(d, tfLabel){
     else if(signal==='short') tone = (rsi<30) ? 'amber' : (rsi<=50 ? 'green' : 'amber');
     else                      tone = 'grey';
     rsiColor = tone==='green' ? 'var(--green-text)' : tone==='amber' ? 'var(--amber-text)' : 'var(--text3)';
-    rsiText = 'RSI: '+rsi.toFixed(0)+(tf?' '+tf:'');
+    rsiText = 'RSI: '+rsi.toFixed(0);
+  }
+
+  let adxColor, adxText;
+  if(adx==null){
+    adxColor='var(--text3)'; adxText='ADX: \u2014';
+  } else {
+    const tone = st.adxTrending ? 'green' : 'amber';
+    adxColor = tone==='green' ? 'var(--green-text)' : 'var(--amber-text)';
+    adxText = 'ADX: '+Math.round(adx);
   }
 
   let maColor, maText;
@@ -7644,8 +7726,21 @@ function buildFilterLineHtml(d, tfLabel){
 
   return '<div class="tdas-filter-line">'
     + '<span style="color:'+rsiColor+';">'+rsiText+'</span>'
+    + '<span style="color:'+adxColor+';">'+adxText+'</span>'
     + '<span style="color:'+maColor+';">'+maText+'</span>'
     + '</div>';
+}
+
+// ── Technical checklist box — V4.5.2 layout container ────────────────────
+// Groups the decision dots and the RSI/ADX/200MA filter line inside one
+// subtle, low-emphasis box (tidier grouping, less floating text, reads as
+// "supporting evidence" beneath the two main decision blocks). Pure layout
+// wrapper — calls the existing dots/filter builders unchanged, computes
+// nothing new itself.
+function buildTechnicalChecklistHtml(d, tfLabel){
+  const dots = buildDecisionDotsHtml(d);
+  const filters = buildFilterLineHtml(d, tfLabel);
+  return '<div class="tdas-checklist-box">'+dots+filters+'</div>';
 }
 
 function renderCard(symbol,d){
@@ -7851,22 +7946,18 @@ function renderCard(symbol,d){
     : signal==='short' ? '\u25bc SHORT SIGNAL'
     : 'No signal';
 
-  // ── TDAS Phase 2A — new decision-focused blocks ─────────────────────────
+  // ── TDAS Phase 2A/2B — new decision-focused blocks ──────────────────────
   // Technical Summary ("what does the chart say"), Evaluation (built above
-  // as advisoryHtml/_advStateClass), Decision dots ("why"), and the RSI/
-  // 200MA compact filter line. Replaces the old signal-strength box, key
-  // warning line, and Entry Signals rows retired above/below.
+  // as advisoryHtml/_advStateClass), and the Technical checklist box (dots
+  // + RSI/ADX/200MA filter line, V4.5.2 — ADX moved from dots into the
+  // filter line, both now grouped in one contained box).
   let technicalSummaryHtml = '';
   try{ technicalSummaryHtml = buildTechnicalSummaryHtml(d); }
   catch(e){ console.warn('[renderCard] buildTechnicalSummaryHtml failed for',symbol,e); }
 
-  let dotsHtml = '';
-  try{ dotsHtml = buildDecisionDotsHtml(d); }
-  catch(e){ console.warn('[renderCard] buildDecisionDotsHtml failed for',symbol,e); }
-
-  let filterLineHtml = '';
-  try{ filterLineHtml = buildFilterLineHtml(d, tf_val); }
-  catch(e){ console.warn('[renderCard] buildFilterLineHtml failed for',symbol,e); }
+  let checklistHtml = '';
+  try{ checklistHtml = buildTechnicalChecklistHtml(d, tf_val); }
+  catch(e){ console.warn('[renderCard] buildTechnicalChecklistHtml failed for',symbol,e); }
 
   // ── Levels box ─────────────────────────────────────────────────────────
   let levelsHtml = '';
@@ -7932,25 +8023,24 @@ function renderCard(symbol,d){
       <span class="htf-badge ${htfAlign}">${htfText}</span>
       <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
     </div>
-    <div class="cz" style="padding-top:0;padding-bottom:6px;">
-      <div class="candle-bar">
-        <span style="font-size:12px;color:${sessionColor};font-weight:600;white-space:nowrap;">${session}${overlap?' \u26a1':''}</span>
-        <span class="candle-countdown ${countdownUrgent?'urgent':'normal'}" style="white-space:nowrap;font-size:12px;" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>
+    <div class="cz" style="padding-top:8px;padding-bottom:8px;">
+      <div class="session-candle-row">
+        <span class="session-pill" style="color:${sessionColor};">${session}${overlap?' \u26a1':''}</span>
+        <span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>
       </div>
     </div>
-    <div class="cz-price">
+    <div class="cz-price" style="padding-bottom:10px;">
       <div class="price-pill-row">
         <span class="price">${fmt(price)}</span>
         <span class="sig-pill ${pillClass}${advisoryHtml?' pill-demoted':''}">${pillText}</span>
       </div>
     </div>
-    ${technicalSummaryHtml?'<div class="cz" style="padding-top:0;padding-bottom:4px;">'+technicalSummaryHtml+'</div>':''}
-    <div class="cz" style="padding-top:0;padding-bottom:6px;">${advisoryHtml}</div>
-    ${dotsHtml?'<div class="cz" style="padding-top:0;padding-bottom:4px;">'+dotsHtml+'</div>':''}
-    ${filterLineHtml?'<div class="cz" style="padding-top:0;padding-bottom:6px;">'+filterLineHtml+'</div>':''}
-    ${levelsHtml?'<div class="cz-levels">'+levelsHtml+'</div>':''}
+    ${technicalSummaryHtml?'<div class="cz" style="padding-top:0;padding-bottom:10px;">'+technicalSummaryHtml+'</div>':''}
+    <div class="cz" style="padding-top:0;padding-bottom:10px;">${advisoryHtml}</div>
+    ${checklistHtml?'<div class="cz" style="padding-top:0;padding-bottom:10px;">'+checklistHtml+'</div>':''}
+    ${levelsHtml?'<div class="cz-levels" style="padding-bottom:8px;">'+levelsHtml+'</div>':''}
     <div class="cz-spacer"></div>
-    <div class="cz-actions">${tradeReadyBtnHtml}${actionZone}${analysisBtn}</div>
+    <div class="cz-actions" style="padding-top:14px;">${tradeReadyBtnHtml}${actionZone}${analysisBtn}</div>
     </div>
     ${tradeReadyBackHtml?'<div class="tdas-card-back">'+tradeReadyBackHtml+'</div>':''}
   `;
