@@ -220,11 +220,15 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 /* ── TDAS Phase 2B (V4.5.2) — split session / candle-countdown pills ─────
    Two independent small pills, same style family as .htf-badge, replacing
-   the old single-background .candle-bar treatment on the front card only.
-   .candle-bar/.candle-countdown themselves are untouched (still used by
-   the active-trade scanner placeholder — buildActiveScannerPlaceholderHtml
-   — and must not change). Presentation only: session text/colour and
-   countdown minutes/seconds/urgency are the exact same values as before. */
+   the old single-background .candle-bar treatment. As of V4.5.5, used by
+   BOTH the normal front card (renderCard) and the active-trade scanner
+   placeholder (buildActiveScannerPlaceholderHtml) — both now share this
+   exact markup/CSS so the two card types look consistent. .candle-bar/
+   .candle-countdown are no longer referenced anywhere in the markup as of
+   V4.5.5 — left defined/dormant rather than deleted (zero risk either way,
+   nothing else depends on them). Presentation only: session text/colour
+   and countdown minutes/seconds/urgency are the exact same values as
+   before in both card types. */
 .session-candle-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
 .session-pill,.candle-pill{
   display:inline-flex;align-items:center;
@@ -1403,7 +1407,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.4';
+const APP_BUILD = 'V4.5.5';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -7293,9 +7297,9 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
         <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
       </div>
       <div class="cz" style="padding-top:0;padding-bottom:6px;">
-        <div class="candle-bar">
-          <span style="font-size:12px;color:${d.sessionColor};font-weight:600;white-space:nowrap;">${d.session}${d.overlap?' \u26a1':''}</span>
-          <span class="candle-countdown ${countdownUrgent?'urgent':'normal'}" style="white-space:nowrap;font-size:12px;" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>
+        <div class="session-candle-row">
+          <span class="session-pill" style="color:${d.sessionColor};">${d.session}${d.overlap?' \u26a1':''}</span>
+          <span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>
         </div>
       </div>
       <div class="cz-price">
@@ -11110,8 +11114,39 @@ function renderHistory(){
 }
 
 // ── Summary ──────────────────────────────────────────────────────────────
+// TDAS V4.5.5 — excludes active-trade symbols from the counts below. See
+// the inline comment on `valid` for the full root-cause explanation.
 function renderSummary(results){
-  const valid=results.filter(r=>r.status==='fulfilled').map(r=>r.value);
+  // Root cause of the V4.5.4 count mismatch: calcPair()'s raw .signal
+  // reflects current market state only — it has nothing to do with
+  // whether a trade is already open on that symbol, so a symbol with an
+  // open LONG trade can independently still read signal:'long' (or
+  // 'short', or flip to 'neutral') well after entry. Meanwhile the grid
+  // itself (see runScan's signalItems/neutralItems split, and
+  // renderCard's isOpenTrade branch) already diverts any hasOpenTrade
+  // symbol to a completely different card — buildActiveScannerPlaceholderHtml
+  // — which shows "LONG/SHORT ACTIVE", not a "LONG/SHORT SIGNAL" pill.
+  // renderSummary previously counted every fulfilled result regardless,
+  // so an active trade whose underlying signal still read 'long' silently
+  // padded the Longs tile (and the "X signals detected" status text)
+  // without a matching visible signal card — exactly the reported
+  // mismatch (3 counted, 2 visible signal cards + 3 active-trade cards
+  // that don't carry LONG/SHORT SIGNAL wording).
+  // Fix: exclude hasOpenTrade symbols here, using the identical check
+  // already used above for the signalItems/neutralItems partition — not
+  // a new rule, just applied consistently. Watching symbols are
+  // deliberately NOT excluded: they still render as normal signal cards
+  // in the grid (same LONG/SHORT SIGNAL pill, just a "Watching" action
+  // button instead of "Log decision"), so counting them remains
+  // consistent with what's visible.
+  const valid=results
+    .map((r,i)=>({r,sym:PAIRS[i]}))
+    .filter(({r,sym})=>{
+      if(r.status!=='fulfilled') return false;
+      const hasOpenTrade=journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
+      return !hasOpenTrade;
+    })
+    .map(({r})=>r.value);
   const longs=valid.filter(v=>v.signal==='long').length;
   const shorts=valid.filter(v=>v.signal==='short').length;
   const aligned=valid.filter(v=>v.htfAlign==='aligned').length;
@@ -11422,7 +11457,16 @@ async function runScan(auto){
     }
   });
   renderSummary(results);
-  const sigs=results.filter(r=>r.status==='fulfilled'&&r.value.signal!=='neutral').length;
+  // TDAS V4.5.5 — same hasOpenTrade exclusion as renderSummary (see its
+  // comment for the full root-cause explanation), so this status line's
+  // count always matches Longs+Shorts exactly. Not a new rule — reuses
+  // the identical check already used above for signalItems/neutralItems.
+  const sigs=results.filter((r,i)=>{
+    if(r.status!=='fulfilled'||r.value.signal==='neutral') return false;
+    const sym=PAIRS[i];
+    const hasOpenTrade=journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
+    return !hasOpenTrade;
+  }).length;
   document.getElementById('status').textContent=sigs===0?`No active signals on ${tf.toUpperCase()}.`:`${sigs} signal${sigs>1?'s':''} detected on ${tf.toUpperCase()}.`;
   const t=nowTime();
   document.getElementById('footerTime').textContent=`Last scan ${t}`;
