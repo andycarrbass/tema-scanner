@@ -552,11 +552,18 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .sig-pill.pill-neutral{background:var(--bg3);color:var(--text3);border:1px solid var(--border);}
 /* TDAS V4.6.1 — setup timeframe pill (Task 1). Deliberately smaller/more
    muted than .sig-pill/.htf-badge — visually secondary to LONG/SHORT
-   ACTIVE per spec, neutral grey regardless of trade direction. */
-.setup-tf-pill{display:inline-flex;align-items:center;height:20px;padding:0 8px;
-  border-radius:99px;font-size:10px;font-weight:600;letter-spacing:0.2px;
+   ACTIVE per spec, neutral grey regardless of trade direction.
+   TDAS V4.6.2 — sized down further: was reading as too heavy/prominent
+   when it wrapped to its own line below the direction pill on narrower
+   cards. Smaller height/padding/font, no letter-spacing, slightly
+   translucent border, and reduced overall opacity so it reads as a
+   compact metadata tag rather than a pill competing with LONG/SHORT
+   ACTIVE for attention. Scoped class, only ever used by
+   buildActiveScannerPlaceholderHtml — no risk of affecting anything else. */
+.setup-tf-pill{display:inline-flex;align-items:center;height:15px;padding:0 6px;
+  border-radius:99px;font-size:9px;font-weight:600;letter-spacing:0;
   white-space:nowrap;flex-shrink:0;background:var(--bg4);color:var(--text3);
-  border:1px solid var(--border);}
+  border:1px solid var(--border);opacity:0.8;}
 
 /* ── Conviction row with prefix label ── */
 .conv-row{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:var(--radius-sm);}
@@ -1474,7 +1481,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.6.1';
+const APP_BUILD = 'V4.6.2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
