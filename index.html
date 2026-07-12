@@ -1053,10 +1053,24 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .watch-dot.na{background:var(--bg4);border-color:var(--border2);}
 .watch-cond-label{font-size:13px;color:var(--text2);}
 .watch-cond-label.lit{color:var(--green-text);}
+/* TDAS V4.6.5 — Watch progress container (Task 2). Same subtle-panel
+   family as .tdas-checklist-box/.tdas-status-block (transparent
+   background, thin border, var(--radius-sm)) — the text colour/weight
+   (condColor/condWeight, passed inline by renderWatchCard) and the
+   ⭐ Full confluence suffix are completely unchanged from before; only the
+   wording ("WATCH PROGRESS N/5" instead of "N/5 conditions met") and the
+   container are new. */
+.watch-progress-strip{display:inline-block;padding:5px 10px;margin-bottom:8px;
+  border-radius:var(--radius-sm);border:1px solid var(--border);
+  background:transparent;font-size:11px;}
 .watch-prices{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-size:12px;color:var(--text3);margin-bottom:10px;padding:8px 0;border-top:1px solid var(--border);}
 .entry-quality-row{min-height:20px;margin-bottom:6px;font-size:11px;color:var(--green-text);line-height:20px;}
 .watch-prices .wp-val{font-family:var(--mono);font-size:13px;color:var(--text);margin-top:2px;}
 .watch-note{font-size:12px;color:var(--text2);line-height:1.5;padding:7px 9px;background:var(--bg3);border-radius:var(--radius-sm);margin-bottom:10px;white-space:pre-wrap;}
+/* TDAS V4.6.5 — "Watch note:" lead-in label (Task 5). Sits inside the
+   existing .watch-note box (untouched) — just distinguishes the label
+   from the user's own note text, which is preserved verbatim. */
+.watch-note-label{font-weight:600;color:var(--text3);}
 .watch-actions{display:flex;gap:6px;}
 .watch-take-btn{flex:1;padding:8px;font-size:13px;font-weight:600;border-radius:var(--radius-sm);border:1px solid var(--green-bg);background:var(--green-dim);color:var(--green-text);cursor:pointer;transition:all 0.2s;}
 .watch-take-btn:hover{background:var(--green-bg);}
@@ -1509,7 +1523,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.6.4';
+const APP_BUILD = 'V4.6.5';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9850,10 +9864,24 @@ function renderWatchCard(e){
   const condStarHtml = litCount === 5 ? ' · ⭐ Full confluence' : '';
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   const dir=e.signal==='long'?'<span class="chip long" style="font-size:12px;">▲ Long</span>':'<span class="chip short" style="font-size:12px;">▼ Short</span>';
-  const condListHtml=condNames.map((name,i)=>`
+  // TDAS V4.6.5 — checklist display labels/order only (Task 3). conds[]
+  // itself (the underlying pass/fail values, still computed exactly as
+  // above) and litCount (conds.filter(Boolean).length — order-independent)
+  // are completely unchanged; this only changes what's shown and in what
+  // sequence. Each entry below maps to the same conds[] index it always
+  // did — e.g. condDisplay[1] ('UT confirmation') reads conds[3], the same
+  // UT Bot confirming value as before, just relabelled/reordered.
+  const condDisplay = [
+    { label: 'TEMA structure',  lit: conds[0] },
+    { label: 'UT confirmation', lit: conds[3] },
+    { label: 'HTF support',     lit: conds[2] },
+    { label: 'ADX trend',       lit: conds[1] },
+    { label: 'SMA filter',      lit: conds[4] },
+  ];
+  const condListHtml=condDisplay.map(c=>`
     <div class="watch-cond-row">
-      <span class="watch-dot ${conds[i]?'lit':'na'}"></span>
-      <span class="watch-cond-label ${conds[i]?'lit':''}">${name}</span>
+      <span class="watch-dot ${c.lit?'lit':'na'}"></span>
+      <span class="watch-cond-label ${c.lit?'lit':''}">${c.label}</span>
     </div>`).join('');
   const priceColor=null; // replaced by currentPxColor below
   // Current price colour relative to trigger price — green if moving in signal direction, red if against
@@ -9863,13 +9891,13 @@ function renderWatchCard(e){
     const movingFor=(e.signal==='long'&&currentPrice>triggerPx)||(e.signal==='short'&&currentPrice<triggerPx);
     currentPxColor=movingFor?'var(--green-text)':'var(--red-text)';
   }
-  const noteHtml=e.note?`<div class="watch-note">${e.note}</div>`:'';
+  const noteHtml=e.note?`<div class="watch-note"><span class="watch-note-label">Watch note:</span> ${e.note}</div>`:'';
   return `<div class="watch-card${fullConf?' full-conf':''}" id="wcard-${e.id}">
     ${fullConf?`<span class="watch-star">⭐</span>`:''}
     <div class="watch-card-header">
       <div>
         <div class="watch-card-pair">${LABELS[e.symbol]||e.symbol}</div>
-        <div style="font-size:12px;color:var(--text3);margin-top:2px;">${e.tf.toUpperCase()} · ${ts}</div>
+        <div class="otc-meta" style="margin-top:4px;">${e.tf.toUpperCase()} WATCH · ${ts}</div>
       </div>
       <div style="display:flex;align-items:flex-start;gap:6px;">
         ${dir}
@@ -9877,7 +9905,7 @@ function renderWatchCard(e){
       </div>
     </div>
     <div class="watch-cond-list">${condListHtml}</div>
-    <div style="font-size:11px;color:${condColor};margin-bottom:8px;font-weight:${condWeight};">${litCount}/5 conditions met${condStarHtml}</div>
+    <div class="watch-progress-strip"><span style="color:${condColor};font-weight:${condWeight};">WATCH PROGRESS ${litCount}/5</span>${condStarHtml}</div>
     <div class="entry-quality-row">${(()=>{
       // Entry Quality — Trade Desk only. Fixed-height container always rendered.
       const _sp = e.signalPrice || e.price;
@@ -9904,7 +9932,7 @@ function renderWatchCard(e){
     ${noteHtml}
     <div class="watch-actions">
       <button class="watch-take-btn${fullConf?' ready pulsing':''}" onclick="quickTakeFromWatch('${e.symbol}')">
-        ✓ Take trade
+        ✓ Convert to trade
       </button>
       <button class="watch-cancel-btn" onclick="closeWatch(${e.id})">✗ Cancel</button>
     </div>
