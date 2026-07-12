@@ -73,6 +73,31 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 .status-row{font-size:14px;color:var(--text2);margin-bottom:14px;min-height:18px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;}
 
+/* TDAS V4.5.6 — Scanner result banner. Deliberately targets #status by ID,
+   NOT .status-row: that class is also used elsewhere in the file (see the
+   "Legacy status chips still used in trade desk" .status-row rule further
+   down) with different, conflicting layout properties, so styling it here
+   risked bleeding into an unrelated part of the app. #status is a unique
+   element ID, so this is fully scoped to the Scanner result line only —
+   both the "Fetching…" transient message and the final "N SIGNALS
+   DETECTED…" result share this same subtle box, just with a different
+   className (see runScan). Empty by default before the first scan, so
+   :empty hides the box rather than showing an empty outline. */
+#status{
+  display:inline-block;
+  padding:6px 12px;
+  border-radius:var(--radius-sm);
+  border:1px solid var(--border);
+  background:var(--bg2);
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:0.3px;
+  color:var(--text2);
+}
+#status:empty{display:none;padding:0;border:none;}
+#status.scanner-result-active{border-left:3px solid var(--green);color:var(--text);}
+#status.scanner-result-neutral{color:var(--text3);}
+
 /* Grid */
 /* ── Scanner Grid ── */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:24px;align-items:start;}
@@ -1407,7 +1432,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.5';
+const APP_BUILD = 'V4.5.6';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -11332,7 +11357,9 @@ async function runScan(auto){
   btn.disabled=true;
   if(!auto){
     buildGrid();
-    document.getElementById('status').textContent=`Fetching ${tf.toUpperCase()} + ${htf.toUpperCase()} data…`;
+    const _statusEl0 = document.getElementById('status');
+    _statusEl0.textContent=`Fetching ${tf.toUpperCase()} + ${htf.toUpperCase()} data…`;
+    _statusEl0.className='scanner-result-neutral';
     document.getElementById('summary').innerHTML='';
   }
   const results=await Promise.allSettled(PAIRS.map(s=>calcPair(s,tf)));
@@ -11467,7 +11494,16 @@ async function runScan(auto){
     const hasOpenTrade=journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
     return !hasOpenTrade;
   }).length;
-  document.getElementById('status').textContent=sigs===0?`No active signals on ${tf.toUpperCase()}.`:`${sigs} signal${sigs>1?'s':''} detected on ${tf.toUpperCase()}.`;
+  // TDAS V4.5.6 — result banner text/styling only; the count itself (sigs)
+  // and its V4.5.5 hasOpenTrade exclusion above are unchanged. Uppercase,
+  // no full stop, per-count wording, plus a className so CSS can give a
+  // subtle accent border when signals were actually found vs. a fully
+  // neutral look at zero.
+  const _statusEl = document.getElementById('status');
+  _statusEl.textContent = sigs===0 ? `NO SIGNALS DETECTED ON ${tf.toUpperCase()}`
+    : sigs===1 ? `1 SIGNAL DETECTED ON ${tf.toUpperCase()}`
+    : `${sigs} SIGNALS DETECTED ON ${tf.toUpperCase()}`;
+  _statusEl.className = sigs>0 ? 'scanner-result-active' : 'scanner-result-neutral';
   const t=nowTime();
   document.getElementById('footerTime').textContent=`Last scan ${t}`;
   // Record scan completion time for status bar signal age display
