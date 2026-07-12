@@ -538,6 +538,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 /* ── Price + pill inline row ── */
 .price-pill-row{display:flex;align-items:center;gap:10px;flex-wrap:nowrap;}
+/* TDAS V4.6.1 — active scanner card's row has a 3rd item (setup tf pill),
+   so it needs to wrap gracefully on narrow widths. Scoped modifier, not a
+   change to the base rule above — normal cards (2 items: price + signal
+   pill) keep their original nowrap behaviour untouched. */
+.price-pill-row.price-pill-row-wrap{flex-wrap:wrap;row-gap:6px;}
 .sig-pill{display:inline-flex;align-items:center;height:24px;padding:0 11px;
   border-radius:99px;font-size:11px;font-weight:700;letter-spacing:0.4px;
   white-space:nowrap;flex-shrink:0;}
@@ -545,6 +550,13 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .sig-pill.pill-short{background:var(--red-dim);color:var(--red-text);border:1px solid var(--red-bg);}
 .sig-pill.pill-trade{background:rgba(59,130,246,0.1);color:#60a5fa;border:1px solid rgba(59,130,246,0.2);}
 .sig-pill.pill-neutral{background:var(--bg3);color:var(--text3);border:1px solid var(--border);}
+/* TDAS V4.6.1 — setup timeframe pill (Task 1). Deliberately smaller/more
+   muted than .sig-pill/.htf-badge — visually secondary to LONG/SHORT
+   ACTIVE per spec, neutral grey regardless of trade direction. */
+.setup-tf-pill{display:inline-flex;align-items:center;height:20px;padding:0 8px;
+  border-radius:99px;font-size:10px;font-weight:600;letter-spacing:0.2px;
+  white-space:nowrap;flex-shrink:0;background:var(--bg4);color:var(--text3);
+  border:1px solid var(--border);}
 
 /* ── Conviction row with prefix label ── */
 .conv-row{display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:var(--radius-sm);}
@@ -1039,7 +1051,16 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .otc-pair{font-size:16px;font-weight:600;color:var(--text);}
 .otc-line2{font-size:11px;color:var(--text3);margin-top:3px;margin-bottom:6px;}
 .otc-line3{display:flex;gap:6px;align-items:center;margin-top:6px;}
-.otc-meta{font-size:11px;color:var(--text3);margin-top:5px;}
+.otc-meta{
+  font-size:11px;
+  color:var(--text3);
+  margin-top:5px;
+  display:inline-block;
+  padding:4px 9px;
+  border-radius:var(--radius-sm);
+  border:1px solid var(--border);
+  background:transparent;
+}
 .paper-live-toggle{display:flex;border:1px solid var(--border2);border-radius:var(--radius-sm);overflow:hidden;}
 .plt-btn{padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer;border:none;background:var(--bg3);color:var(--text3);transition:all 0.15s;}
 .plt-btn.active-paper{background:var(--bg4);color:var(--text2);}
@@ -1453,7 +1474,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.6.0';
+const APP_BUILD = 'V4.6.1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -7328,6 +7349,16 @@ function getHtfDirectionState(d, direction) {
 function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
   const price = d.price;
   const dirWord = openTrade.signal==='long' ? 'LONG' : 'SHORT';
+  // TDAS V4.6.1 — setup timeframe pill. Uses openTrade.tf specifically
+  // (the trade's own saved setup timeframe, same source V4.6.0's TP50 SMA
+  // confirmation logic uses), never the current scanner dropdown value —
+  // consistent with the rest of this card, which already treats
+  // openTrade.tf as the source of truth for setup-timeframe-relative
+  // display (see the HTF pill above). Presentation only — does not affect
+  // advisory/P&L/View Trade, all computed elsewhere from openTrade/d as
+  // before.
+  const _setupTfRaw = (openTrade.tf || '').toUpperCase();
+  const setupTfPillText = _setupTfRaw ? (_setupTfRaw + ' SETUP') : 'SETUP TF \u2013';
   // TDAS V4.4 HTF Pill Fix — direction-aware, genuinely-HTF-derived state.
   // Was d.htfAlign (current-scan-signal-relative — see getHtfDirectionState
   // header comment above for why that was wrong here).
@@ -7418,9 +7449,10 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
         </div>
       </div>
       <div class="cz-price">
-        <div class="price-pill-row">
+        <div class="price-pill-row price-pill-row-wrap">
           <span class="price">${fmt(price)}</span>
           <span class="sig-pill pill-trade">${dirWord==='LONG'?'\u25b2':'\u25bc'} ${dirWord} ACTIVE</span>
+          <span class="setup-tf-pill">${setupTfPillText}</span>
         </div>
       </div>
       <div class="cz" style="padding-top:6px;padding-bottom:0;">${advisoryHtml}</div>
