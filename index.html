@@ -1068,8 +1068,15 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    colour (condColor — green/amber/muted by progress, still applied to
    just the "N/5" number, completely unchanged). Previously the whole
    string shared condColor, so a low/early count (var(--text3)) made the
-   entire strip read as too grey. */
-.watch-progress-label{color:var(--text);font-weight:700;letter-spacing:0.2px;}
+   entire strip read as too grey.
+   TDAS V4.6.7 — emphasis reversed: the count is the useful information,
+   not the static label, so the label is now muted and the count is given
+   its own larger font-size to read as visually prominent. condColor/
+   condWeight (the tier colour/weight applied inline to the count by
+   renderWatchCard) are completely untouched — this only adds a font-size
+   bump on top of them. */
+.watch-progress-label{color:var(--text3);font-weight:500;letter-spacing:0.2px;}
+.watch-progress-count{font-size:13px;}
 .watch-prices{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-size:12px;color:var(--text3);margin-bottom:10px;padding:8px 0;border-top:1px solid var(--border);}
 .entry-quality-row{min-height:20px;margin-bottom:6px;font-size:11px;color:var(--green-text);line-height:20px;}
 .watch-prices .wp-val{font-family:var(--mono);font-size:13px;color:var(--text);margin-top:2px;}
@@ -1530,7 +1537,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.6.6';
+const APP_BUILD = 'V4.6.7';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9919,7 +9926,7 @@ function renderWatchCard(e){
     <div style="margin-bottom:6px;">${dir}</div>
     <div class="otc-meta" style="margin-bottom:10px;">${e.tf.toUpperCase()} WATCH · ${ts}</div>
     <div class="watch-cond-list">${condListHtml}</div>
-    <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span style="color:${condColor};font-weight:${condWeight};">${litCount}/5</span>${condStarHtml}</div>
+    <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span class="watch-progress-count" style="color:${condColor};font-weight:${condWeight};">${litCount}/5</span>${condStarHtml}</div>
     <div class="entry-quality-row">${(()=>{
       // Entry Quality — Trade Desk only. Fixed-height container always rendered.
       const _sp = e.signalPrice || e.price;
