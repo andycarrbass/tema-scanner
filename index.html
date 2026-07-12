@@ -1453,7 +1453,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.9';
+const APP_BUILD = 'V4.6.0';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3933,6 +3933,42 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   const _stateTfTag = (d.tf || _setupTf || 'Setup TF').toUpperCase();
   const _htfTag = (d.htf || (typeof HTF !== 'undefined' && _setupTf ? HTF[_setupTf.toLowerCase()] : null) || 'HTF').toUpperCase();
 
+  // TDAS V4.6.0 — TAKE PROFIT 50% SMA confirmation. Root cause of the
+  // over-sensitive trigger being fixed: a bare UT Bot flip against the
+  // trade (utDir alone, no price/SMA confirmation) was previously
+  // sufficient by itself to fire TAKE PROFIT 50% (see the TP50 branches
+  // below) — reported as too sensitive (LINK 1H long fired TP50 purely
+  // from a 1H UT flip). Per the user's rule, a UT flip only justifies
+  // TP50 once price has also crossed the relevant SETUP-TIMEFRAME SMA:
+  // 1H setup → 135SMA, 4H setup → 80SMA.
+  //
+  // Source: d.trendSMA/d.aboveTrendSMA/d.trendSMALabel are already
+  // computed by calcPair() — see its tf-aware trendSMA block — and are
+  // exactly tf-correct (135SMA for a 1h calcPair call, 80SMA for 4h/1d),
+  // PROVIDED d.tf matches the trade's own setup timeframe (openTrade.tf).
+  // For Trade Desk's _tdSignalRefresh() this always holds — it calls
+  // calcPair(symbol, openTrade.tf) for every active trade specifically.
+  // For the Scanner active-trade placeholder, d.tf can legitimately be
+  // whatever the scanner dropdown is currently set to instead (see the
+  // _stateTfTag comment block above this one) — in that mismatch case the
+  // only independently-maintained, already-computed value available is
+  // d._1hTiming.aboveSma135_1h (already used elsewhere in this function),
+  // which covers the 1H/135SMA case but not 4H/80SMA. No new indicator
+  // pathway was added for the unmatched-4H case; it degrades to an
+  // explicit "unavailable" state below rather than guessing — see the
+  // delivery note for this version for the full reasoning.
+  const _tp50Sma = (function resolveTp50SmaState(){
+    const setupTfLc = (openTrade.tf || '').toLowerCase();
+    const dTfLc = (d.tf || '').toLowerCase();
+    if (setupTfLc && dTfLc && setupTfLc === dTfLc && typeof d.aboveTrendSMA === 'boolean') {
+      return { aboveSma: d.aboveTrendSMA, label: d.trendSMALabel || (setupTfLc==='1h' ? '135 SMA' : '80 SMA'), available: true };
+    }
+    if (setupTfLc === '1h' && oneH && typeof oneH.aboveSma135_1h === 'boolean') {
+      return { aboveSma: oneH.aboveSma135_1h, label: '135 SMA', available: true };
+    }
+    return { aboveSma: null, label: setupTfLc==='4h' ? '80 SMA' : '135 SMA', available: false };
+  })();
+
   let action, headline, detail;
 
   // ── Stop-loss breach override — highest priority risk control. Checked
@@ -3972,11 +4008,28 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     if (utDir === 1 && structureReclaimedForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
       detail = _stateTfTag + ' UT bullish and ' + _stateTfTag + ' closed above the 200MA.';
-    } else if (inProfit && ((temaCrossAgainst && tema92Rising) || utDir === 1)) {
+    } else if (inProfit && temaCrossAgainst && tema92Rising) {
+      // TEMA-based TP50 path — unchanged by V4.6.0, does not require SMA
+      // confirmation (the task's "too sensitive" concern was specifically
+      // about a bare UT flip alone, not this TEMA-cross-based trigger).
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
-      detail = (temaCrossAgainst && tema92Rising)
-        ? _stateTfTag + ' TEMA crossed against short and TEMA 92 is rising.'
-        : _stateTfTag + ' UT flipped bullish against short.';
+      detail = _stateTfTag + ' TEMA crossed against short and TEMA 92 is rising.';
+    } else if (inProfit && utDir === 1 && _tp50Sma.aboveSma === true) {
+      // TDAS V4.6.0 — bare UT-flip TP50 path, now gated on SMA confirmation.
+      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
+      detail = _stateTfTag + ' UT flipped bullish and price reclaimed ' + _tp50Sma.label + '.';
+    } else if (utDir === 1 && _tp50Sma.available && _tp50Sma.aboveSma === false) {
+      // TDAS V4.6.0 — UT flipped against the trade but price has not
+      // confirmed via the SMA filter yet: downgrade to REVIEW rather than
+      // firing TP50 on the UT flip alone.
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = _stateTfTag + ' UT flipped bullish against short, but price remains below ' + _tp50Sma.label + '.';
+    } else if (utDir === 1 && !_tp50Sma.available) {
+      // TDAS V4.6.0 — UT flipped against the trade but the setup-timeframe
+      // SMA isn't available from already-computed data in this render (see
+      // the resolver's header comment) — do not guess; report the gap.
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = _stateTfTag + ' UT flipped bullish against short; ' + _tp50Sma.label + ' confirmation unavailable at the current view.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
@@ -4019,11 +4072,27 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     if (utDir === -1 && structureLostForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
       detail = _stateTfTag + ' UT bearish and ' + _stateTfTag + ' closed below the 200MA.';
-    } else if (inProfit && ((temaCrossAgainst && tema92Falling) || utDir === -1)) {
+    } else if (inProfit && temaCrossAgainst && tema92Falling) {
+      // TEMA-based TP50 path — unchanged by V4.6.0, see mirrored comment
+      // in the short branch above.
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
-      detail = (temaCrossAgainst && tema92Falling)
-        ? _stateTfTag + ' TEMA crossed against long and TEMA 92 is falling.'
-        : _stateTfTag + ' UT flipped bearish against long.';
+      detail = _stateTfTag + ' TEMA crossed against long and TEMA 92 is falling.';
+    } else if (inProfit && utDir === -1 && _tp50Sma.aboveSma === false) {
+      // TDAS V4.6.0 — bare UT-flip TP50 path, now gated on SMA confirmation.
+      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
+      detail = _stateTfTag + ' UT flipped bearish and price lost ' + _tp50Sma.label + '.';
+    } else if (utDir === -1 && _tp50Sma.available && _tp50Sma.aboveSma === true) {
+      // TDAS V4.6.0 — UT flipped against the trade but price has not
+      // confirmed via the SMA filter yet: downgrade to REVIEW rather than
+      // firing TP50 on the UT flip alone.
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = _stateTfTag + ' UT flipped bearish against long, but price remains above ' + _tp50Sma.label + '.';
+    } else if (utDir === -1 && !_tp50Sma.available) {
+      // TDAS V4.6.0 — UT flipped against the trade but the setup-timeframe
+      // SMA isn't available from already-computed data in this render —
+      // do not guess; report the gap (see resolver's header comment).
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = _stateTfTag + ' UT flipped bearish against long; ' + _tp50Sma.label + ' confirmation unavailable at the current view.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
