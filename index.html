@@ -1432,7 +1432,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.6';
+const APP_BUILD = 'V4.5.7';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -7864,7 +7864,29 @@ function renderCard(symbol,d){
   const advisoryHtml = buildEvaluationSummaryHtml(d, _advisory);
 
   el.className=`card ${signal} ${_advStateClass}`.trim();
-  const htfText=htfAlign==='aligned'?`HTF ${htf.toUpperCase()} ✓`:htfAlign==='conflict'?`HTF ${htf.toUpperCase()} ✗`:`HTF ${htf.toUpperCase()} –`;
+  // TDAS V4.5.7 HTF Pill Fix — root cause diagnosis: normal scanner cards'
+  // HTF pill used d.htfAlign directly, which requires htfLong/htfShort to
+  // BOTH agree (HTF SMA200 position AND HTF TEMA cross direction) before
+  // registering 'aligned'/'conflict' — any partial/nuanced state (e.g.
+  // price still above HTF SMA200 but HTF TEMA already crossed bearish —
+  // htfTrendContext's 'mixed-bullish'/'mixed-bearish'/'*-weak' states)
+  // silently collapses to 'neutral', showing a muted dash even when
+  // htfTrendContext (the richer, 3-factor read already computed by
+  // calcPair) shows a genuine conflict. This is the exact same root cause
+  // TDAS V4.4 already fixed for the active-trade placeholder via
+  // getHtfDirectionState() (see that function's header comment) — normal
+  // scanner cards were simply never migrated to it. Reusing that existing
+  // function here byte-for-byte (not touching it, not touching d.htfAlign,
+  // calcPair, scoring, or evaluateSetup's confirms.htf) is the smallest
+  // safe fix: only this one badge's text/colour source changes. Only
+  // applies when there's an active direction (signal long/short) — a
+  // neutral-signal card has no direction to evaluate HTF support against,
+  // so it keeps the existing d.htfAlign-based neutral/insufficient display
+  // unchanged (getHtfDirectionState requires a concrete 'long'/'short').
+  const _htfPillState = (signal==='long'||signal==='short')
+    ? getHtfDirectionState(d, signal)
+    : htfAlign;
+  const htfText=_htfPillState==='aligned'?`HTF ${htf.toUpperCase()} ✓`:_htfPillState==='conflict'?`HTF ${htf.toUpperCase()} ✗`:`HTF ${htf.toUpperCase()} –`;
   const rsiWarn=signal==='long'&&!rsiOk_long?`<div class="warn-strip">⚠ RSI overbought — momentum may be stretched</div>`:signal==='short'&&!rsiOk_short?`<div class="warn-strip">⚠ RSI oversold — momentum may be stretched</div>`:'';
   const volBarColor=volRatio>=1.5?'var(--green)':volRatio>=0.8?'var(--amber)':'var(--red)';
   const volBarW=Math.min(volRatio*50,100);
@@ -8069,7 +8091,7 @@ function renderCard(symbol,d){
     <div class="tdas-card-front">
     <div class="cz cz-top card-top">
       <div class="pair">${LABELS[symbol]}${highConviction?' \u2b50':''}</div>
-      <span class="htf-badge ${htfAlign}">${htfText}</span>
+      <span class="htf-badge ${_htfPillState}">${htfText}</span>
       <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
     </div>
     <div class="cz" style="padding-top:8px;padding-bottom:8px;">
@@ -11358,7 +11380,7 @@ async function runScan(auto){
   if(!auto){
     buildGrid();
     const _statusEl0 = document.getElementById('status');
-    _statusEl0.textContent=`Fetching ${tf.toUpperCase()} + ${htf.toUpperCase()} data…`;
+    _statusEl0.textContent=`FETCHING SIGNALS…`;
     _statusEl0.className='scanner-result-neutral';
     document.getElementById('summary').innerHTML='';
   }
