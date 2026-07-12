@@ -28,6 +28,10 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 .header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px;}
 h1{font-size:22px;font-weight:500;letter-spacing:-0.3px;}
 .subtitle{font-size:13px;color:var(--text3);margin-top:3px;}
+/* TDAS Phase 2A — small muted build/version badge beside the title. Pure
+   UI label, no app logic. Sits in a flex-wrap row with h1 so it drops
+   gracefully on narrow mobile widths rather than overflowing. */
+.build-badge{font-size:10px;color:var(--text3);background:var(--bg3);border:1px solid var(--border2);border-radius:99px;padding:2px 8px;font-weight:500;letter-spacing:0.3px;white-space:nowrap;}
 .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 select,button{font-size:13px;padding:7px 13px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text);cursor:pointer;font-family:inherit;}
 select{width:auto;min-width:0;}
@@ -105,6 +109,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .tdas-advisory-block.tdas-state-watch{border-color:rgba(186,117,23,0.35);background:rgba(186,117,23,0.07);}
 .tdas-advisory-block.tdas-state-consider{border-color:rgba(29,158,117,0.3);background:rgba(29,158,117,0.06);}
 .tdas-advisory-block.tdas-state-high{border-color:rgba(212,168,57,0.4);background:rgba(212,168,57,0.08);}
+/* TDAS Phase 2A — muted fallback state for the Evaluation block when there
+   is no active scanner-mode advisory (neutral signal / no bias). Same box
+   language as the other states, deliberately unsaturated/grey so it never
+   competes visually with an actionable CONSIDER/WATCH/AVOID card. */
+.tdas-advisory-block.tdas-state-nosetup{border-color:var(--border2);background:var(--bg3);}
+.tdas-state-nosetup .tdas-advisory-headline{color:var(--text3);}
 
 .tdas-advisory-headline{
   font-size:15px;font-weight:700;letter-spacing:0.2px;margin-bottom:3px;
@@ -127,6 +137,28 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .tdas-state-consider .tdas-advisory-headline{color:var(--green-text);}
 .tdas-state-high .tdas-advisory-headline{color:#D4A839;}
 .tdas-advisory-detail{font-size:12px;color:var(--text2);line-height:1.4;}
+
+/* ── TDAS Phase 2A — Technical Summary block ("what does the chart say")
+   Visually distinct from but subordinate to the Evaluation block above:
+   smaller label, tighter padding, no min-height floor. Colour reflects
+   directional majority only — same green/red/amber/grey vocabulary used
+   elsewhere in the app, not a new palette. */
+.tdas-techsummary-block{
+  border-radius:var(--radius-sm);
+  padding:7px 10px;
+  background:var(--bg3);
+  border:1px solid var(--border);
+}
+.tdas-techsummary-label{font-size:10.5px;font-weight:700;letter-spacing:0.4px;text-transform:uppercase;margin-bottom:2px;}
+.tdas-techsummary-detail{font-size:11px;color:var(--text2);line-height:1.4;}
+.tdas-techsummary-block.tech-bullish .tdas-techsummary-label{color:var(--green-text);}
+.tdas-techsummary-block.tech-bearish .tdas-techsummary-label{color:var(--red-text);}
+.tdas-techsummary-block.tech-mixed .tdas-techsummary-label,
+.tdas-techsummary-block.tech-conflicted .tdas-techsummary-label{color:var(--amber-text);}
+.tdas-techsummary-block.tech-weak .tdas-techsummary-label{color:var(--text3);}
+
+/* ── TDAS Phase 2A — RSI / 200MA compact filter line ─────────────────── */
+.tdas-filter-line{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;font-weight:600;padding:0 1px;}
 
 /* ── TDAS Scanner advisory block height consistency ─────────────────────
    Scoped to non-active scanner/watch cards only, via :not(.tdas-card-active).
@@ -1025,7 +1057,10 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 <div class="header">
   <div>
-    <h1>TDAS</h1>
+    <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
+      <h1>TDAS</h1>
+      <span id="appBuildBadge" class="build-badge"></span>
+    </div>
     <div style="font-size:11px;color:var(--text3);margin-top:1px;letter-spacing:0.2px;">Trade Decision Augmentation System</div>
   </div>
   <div class="controls">
@@ -1276,6 +1311,16 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 <script>
 const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT','XRPUSDT','ADAUSDT'];
+
+// ── Build/version badge ──────────────────────────────────────────────────
+// TDAS Phase 2A: simple constant, update this string for each future build.
+// Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
+// the header markup) — UI-only, no effect on app logic.
+const APP_BUILD = 'V4.5.1';
+(function(){
+  const _badgeEl = document.getElementById('appBuildBadge');
+  if(_badgeEl) _badgeEl.textContent = APP_BUILD;
+})();
 
 // ── Storage layer ─────────────────────────────────────────────────────────
 // Centralised keys — change here, updates everywhere
@@ -7395,6 +7440,214 @@ function isSameLoggedSetup(d, entry){
   return true;
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS EVALUATION ENGINE — PHASE 2A                                      ║
+// ║  Scanner front-card decision-focused blocks                             ║
+// ║                                                                          ║
+// ║  Four small pure render helpers, called only from renderCard() for      ║
+// ║  non-active scanner cards. None of these compute new signal/scoring     ║
+// ║  logic — they format d.regime / d.evaluation / d.states, which were     ║
+// ║  already being computed by calcPair() and already consumed by the       ║
+// ║  Full Analysis panel (openAnalysisPanel). See the Phase 1 audit doc.    ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── Shared advisory state-class helper ──────────────────────────────────
+// Single source of truth for the CSS state class derived from a scanner-
+// mode advisory action. Used both for the card's left-rail colour
+// (el.className in renderCard) and the Evaluation block box below —
+// previously duplicated inline in renderCard as a local ternary; extracted
+// here so both call sites can never disagree. Behaviour unchanged.
+function _advisoryStateClass(advisory){
+  if(!advisory) return '';
+  return advisory.action==='AVOID' ? 'tdas-state-avoid'
+    : advisory.action==='WATCH' ? 'tdas-state-watch'
+    : (advisory.action==='CONSIDER_LONG'||advisory.action==='CONSIDER_SHORT') ? 'tdas-state-consider'
+    : (advisory.action==='HIGH_CONVICTION_LONG'||advisory.action==='HIGH_CONVICTION_SHORT') ? 'tdas-state-high'
+    : '';
+}
+
+// ── Evaluation block — "what should I do with this information?" ───────
+// Reuses the existing/approved .tdas-advisory-block visual language
+// unchanged (same classes, same CSS). When there is no scanner-mode
+// advisory (neutral signal / no active bias — buildAdvisory returns null),
+// falls back to a muted NO SETUP box in the same structure, so the front
+// card always shows a decision block in the same place rather than an
+// empty gap. Does not call buildAdvisory itself — takes the already-
+// computed advisory object so there is exactly one buildAdvisory() call
+// per card render (in renderCard), matching the existing pattern.
+function buildEvaluationSummaryHtml(d, advisory){
+  const stateClass = _advisoryStateClass(advisory);
+  if(advisory){
+    return '<div class="tdas-advisory-block '+stateClass+'">'
+      + '<div class="tdas-advisory-headline">'+advisory.headline+'</div>'
+      + (advisory.detail ? '<div class="tdas-advisory-detail">'+advisory.detail+'</div>' : '')
+      + '</div>';
+  }
+  return '<div class="tdas-advisory-block tdas-state-nosetup">'
+    + '<div class="tdas-advisory-headline">NO SETUP</div>'
+    + '<div class="tdas-advisory-detail">No active signal on this timeframe.</div>'
+    + '</div>';
+}
+
+// ── small text-join helper for Technical Summary sentences ──────────────
+function _joinNames(names){
+  if(!names || !names.length) return '';
+  if(names.length===1) return names[0];
+  if(names.length===2) return names[0]+' and '+names[1];
+  return names.slice(0,-1).join(', ')+' and '+names[names.length-1];
+}
+
+// ── Technical Summary block — "what does the chart say?" ────────────────
+// Deliberately independent of any active trade signal/bias — reads
+// d.regime (Phase 1, always computed regardless of signal) plus raw
+// direction fields from d.states only. Does NOT read d.evaluation.confirms
+// (those are signal-bias-relative and would be meaningless/misleading on a
+// neutral-signal card). Does not call or duplicate classifyRegime/
+// evaluateSetup — pure formatting over already-computed fields.
+function buildTechnicalSummaryHtml(d){
+  const reg = (d && d.regime) || {direction:'neutral', label:'Neutral / Insufficient Data'};
+  const st  = (d && d.states) || {};
+  const votes = [];
+  votes.push({name:'Regime', dir: reg.direction});
+  if(typeof st.crossLong==='boolean' || typeof st.crossShort==='boolean'){
+    votes.push({name:'TEMA', dir: st.crossLong ? 'bullish' : (st.crossShort ? 'bearish' : 'neutral')});
+  }
+  if(st.utBot && st.utBot.direction){
+    votes.push({name:'UT Bot', dir: st.utBot.direction===1?'bullish':st.utBot.direction===-1?'bearish':'neutral'});
+  }
+  if(st.htfTrendContext && st.htfTrendContext.key){
+    const k = st.htfTrendContext.key;
+    votes.push({name:'HTF', dir: k.indexOf('bearish')!==-1?'bearish':k.indexOf('bullish')!==-1?'bullish':'neutral'});
+  }
+
+  const bullNames = votes.filter(v=>v.dir==='bullish').map(v=>v.name);
+  const bearNames = votes.filter(v=>v.dir==='bearish').map(v=>v.name);
+  const bullCount = bullNames.length, bearCount = bearNames.length;
+
+  let label, cls, majority;
+  if(bullCount>0 && bearCount>0){
+    if(Math.abs(bullCount-bearCount)<=1){ label='CONFLICTED TECHNICALS'; cls='tech-conflicted'; majority=null; }
+    else { label='MIXED TECHNICALS'; cls='tech-mixed'; majority = bullCount>bearCount ? 'bullish' : 'bearish'; }
+  } else if(bullCount+bearCount < 2){
+    label='WEAK TECHNICALS'; cls='tech-weak'; majority=null;
+  } else if(bullCount>bearCount){
+    label='BULLISH TECHNICALS'; cls='tech-bullish'; majority='bullish';
+  } else {
+    label='BEARISH TECHNICALS'; cls='tech-bearish'; majority='bearish';
+  }
+
+  const adxRanging = st.adxTrending===false;
+  let detail;
+  if(majority){
+    const supportNames = votes.filter(v=>v.dir===majority).map(v=>v.name);
+    const opposeNames  = votes.filter(v=>v.dir!==majority && v.dir!=='neutral').map(v=>v.name+' remains '+v.dir);
+    const dirWord = majority==='bullish' ? 'upside' : 'downside';
+    detail = (supportNames.length ? _joinNames(supportNames)+' support '+dirWord : 'Limited evidence for '+dirWord);
+    if(opposeNames.length) detail += ', but '+_joinNames(opposeNames);
+    detail += (adxRanging ? ' and ADX is ranging.' : '.');
+  } else if(cls==='tech-conflicted'){
+    detail = 'Indicators are split between bullish and bearish \u2014 no clear directional edge.'
+      + (adxRanging ? ' ADX is ranging.' : '');
+  } else {
+    detail = 'Not enough directional confluence yet \u2014 regime and indicators are still forming.'
+      + (adxRanging ? ' ADX is ranging.' : '');
+  }
+
+  return '<div class="tdas-techsummary-block '+cls+'">'
+    + '<div class="tdas-techsummary-label">'+label+'</div>'
+    + '<div class="tdas-techsummary-detail">'+detail+'</div>'
+    + '</div>';
+}
+
+// ── Decision dots — "why" ─────────────────────────────────────────────
+// ● Regime  ● HTF  ● TEMA  ● UT  ● ADX
+// Reuses the existing .dot / .dot-row / .dot-item CSS (previously defined
+// but unused anywhere in the markup). Reads d.evaluation.confirms for the
+// true/false core signal, plus raw d.states fields only to distinguish
+// "conflicting" (red) from "unavailable/insufficient data" (grey) from
+// "caution/mixed" (amber) — confirms itself is unchanged/untouched.
+// Dots are grey/na across the board whenever there is no active trade bias
+// (neutral signal), since confirms are meaningless without one.
+function buildDecisionDotsHtml(d){
+  const ev = d && d.evaluation;
+  const st = (d && d.states) || {};
+  const hasBias = !!(ev && ev.tradeBias && ev.tradeBias!=='NEUTRAL' && ev.confirms);
+
+  function item(cls,label){
+    return '<div class="dot-item"><span class="dot '+cls+'"></span><span class="dot-item-label">'+label+'</span></div>';
+  }
+
+  let regimeCls='na', htfCls='na', temaCls='na', utCls='na', adxCls='na';
+
+  if(hasBias){
+    const reg = d.regime || {};
+    regimeCls = reg.key==='NEUTRAL' ? 'na' : (ev.confirms.regime ? 'ok' : 'no');
+
+    const htfAlignSt = st.htfAlign;
+    htfCls = htfAlignSt==='aligned' ? 'ok'
+      : htfAlignSt==='conflict' ? 'no'
+      : htfAlignSt==='neutral' ? 'warn'
+      : 'na';
+
+    temaCls = ev.confirms.tema ? 'ok' : 'warn';
+
+    const utDir = st.utBot && st.utBot.direction;
+    utCls = (!utDir) ? 'na' : (ev.confirms.utBot ? 'ok' : 'no');
+
+    adxCls = (st.adx==null) ? 'na' : (ev.confirms.adx ? 'ok' : 'warn');
+  }
+
+  return '<div class="dot-row">'
+    + item(regimeCls,'Regime')
+    + item(htfCls,'HTF')
+    + item(temaCls,'TEMA')
+    + item(utCls,'UT')
+    + item(adxCls,'ADX')
+    + '</div>';
+}
+
+// ── RSI / 200MA compact filter line — key user trade filters ────────────
+// Simple, non-overengineered thresholds per spec: near/above/below 50 for
+// RSI directional read, standard 70/30 extension caution. Reads d.states
+// only — no new indicator calculation. tfLabel is the same tf_val already
+// resolved in renderCard (d.tf with dropdown/'4h' fallback).
+function buildFilterLineHtml(d, tfLabel){
+  const st = (d && d.states) || {};
+  const rsi = (st.rsi!=null && isFinite(st.rsi)) ? st.rsi : null;
+  const aboveMA = (typeof st.aboveMA==='boolean') ? st.aboveMA : null;
+  const signal = d && d.signal;
+  const tf = (tfLabel||'').toUpperCase();
+
+  let rsiColor, rsiText;
+  if(rsi==null){
+    rsiColor='var(--text3)'; rsiText='RSI: \u2014';
+  } else {
+    let tone;
+    if(signal==='long')       tone = (rsi>70) ? 'amber' : (rsi>=50 ? 'green' : 'amber');
+    else if(signal==='short') tone = (rsi<30) ? 'amber' : (rsi<=50 ? 'green' : 'amber');
+    else                      tone = 'grey';
+    rsiColor = tone==='green' ? 'var(--green-text)' : tone==='amber' ? 'var(--amber-text)' : 'var(--text3)';
+    rsiText = 'RSI: '+rsi.toFixed(0)+(tf?' '+tf:'');
+  }
+
+  let maColor, maText;
+  if(aboveMA==null){
+    maColor='var(--text3)'; maText='200MA: \u2014';
+  } else {
+    let tone;
+    if(signal==='long')       tone = aboveMA ? 'green' : 'red';
+    else if(signal==='short') tone = !aboveMA ? 'green' : 'red';
+    else                      tone = 'grey';
+    maColor = tone==='green' ? 'var(--green-text)' : tone==='red' ? 'var(--red-text)' : 'var(--text3)';
+    maText = '200MA: '+(aboveMA?'ABOVE':'BELOW')+(tf?' '+tf:'');
+  }
+
+  return '<div class="tdas-filter-line">'
+    + '<span style="color:'+rsiColor+';">'+rsiText+'</span>'
+    + '<span style="color:'+maColor+';">'+maText+'</span>'
+    + '</div>';
+}
+
 function renderCard(symbol,d){
   const el=document.getElementById('c-'+symbol);
   if(!el)return;
@@ -7422,6 +7675,17 @@ function renderCard(symbol,d){
   if(typeof d.price==='undefined'||typeof d.signal==='undefined'){
     throw new Error('Incomplete data from calcPair');
   }
+  // TDAS Phase 2A — late-binding fallback: some cached currentScanData
+  // entries may predate Phase 1/1.5 evaluation-engine attachment. Identical
+  // pattern to openAnalysisPanel's existing fallback (line ~7853). Ensures
+  // d.regime/d.evaluation exist before the new front-card blocks below read
+  // them. Does not alter classifyRegime/evaluateSetup themselves.
+  if(!d.regime && typeof classifyRegime==='function' && d.states){
+    d.regime = classifyRegime(d.states);
+  }
+  if(!d.evaluation && typeof evaluateSetup==='function' && d.states && d.regime){
+    d.evaluation = evaluateSetup(d);
+  }
   const{price,t17,t92,ma200,aboveMA,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,score,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
@@ -7448,18 +7712,12 @@ function renderCard(symbol,d){
   let _advisory = null;
   try{ _advisory = (typeof buildAdvisory==='function') ? buildAdvisory(d, {openTrade:null}) : null; }
   catch(e){ console.warn('[renderCard] buildAdvisory failed for',symbol,e); }
-  const _advStateClass = !_advisory ? ''
-    : _advisory.action==='AVOID' ? 'tdas-state-avoid'
-    : _advisory.action==='WATCH' ? 'tdas-state-watch'
-    : (_advisory.action==='CONSIDER_LONG'||_advisory.action==='CONSIDER_SHORT') ? 'tdas-state-consider'
-    : (_advisory.action==='HIGH_CONVICTION_LONG'||_advisory.action==='HIGH_CONVICTION_SHORT') ? 'tdas-state-high'
-    : '';
-  const advisoryHtml = _advisory
-    ? '<div class="tdas-advisory-block '+_advStateClass+'">'
-      + '<div class="tdas-advisory-headline">'+_advisory.headline+'</div>'
-      + (_advisory.detail ? '<div class="tdas-advisory-detail">'+_advisory.detail+'</div>' : '')
-      + '</div>'
-    : '';
+  // TDAS Phase 2A — _advStateClass/advisoryHtml now route through the shared
+  // _advisoryStateClass()/buildEvaluationSummaryHtml() helpers (defined above
+  // renderCard) so the card's left-rail colour and the Evaluation block box
+  // always agree — single source of truth, not two separate computations.
+  const _advStateClass = _advisoryStateClass(_advisory);
+  const advisoryHtml = buildEvaluationSummaryHtml(d, _advisory);
 
   el.className=`card ${signal} ${_advStateClass}`.trim();
   const htfText=htfAlign==='aligned'?`HTF ${htf.toUpperCase()} ✓`:htfAlign==='conflict'?`HTF ${htf.toUpperCase()} ✗`:`HTF ${htf.toUpperCase()} –`;
@@ -7574,20 +7832,12 @@ function renderCard(symbol,d){
   }
 
   // ── Pre-compute all variable HTML before the template literal ────────────
-  const scorePct = score||0;
-  const convClass = scorePct>=80?'strong':scorePct>=65?'moderate':'weak';
-  const convLabel = scorePct>=80?'Strong':scorePct>=65?'Moderate':'Weak';
-
-  // ── Setup status — read from d.states (TDAS Phase 0) ───────────────────
-  // Previously derived inline — now a single read from the compute-once state object.
-  // Suppressed for neutral signal and open trades (same as before).
-  const _st = d.states || {};
-  let setupStatus    = (signal==='neutral' || isOpenTrade) ? null : (_st.setupStatus    || 'Early');
-  let setupStatusClass=(signal==='neutral' || isOpenTrade) ? null : (_st.setupStatusClass|| 'setup-early');
-  const setupPillHtml = setupStatus
-    ? '<span class="setup-pill '+setupStatusClass+'">'+setupStatus+'</span>'
-    : '';
-  const isActionableSetup = !!(d.states && d.states.isActionableSetup) && !isOpenTrade && signal!=='neutral';
+  // TDAS Phase 2A: the old scorePct/convClass/convHtml "signal strength" box
+  // and setupPillHtml (Early/Mature/Late) are retired from the front card —
+  // superseded by the Evaluation block + dots row below. Neither local was
+  // referenced outside this block, so removal is self-contained; the
+  // underlying d.states.setupStatus data is untouched and still available
+  // to Full Analysis / future use.
 
   // ── Signal pill — small, inline with price ────────────────────────────
   const pillClass = isOpenTrade
@@ -7601,63 +7851,22 @@ function renderCard(symbol,d){
     : signal==='short' ? '\u25bc SHORT SIGNAL'
     : 'No signal';
 
-  // ── Conviction row ─────────────────────────────────────────────────────
-  let convHtml;
-  if(isOpenTrade){
-    convHtml = '<div class="conv-row">'
-      +'<span class="conv-prefix">Entry strength</span>'
-      +'<div class="conv-badge '+convClass+'">'
-      +'<span class="conv-pct">'+scorePct+'%</span>'
-      +'<span class="conv-sep">\u2022</span>'
-      +'<span class="conv-label">'+convLabel+'</span>'
-      +'</div></div>';
-  } else if(signal!=='neutral'){
-    convHtml = '<div class="conv-row'+(isActionableSetup?' conv-row-actionable':'')+'">'
-      +'<span class="conv-prefix">Signal strength</span>'
-      +'<div class="conv-badge '+convClass+'">'
-      +'<span class="conv-pct">'+scorePct+'%</span>'
-      +'<span class="conv-sep">•</span>'
-      +'<span class="conv-label">'+convLabel+'</span>'
-      +'</div>'
-      +setupPillHtml
-      +'</div>';
-  } else {
-    convHtml = '<div class="conv-row"><div class="conv-badge weak">'
-      +'<span class="conv-label">No active signal</span></div></div>';
-  }
+  // ── TDAS Phase 2A — new decision-focused blocks ─────────────────────────
+  // Technical Summary ("what does the chart say"), Evaluation (built above
+  // as advisoryHtml/_advStateClass), Decision dots ("why"), and the RSI/
+  // 200MA compact filter line. Replaces the old signal-strength box, key
+  // warning line, and Entry Signals rows retired above/below.
+  let technicalSummaryHtml = '';
+  try{ technicalSummaryHtml = buildTechnicalSummaryHtml(d); }
+  catch(e){ console.warn('[renderCard] buildTechnicalSummaryHtml failed for',symbol,e); }
 
-  // ── Key warning ────────────────────────────────────────────────────────
-  const utFlipAgainst = utBotFresh && (
-    (signal==='long' && _utBot.direction===-1) ||
-    (signal==='short' && _utBot.direction===1)
-  );
-  const utFlipConfirm = utBotFresh && (
-    (signal==='long' && _utBot.direction===1) ||
-    (signal==='short' && _utBot.direction===-1)
-  );
-  const keyWarnText = utFlipAgainst ? 'UT Bot against signal \u2014 possible reversal'
-    : (signal==='long' && _rsi!==null && _rsi>70) ? 'RSI overbought \u2014 momentum stretched'
-    : (signal==='short' && _rsi!==null && _rsi<30) ? 'RSI oversold \u2014 momentum stretched'
-    : (signal!=='neutral' && !adxTrending) ? 'ADX '+_adx+' \u2014 ranging, reduced reliability'
-    : utFlipConfirm ? 'UT Bot confirmed '+signal+' \u26a1'
-    : '';
-  const keyWarnIsAlert = utFlipConfirm;
-  const warnHtml = keyWarnText
-    ? '<div class="card-warn-row'+(keyWarnIsAlert?' alert':'')+'" title="'+keyWarnText+'">'
-        +(keyWarnIsAlert?'\u26a1':'\u26a0')+' '+keyWarnText+'</div>'
-    : '';
+  let dotsHtml = '';
+  try{ dotsHtml = buildDecisionDotsHtml(d); }
+  catch(e){ console.warn('[renderCard] buildDecisionDotsHtml failed for',symbol,e); }
 
-  // ── Entry signals section (scan/watch cards) ───────────────────────────
-  let entrySignalsHtml = '';
-  if(!isOpenTrade && signal!=='neutral'){
-    try{
-      entrySignalsHtml = buildEntrySignalsHtml(
-        signal, htfAlign, htf||'HTF', tf_val||'4H', _utBot,
-        crossLong, temaWidening, _adx, adxStrong, adxTrending,
-        utLongConfirm, utShortConfirm, d.htfTrendContext
-      );
-    }catch(e){ console.warn('[renderCard] buildEntrySignalsHtml failed:',e); }
-  }
+  let filterLineHtml = '';
+  try{ filterLineHtml = buildFilterLineHtml(d, tf_val); }
+  catch(e){ console.warn('[renderCard] buildFilterLineHtml failed for',symbol,e); }
 
   // ── Levels box ─────────────────────────────────────────────────────────
   let levelsHtml = '';
@@ -7735,13 +7944,11 @@ function renderCard(symbol,d){
         <span class="sig-pill ${pillClass}${advisoryHtml?' pill-demoted':''}">${pillText}</span>
       </div>
     </div>
-    ${advisoryHtml?'<div class="cz" style="padding-top:0;padding-bottom:6px;">'+advisoryHtml+'</div>':''}
-    <div class="cz-conviction">${convHtml}</div>
-    <div class="cz-warn-slot ${warnHtml?'':'empty'}">${warnHtml}</div>
+    ${technicalSummaryHtml?'<div class="cz" style="padding-top:0;padding-bottom:4px;">'+technicalSummaryHtml+'</div>':''}
+    <div class="cz" style="padding-top:0;padding-bottom:6px;">${advisoryHtml}</div>
+    ${dotsHtml?'<div class="cz" style="padding-top:0;padding-bottom:4px;">'+dotsHtml+'</div>':''}
+    ${filterLineHtml?'<div class="cz" style="padding-top:0;padding-bottom:6px;">'+filterLineHtml+'</div>':''}
     ${levelsHtml?'<div class="cz-levels">'+levelsHtml+'</div>':''}
-    <div class="cz-entry-exit">
-      ${isOpenTrade ? tradeMgmtHtml : entrySignalsHtml}
-    </div>
     <div class="cz-spacer"></div>
     <div class="cz-actions">${tradeReadyBtnHtml}${actionZone}${analysisBtn}</div>
     </div>
