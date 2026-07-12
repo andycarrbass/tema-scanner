@@ -209,7 +209,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    the active-trade scanner placeholder — buildActiveScannerPlaceholderHtml
    — and must not change). Presentation only: session text/colour and
    countdown minutes/seconds/urgency are the exact same values as before. */
-.session-candle-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.session-candle-row{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;}
 .session-pill,.candle-pill{
   display:inline-flex;align-items:center;
   font-size:11px;font-weight:600;
@@ -1383,7 +1383,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.2';
+const APP_BUILD = 'V4.5.3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
