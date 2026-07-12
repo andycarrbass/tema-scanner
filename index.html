@@ -1432,7 +1432,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.7';
+const APP_BUILD = 'V4.5.8';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -7703,10 +7703,23 @@ function buildDecisionDotsHtml(d){
     const reg = d.regime || {};
     regimeCls = reg.key==='NEUTRAL' ? 'na' : (ev.confirms.regime ? 'ok' : 'no');
 
-    const htfAlignSt = st.htfAlign;
-    htfCls = htfAlignSt==='aligned' ? 'ok'
-      : htfAlignSt==='conflict' ? 'no'
-      : htfAlignSt==='neutral' ? 'warn'
+    // TDAS V4.5.8 — HTF dot now reads the same genuinely-HTF-derived
+    // getHtfDirectionState(d, signal) the top-of-card HTF pill already
+    // uses (V4.5.7 fix), instead of the older d.states.htfAlign read —
+    // so the dot can no longer disagree with the pill above it (the
+    // exact inconsistency reported: pill showed HTF ✓ green while this
+    // dot still showed amber for the same card). d.states.htfAlign
+    // itself, evaluateSetup's confirms.htf, and the top pill's own code
+    // are all untouched — this only changes which value this one dot
+    // reads. hasBias already guarantees d.signal is 'long'/'short' here
+    // (ev.tradeBias is derived from it), so no extra neutral-signal
+    // branching is needed inside this block.
+    const _htfDotState = (typeof getHtfDirectionState==='function')
+      ? getHtfDirectionState(d, d.signal)
+      : st.htfAlign;
+    htfCls = _htfDotState==='aligned' ? 'ok'
+      : _htfDotState==='conflict' ? 'no'
+      : _htfDotState==='neutral' ? 'warn'
       : 'na';
 
     temaCls = ev.confirms.tema ? 'ok' : 'warn';
