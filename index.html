@@ -55,6 +55,22 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .sum-card span.g{color:var(--green-text);}
 .sum-card span.r{color:var(--red-text);}
 
+/* TDAS V4.5.4 — shared summary-tiles + freshness-status row layout.
+   Used by both Scanner (#summary + #scannerStatusBar) and Trade Desk
+   (#trade-desk-stats + #tdLastSync) — same wrapper class, same behaviour,
+   no duplicated layout rules between the two pages. Tiles stay left,
+   status block floats right on the same line where width allows; wraps
+   to its own line below on narrow widths via flex-wrap. Purely a layout
+   container — does not touch either status-generator function, which
+   still just sets .innerHTML/.style.display on the same element IDs as
+   before, now relocated in the DOM rather than recreated. */
+.summary-status-row{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:18px;}
+.tdas-status-block{font-size:11px;color:var(--text3);text-align:right;flex-shrink:0;line-height:1.5;}
+@media(max-width:768px){
+  .summary-status-row{margin-bottom:14px;}
+  .tdas-status-block{text-align:left;width:100%;}
+}
+
 .status-row{font-size:14px;color:var(--text2);margin-bottom:14px;min-height:18px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;}
 
 /* Grid */
@@ -1154,9 +1170,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 <!-- Scanner tab -->
 <div id="tab-scanner" class="tab-panel active">
-  <div class="summary" id="summary"></div>
+  <div class="summary-status-row">
+    <div class="summary" id="summary" style="margin-bottom:0;"></div>
+    <div id="scannerStatusBar" class="tdas-status-block" style="display:none;"></div>
+  </div>
   <div class="status-row"><span id="status"></span></div>
-  <div id="scannerStatusBar" style="display:none;font-size:11px;color:var(--text3);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);"></div>
   <div class="grid" id="grid"></div>
 </div>
 
@@ -1186,8 +1204,10 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <button onclick="exportTrades()" style="font-size:12px;padding:6px 11px;">&#8595; Export</button>
     </div>
   </div>
-  <div id="trade-desk-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;"></div>
-  <div id="tdLastSync" style="display:none;font-size:11px;color:var(--text3);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);"></div>
+  <div class="summary-status-row">
+    <div id="trade-desk-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0;"></div>
+    <div id="tdLastSync" class="tdas-status-block" style="display:none;"></div>
+  </div>
   <div class="trade-desk-grid" id="tradeDeskGrid">
     <!-- Watch cards column -->
     <div class="trade-col" id="watchCol">
@@ -1383,7 +1403,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.5.3';
+const APP_BUILD = 'V4.5.4';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
