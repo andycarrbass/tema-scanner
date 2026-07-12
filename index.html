@@ -230,6 +230,23 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .tdas-techsummary-block.tech-conflicted .tdas-techsummary-label{color:var(--amber-text);}
 .tdas-techsummary-block.tech-weak{border-color:var(--border2);background:var(--bg3);}
 .tdas-techsummary-block.tech-weak .tdas-techsummary-label{color:var(--text3);}
+/* TDAS V4.6.4 — quality-based colour classes (support/caution/avoid),
+   used instead of the direction-based tech-bullish/tech-bearish/
+   tech-mixed/tech-conflicted classes above whenever the card has an
+   active LONG/SHORT signal to grade against (see buildTechnicalSummaryHtml
+   for the selection logic). Same rgba values as their direction-based
+   counterparts — this isn't a new palette, just a differently-named
+   mapping so "green" can mean "supports this trade" rather than
+   "bullish", and vice versa. The tech-bullish/tech-bearish classes above
+   remain reachable (neutral-signal fallback); tech-mixed/tech-conflicted
+   are no longer used by this function as of V4.6.4 but are left in place
+   rather than removed. */
+.tdas-techsummary-block.tech-support{border-color:rgba(29,158,117,0.3);background:rgba(29,158,117,0.06);}
+.tdas-techsummary-block.tech-support .tdas-techsummary-label{color:var(--green-text);}
+.tdas-techsummary-block.tech-avoid{border-color:rgba(192,67,42,0.35);background:rgba(192,67,42,0.07);}
+.tdas-techsummary-block.tech-avoid .tdas-techsummary-label{color:var(--red-text);}
+.tdas-techsummary-block.tech-caution{border-color:rgba(186,117,23,0.35);background:rgba(186,117,23,0.07);}
+.tdas-techsummary-block.tech-caution .tdas-techsummary-label{color:var(--amber-text);}
 
 /* Height consistency — mirrors the existing .tdas-advisory-block rule
    immediately below, same treatment, so the two blocks share a footprint. */
@@ -1492,7 +1509,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.6.3';
+const APP_BUILD = 'V4.6.4';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -7809,7 +7826,44 @@ function buildTechnicalSummaryHtml(d){
       + (adxRanging ? ' ADX is ranging.' : '');
   }
 
-  return '<div class="tdas-techsummary-block '+cls+'">'
+  // TDAS V4.6.4 — colour semantics fix. `cls`/`label` above are a pure
+  // directional read (bullish/bearish/mixed/conflicted/weak) and are left
+  // completely untouched — the label text still says BEARISH TECHNICALS
+  // etc. exactly as before. Root cause of the reported issue: the block's
+  // COLOUR was reusing that same directional class directly, so a clean
+  // BEARISH TECHNICALS read was always red regardless of whether the card
+  // was a LONG or SHORT signal — even when bearish technicals are exactly
+  // what a SHORT SIGNAL card wants to see. Colour should represent
+  // confirmation quality/suitability for the proposed trade direction
+  // (d.signal), not raw bullish/bearish direction. Also fixes a second,
+  // previously-unnoticed inconsistency found during this investigation:
+  // CONFLICTED TECHNICALS was sharing the same amber rule as MIXED
+  // TECHNICALS (both 'tech-mixed, tech-conflicted' in the old CSS) rather
+  // than being red — conflicted is now always red, independent of signal.
+  const _signalDir = d && d.signal==='long' ? 'bullish' : d && d.signal==='short' ? 'bearish' : null;
+  let colorCls;
+  if(cls==='tech-conflicted'){
+    colorCls = 'tech-avoid'; // always red — indicators disagree with each other, independent of any trade direction
+  } else if(cls==='tech-mixed'){
+    colorCls = 'tech-caution'; // always amber, independent of any trade direction
+  } else if(cls==='tech-weak'){
+    colorCls = 'tech-weak'; // unchanged — already muted/neutral, no direction involved
+  } else if(_signalDir){
+    // cls is 'tech-bullish' or 'tech-bearish' here — by construction (see
+    // the if/else chain above) this only fires when votes exist in ONE
+    // direction only, i.e. a clean, well-supported read. Green if that
+    // direction matches the card's proposed signal; red if it opposes it.
+    colorCls = (majority === _signalDir) ? 'tech-support' : 'tech-avoid';
+  } else {
+    // Neutral-signal card — no proposed trade direction to compare
+    // against, so there's nothing to grade "support" relative to. Falls
+    // back to the original direction-based colour class, unchanged —
+    // this case is outside the reported issue's scope (which is
+    // specifically about LONG/SHORT SIGNAL cards).
+    colorCls = cls;
+  }
+
+  return '<div class="tdas-techsummary-block '+colorCls+'">'
     + '<div class="tdas-techsummary-label">'+label+'</div>'
     + '<div class="tdas-techsummary-detail">'+detail+'</div>'
     + '</div>';
