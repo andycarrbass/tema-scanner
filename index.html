@@ -1026,6 +1026,24 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .outcome-modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius);padding:20px 22px;width:100%;max-width:400px;}
 .outcome-modal h4{font-size:14px;font-weight:500;margin-bottom:4px;}
 .outcome-modal .sub{font-size:11px;color:var(--text3);margin-bottom:14px;}
+/* TDAS V4.7.1 — reusable compact confirmation modal (Task 2). Same shell
+   values as .outcome-modal-overlay/.outcome-modal/h4/.sub directly above
+   (dark dimmed backdrop, bg2 panel, same border/radius/padding/typography/
+   spacing) — copied, not shared, so this can never affect the Close trade
+   modal above. Slightly narrower (360px vs 400px) per the "compact
+   version" allowance; z-index one above the Close trade modal's so this
+   can never visually clash if somehow triggered concurrently. Footer
+   reuses .out-modal-btns/.btn-cancel/.btn-save directly — no new button
+   CSS needed; .btn-save is already the app's green primary-action style,
+   which is exactly what both the Trade Ready and SL-to-BE modals want. */
+.tdas-confirm-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.75);display:flex;align-items:center;justify-content:center;z-index:2001;padding:20px;}
+.tdas-confirm-modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius);padding:20px 22px;width:100%;max-width:360px;}
+.tdas-confirm-modal h4{font-size:14px;font-weight:500;margin-bottom:4px;}
+.tdas-confirm-modal .sub{font-size:11px;color:var(--text3);margin-bottom:14px;}
+.tdas-confirm-body{margin-bottom:14px;}
+.tdas-confirm-price-row{display:flex;justify-content:space-between;align-items:center;background:var(--bg3);border-radius:var(--radius-sm);padding:8px 10px;font-size:13px;color:var(--text2);}
+.tdas-confirm-price-row .val{font-family:var(--mono);color:var(--text);font-weight:600;}
+.tdas-confirm-copy{font-size:12px;color:var(--text2);line-height:1.5;margin-top:10px;}
 .out-btn-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px;}
 .out-btn{padding:9px 6px;font-size:12px;font-weight:600;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text2);cursor:pointer;text-align:center;}
 .out-btn:hover{background:var(--bg4);}
@@ -1526,6 +1544,24 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   </div>
 </div>
 
+<!-- TDAS V4.7.1 — reusable compact confirmation modal. Mirrors the Close
+     trade modal's shell/visual language (same overlay treatment, same
+     .btn-cancel/.btn-save button classes, same .out-modal-btns footer)
+     without touching or depending on any of that modal's own markup/CSS/
+     JS. Content is populated dynamically per-call by openTdasConfirmModal()
+     — see that function's own comment for the full API. -->
+<div class="tdas-confirm-overlay" id="tdasConfirmOverlay" style="display:none;" onclick="if(event.target===this)_tdasConfirmCancel()">
+  <div class="tdas-confirm-modal">
+    <h4 id="tdasConfirmTitle"></h4>
+    <div class="sub" id="tdasConfirmSubtitle"></div>
+    <div class="tdas-confirm-body" id="tdasConfirmBody"></div>
+    <div class="out-modal-btns">
+      <button class="btn-cancel" id="tdasConfirmCancelBtn" onclick="_tdasConfirmCancel()">Cancel</button>
+      <button class="btn-save" id="tdasConfirmActionBtn" onclick="_tdasConfirmSubmit()">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <div class="footer" style="margin-top:30px;padding-top:20px;">
   <span>TDAS · Signals: Binance USDT-M futures · Prices: Bitunix</span>
   <span id="footerTime"></span>
@@ -1555,7 +1591,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.7.0';
+const APP_BUILD = 'V4.7.1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9703,6 +9739,79 @@ function saveOutcome(){
 }
 function openOutcomeEdit(id){openOutcomeModal(id,null);}
 
+// ── TDAS V4.7.1 — Reusable TDAS-styled confirmation modal (Task 2) ─────────
+// Replaces native browser confirm() dialogs with an in-app modal matching
+// the existing Close-trade modal's visual language (see CSS comment on
+// .tdas-confirm-overlay). One shell, content supplied dynamically per call:
+//
+//   openTdasConfirmModal({
+//     title, subtitle, bodyHtml, confirmLabel, cancelLabel, tone, onConfirm
+//   })
+//
+// - title/subtitle: plain text (set via textContent, not innerHTML — no
+//   markup injection risk from trade/symbol data).
+// - bodyHtml: raw HTML for the info block(s) — caller-built via fmt()/
+//   existing helpers, same trust level as the rest of this app's own
+//   template-literal HTML construction elsewhere.
+// - tone: accepted for future extensibility (e.g. a red/avoid variant) but
+//   currently a no-op — .btn-save is already this app's standard green
+//   primary-action style, which is exactly what every current caller wants.
+// - onConfirm: fires exactly once, after the modal has already closed —
+//   never fires on Cancel/Escape/backdrop-click.
+//
+// Double-submission is prevented by _tdasConfirmSubmitted: once the action
+// button fires, every other close path (a second click, Escape, backdrop)
+// becomes a no-op until the next openTdasConfirmModal() call resets it.
+let _tdasConfirmSubmitted = false;
+let _tdasConfirmOnConfirm = null;
+
+function _tdasConfirmKeydown(e){
+  if(e.key==='Escape') _tdasConfirmCancel();
+}
+function _tdasConfirmCancel(){
+  if(_tdasConfirmSubmitted) return; // already confirmed — ignore stray close events
+  const overlay = document.getElementById('tdasConfirmOverlay');
+  if(overlay) overlay.style.display='none';
+  document.removeEventListener('keydown', _tdasConfirmKeydown);
+  _tdasConfirmOnConfirm = null;
+}
+function _tdasConfirmSubmit(){
+  if(_tdasConfirmSubmitted) return; // guards against double-submission
+  _tdasConfirmSubmitted = true;
+  const overlay = document.getElementById('tdasConfirmOverlay');
+  if(overlay) overlay.style.display='none';
+  document.removeEventListener('keydown', _tdasConfirmKeydown);
+  const cb = _tdasConfirmOnConfirm;
+  _tdasConfirmOnConfirm = null;
+  if(typeof cb==='function') cb();
+}
+function openTdasConfirmModal(opts){
+  opts = opts || {};
+  const overlay   = document.getElementById('tdasConfirmOverlay');
+  const titleEl   = document.getElementById('tdasConfirmTitle');
+  const subEl     = document.getElementById('tdasConfirmSubtitle');
+  const bodyEl    = document.getElementById('tdasConfirmBody');
+  const cancelBtn = document.getElementById('tdasConfirmCancelBtn');
+  const actionBtn = document.getElementById('tdasConfirmActionBtn');
+  if(!overlay||!titleEl||!subEl||!bodyEl||!cancelBtn||!actionBtn) return;
+
+  titleEl.textContent = opts.title || '';
+  if(opts.subtitle){ subEl.textContent = opts.subtitle; subEl.style.display=''; }
+  else { subEl.textContent=''; subEl.style.display='none'; }
+  if(opts.bodyHtml){ bodyEl.innerHTML = opts.bodyHtml; bodyEl.style.display=''; }
+  else { bodyEl.innerHTML=''; bodyEl.style.display='none'; }
+  cancelBtn.textContent = opts.cancelLabel || 'Cancel';
+  actionBtn.textContent = opts.confirmLabel || 'Confirm';
+
+  _tdasConfirmSubmitted = false;
+  _tdasConfirmOnConfirm = opts.onConfirm || null;
+  document.addEventListener('keydown', _tdasConfirmKeydown);
+  overlay.style.display = 'flex';
+  // Focus the primary action so keyboard users can confirm immediately;
+  // Tab still reaches Cancel normally within the same small modal.
+  setTimeout(function(){ try{ actionBtn.focus(); }catch(err){} }, 0);
+}
+
 // ── TDAS V4.7.0 — Persistent break-even stop confirmation ──────────────────
 // The user is confirming an action they have already taken (or are about to
 // take) manually on Bitunix — TDAS does not place this stop order itself.
@@ -9716,61 +9825,83 @@ function openOutcomeEdit(id){openOutcomeModal(id,null);}
 function confirmBeStop(id){
   const entry = journal.find(j=>j.id===id);
   if(!entry){ alert('Trade not found.'); return; }
-  // Data validation (V4.7.0 spec §10): never substitute current price for
-  // a missing/invalid entry price. Block the confirmation entirely rather
-  // than guessing.
+  // Data validation (V4.7.0 spec §10, unchanged): never substitute current
+  // price for a missing/invalid entry price. Block the confirmation
+  // entirely — no modal opens — rather than guessing.
   const entryPx = entry.actualEntry!=null ? entry.actualEntry
                 : (entry.entryPrice!=null ? entry.entryPrice : entry.price);
   if(entryPx==null || typeof entryPx!=='number' || !isFinite(entryPx)){
     alert('Cannot confirm break-even: no valid entry price is recorded for this trade.');
     return;
   }
-  const ok = confirm(
-    'Move stop to break-even?\n\n' +
-    'Stop price:\n' + fmt(entryPx) + '\n\n' +
-    'This confirms you have moved (or are moving) your stop-loss to break-even on Bitunix. ' +
-    'TDAS does not place this order automatically.'
-  );
-  if(!ok) return;
-  // Live market price at confirmation — analytics only, never the stop
-  // level. Numeric-validated; stored as null (not guessed) if unavailable.
-  const liveData = currentScanData[entry.symbol];
-  const livePrice = (liveData && typeof liveData.price==='number' && isFinite(liveData.price)) ? liveData.price : null;
-  entry.beStopConfirmed      = true;
-  entry.beStopConfirmedAt    = new Date().toISOString();
-  entry.beStopConfirmedPrice = livePrice;
-  entry.beStopLevel          = entryPx;
-  entry.beStopSource         = 'manual_advisory';
-  Object.assign(entry, stampUpdate(entry));
-  sessionDirtyIds.add(entry.id);
-  const _sym = entry.symbol;
-  console.log('[WRITE] action started: confirmBeStop', _sym);
-  commitJournalChange('confirmBeStop:'+_sym, entry.id).then(()=>{
-    if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+  // TDAS V4.7.1 — native confirm() replaced with the TDAS-styled modal
+  // (Task 4). Trade context line mirrors the same "Symbol · Direction ·
+  // TF setup" shape used elsewhere in this app (e.g. Trade Desk's
+  // .otc-meta). Stop price is rendered read-only in bodyHtml — never an
+  // <input>, never editable, exactly entryPx computed above.
+  const _label = (typeof LABELS!=='undefined' && LABELS[entry.symbol]) ? LABELS[entry.symbol] : entry.symbol;
+  const _dirText = entry.signal==='long' ? '\u25b2 Long' : entry.signal==='short' ? '\u25bc Short' : '';
+  const _setupSuffix = entry.tf ? (' \u00b7 '+entry.tf.toUpperCase()+' setup') : '';
+  openTdasConfirmModal({
+    title: 'Move stop to break-even?',
+    subtitle: _label + (_dirText ? ' \u00b7 '+_dirText : '') + _setupSuffix,
+    bodyHtml: '<div class="tdas-confirm-price-row"><span>Stop price</span><span class="val">'+fmt(entryPx)+'</span></div>'
+      + '<div class="tdas-confirm-copy">This confirms you have moved, or are moving, your stop-loss to break-even on Bitunix. TDAS does not place this order automatically.</div>',
+    confirmLabel: 'Confirm SL at BE',
+    cancelLabel: 'Cancel',
+    tone: 'green',
+    onConfirm: function(){
+      // Live market price at confirmation — analytics only, never the stop
+      // level. Numeric-validated; stored as null (not guessed) if
+      // unavailable. Unchanged from V4.7.0.
+      const liveData = currentScanData[entry.symbol];
+      const livePrice = (liveData && typeof liveData.price==='number' && isFinite(liveData.price)) ? liveData.price : null;
+      entry.beStopConfirmed      = true;
+      entry.beStopConfirmedAt    = new Date().toISOString();
+      entry.beStopConfirmedPrice = livePrice;
+      entry.beStopLevel          = entryPx;
+      entry.beStopSource         = 'manual_advisory';
+      Object.assign(entry, stampUpdate(entry));
+      sessionDirtyIds.add(entry.id);
+      const _sym = entry.symbol;
+      console.log('[WRITE] action started: confirmBeStop', _sym);
+      commitJournalChange('confirmBeStop:'+_sym, entry.id).then(()=>{
+        if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+      });
+    }
   });
 }
 
-// Undo — available from Trade Desk (renderOrderTicketCard) only. Not
-// exposed on the compact Scanner active-trade placeholder card, per spec.
+// Undo — available from Trade Desk (renderOrderTicketCard) and Full
+// Analysis only. Not exposed on the compact Scanner active-trade
+// placeholder card, per spec.
 function undoBeStop(id){
   const entry = journal.find(j=>j.id===id);
   if(!entry || !entry.beStopConfirmed) return;
-  const ok = confirm(
-    'Undo break-even confirmation?\n\n' +
-    'This will mark the stop as not confirmed at break-even.'
-  );
-  if(!ok) return;
-  entry.beStopConfirmed      = false;
-  entry.beStopConfirmedAt    = null;
-  entry.beStopConfirmedPrice = null;
-  entry.beStopLevel          = null;
-  entry.beStopSource         = null;
-  Object.assign(entry, stampUpdate(entry));
-  sessionDirtyIds.add(entry.id);
-  const _sym = entry.symbol;
-  console.log('[WRITE] action started: undoBeStop', _sym);
-  commitJournalChange('undoBeStop:'+_sym, entry.id).then(()=>{
-    if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+  // TDAS V4.7.1 — native confirm() replaced with the same TDAS-styled
+  // modal used by confirmBeStop above (Task 5 exception: this already
+  // used the same native-dialog function and converts safely with no
+  // broadened scope — same trigger, same reset logic, only the
+  // confirmation mechanism changes).
+  openTdasConfirmModal({
+    title: 'Undo break-even confirmation?',
+    bodyHtml: '<div class="tdas-confirm-copy">This will mark the stop as not confirmed at break-even.</div>',
+    confirmLabel: 'Undo confirmation',
+    cancelLabel: 'Cancel',
+    onConfirm: function(){
+      entry.beStopConfirmed      = false;
+      entry.beStopConfirmedAt    = null;
+      entry.beStopConfirmedPrice = null;
+      entry.beStopLevel          = null;
+      entry.beStopSource         = null;
+      Object.assign(entry, stampUpdate(entry));
+      sessionDirtyIds.add(entry.id);
+      const _sym = entry.symbol;
+      console.log('[WRITE] action started: undoBeStop', _sym);
+      commitJournalChange('undoBeStop:'+_sym, entry.id).then(()=>{
+        if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+      });
+    }
   });
 }
 
