@@ -550,6 +550,18 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .htf-badge.conflict{background:var(--red-bg);color:var(--red-text);}
 .htf-badge.neutral{background:var(--bg4);color:var(--text3);}
 .sl-be-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--amber-bg);color:var(--amber-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
+/* TDAS V4.7.0 — persistent break-even stop confirmation pill states.
+   .sl-be-clickable: the actionable "SL to BE" prompt becomes clickable
+   (opens the confirm dialog) — layered on the base amber pill, unchanged
+   otherwise. .sl-be-confirmed: "✓ SL at BE", using the same green success
+   colour language as .tp1-pill, clearly distinct from the amber
+   actionable prompt. On Trade Desk this variant is ALSO given
+   .sl-be-clickable (opens the undo dialog); on the Scanner active
+   placeholder it is rendered without that class — plain, non-interactive
+   status, per spec ("no Undo control on the compact Scanner card"). */
+.sl-be-pill.sl-be-clickable{cursor:pointer;}
+.sl-be-pill.sl-be-clickable:hover{filter:brightness(1.15);}
+.sl-be-pill.sl-be-confirmed{background:var(--green-bg);color:var(--green-text);}
 .tp1-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--green-bg);color:var(--green-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
 .price{font-size:26px;font-weight:500;letter-spacing:-0.5px;line-height:1.1;}
 
@@ -875,6 +887,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .ap-section{background:var(--bg3);border-radius:var(--radius-sm);padding:10px 12px;}
 .ap-section-title{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:8px;}
 .ap-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;font-size:13px;color:var(--text2);}
+/* TDAS V4.7.0 (Full Analysis Undo follow-up) — compact, muted text-button
+   for the BE confirmation status row. Deliberately understated (not a
+   solid/filled button) since undoing a break-even confirmation is a
+   secondary, occasional action, not a primary panel action. */
+.ap-undo-be-btn{background:transparent;border:1px solid var(--border2);color:var(--text3);font-size:11px;padding:3px 9px;border-radius:99px;cursor:pointer;}
+.ap-undo-be-btn:hover{color:var(--red-text);border-color:var(--red-bg);}
 .ap-row:not(:last-child){border-bottom:1px solid var(--border);}
 .ap-row span:last-child{font-family:var(--mono);color:var(--text);}
 
@@ -1537,7 +1555,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.6.7';
+const APP_BUILD = 'V4.7.0';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -1977,6 +1995,19 @@ function normaliseSheets(e){
     utSourceMode:   e.utSourceMode||e['UT Source Mode']||null,
     utKeyValue:     _n(e.utKeyValue!=null?e.utKeyValue:e['UT Key Value']),
     utAtrPeriod:    _n(e.utAtrPeriod!=null?e.utAtrPeriod:e['UT ATR Period']),
+
+    // TDAS V4.7.0 — persistent break-even stop confirmation. Must be
+    // explicitly whitelisted here or pullFromSheets() would silently drop
+    // it on every sync (this normaliser is a fixed field allow-list, not a
+    // passthrough — see its own header comment). beStopConfirmed is a
+    // boolean (via _b()); beStopConfirmedPrice/beStopLevel are numeric
+    // (via _n(), null-safe); beStopConfirmedAt/beStopSource are plain
+    // strings, null for legacy rows that predate this field.
+    beStopConfirmed:      _b(e.beStopConfirmed||e['BE Stop Confirmed']),
+    beStopConfirmedAt:    e.beStopConfirmedAt||e['BE Stop Confirmed At']||null,
+    beStopConfirmedPrice: _n(e.beStopConfirmedPrice!=null?e.beStopConfirmedPrice:e['BE Stop Confirmed Price']),
+    beStopLevel:          _n(e.beStopLevel!=null?e.beStopLevel:e['BE Stop Level']),
+    beStopSource:         e.beStopSource||e['BE Stop Source']||null,
   };
   // Transitional aliases — must mirror buildV1Entry so UI renders correctly
   // after pullFromSheets() replaces in-memory journal entries.
@@ -7481,9 +7512,21 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
   // the ladder's own structural CLOSE — see renderOrderTicketCard's comment
   // for the full reasoning). Also suppressed once TP1 has been reached —
   // priority is CLOSE > TP1 > SL to BE. Never shown for losing/sub-1R trades.
-  const _slToBe = !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  // TDAS V4.7.0 — once the user has confirmed the stop is at break-even,
+  // that is a persistent historical fact, not a recalculated indicator
+  // state: it must keep showing "✓ SL at BE" regardless of CLOSE/TP1/
+  // advisory changes (see this version's delivery note, §6 priority
+  // rules). The unconfirmed actionable prompt is now clickable — opens
+  // confirmBeStop()'s confirmation dialog — and is additionally suppressed
+  // once confirmed, so the two states never show simultaneously. No Undo
+  // control here — undo is Trade Desk/Full Analysis only, per spec.
+  const _beConfirmed = !!openTrade.beStopConfirmed;
+  const beConfirmedHtml = _beConfirmed
+    ? '<span class="sl-be-pill sl-be-confirmed" title="Stop confirmed at break-even ('+(openTrade.beStopLevel!=null?fmt(openTrade.beStopLevel):'—')+').">\u2713 SL at BE</span>'
+    : '';
+  const _slToBe = !_beConfirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
   const slToBeHtml = _slToBe
-    ? '<span class="sl-be-pill" title="Price has moved +1R. Consider moving stop to break even.">SL to BE</span>'
+    ? '<span class="sl-be-pill sl-be-clickable" title="Price has moved +1R. Click to confirm you have moved your stop to break-even." onclick="event.stopPropagation();confirmBeStop('+openTrade.id+');">SL to BE</span>'
     : '';
 
   const advisoryHtml = advisory
@@ -7491,11 +7534,12 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
       + '<div class="tdas-advisory-header-row">'
       + '<div class="tdas-advisory-headline">'+advisory.headline+'</div>'
       + tp1Html
+      + beConfirmedHtml
       + slToBeHtml
       + '</div>'
       + (advisory.detail ? '<div class="tdas-advisory-detail">'+advisory.detail+'</div>' : '')
       + '</div>'
-    : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-header-row"><div class="tdas-advisory-headline">HOLD</div>'+tp1Html+slToBeHtml+'</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
+    : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-header-row"><div class="tdas-advisory-headline">HOLD</div>'+tp1Html+beConfirmedHtml+slToBeHtml+'</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
 
   return {
     stateClass,
@@ -8662,9 +8706,27 @@ function openAnalysisPanel(symbol){
     ? buildTradeReadyChecklistHtml(symbol, d, _advisory)
     : '';
 
+  // TDAS V4.7.0 (Full Analysis Undo follow-up) — compact BE confirmation
+  // status/undo row. Shown only when this symbol has an active trade
+  // (_entryForTiming.openTrade, already resolved above for 1H-timing
+  // purposes — reused here, not re-queried) with a confirmed break-even
+  // stop. Presentation only: calls the existing undoBeStop(id) directly,
+  // the exact same function Trade Desk's confirmed pill already calls —
+  // no persistence logic is duplicated here. Not shown for watches,
+  // closed trades, or symbols with no active trade at all.
+  const _beOpenTrade = _entryForTiming.openTrade;
+  const _beStatusHtml = (_beOpenTrade && _beOpenTrade.beStopConfirmed)
+    ? '<div class="ap-section">'
+      + '<div class="ap-section-title">Trade management</div>'
+      + '<div class="ap-row"><span>Stop status</span><span style="color:var(--green-text);font-weight:600;">\u2713 SL at BE ('+(_beOpenTrade.beStopLevel!=null?fmt(_beOpenTrade.beStopLevel):'\u2014')+')</span></div>'
+      + '<div class="ap-row"><span></span><span><button type="button" class="ap-undo-be-btn" onclick="undoBeStop('+_beOpenTrade.id+');">Undo BE confirmation</button></span></div>'
+      + '</div>'
+    : '';
+
   body.innerHTML = `
     ${_advisoryHtml}
     ${_tradeReadyHtml}
+    ${_beStatusHtml}
     <!-- Signal summary -->
     <div class="ap-section">
       <div class="ap-section-title">Signal summary${_setupSuffix}</div>
@@ -8928,6 +8990,22 @@ function buildV1Entry(symbol, d, decision, overrides) {
     // Reads from d.regime attached by calcPair — no re-derivation.
     // Null for pre-Phase-1 entries (column was reserved for this exact purpose).
     trendRegime: (d.regime && d.regime.label) ? d.regime.label : null,
+
+    // ── TDAS V4.7.0 — Persistent break-even stop confirmation ───────────
+    // A historical user action, not a derived/recalculated indicator state.
+    // beStopLevel is always the trade's entry price (never current market
+    // price) — see confirmBeStop(). beStopConfirmedPrice is the live
+    // market price at the moment of confirmation, kept separate for
+    // analytics only. Defaults here so every creation path (manual
+    // decisions via saveEntry, Watch→Trade conversion via
+    // quickTakeFromWatch — both call this one canonical builder) starts
+    // unconfirmed; nothing else in the app sets these except
+    // confirmBeStop()/undoBeStop().
+    beStopConfirmed:      false,
+    beStopConfirmedAt:    null,
+    beStopConfirmedPrice: null,
+    beStopLevel:          null,
+    beStopSource:         null,
   };
 
   // Transitional aliases for legacy UI renderers.
@@ -9625,6 +9703,77 @@ function saveOutcome(){
 }
 function openOutcomeEdit(id){openOutcomeModal(id,null);}
 
+// ── TDAS V4.7.0 — Persistent break-even stop confirmation ──────────────────
+// The user is confirming an action they have already taken (or are about to
+// take) manually on Bitunix — TDAS does not place this stop order itself.
+// beStopLevel is ALWAYS the trade's entry price, never current market price
+// (future Bitunix automation will use beStopLevel as the actual stop-order
+// level, per the spec this shipped against). beStopConfirmedPrice is the
+// live market price at the moment of confirmation, stored separately, for
+// analytics only — never used as the stop level itself.
+// beStopSource is always the literal string 'manual_advisory' (chosen for
+// extensibility — see this version's delivery note for why).
+function confirmBeStop(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry){ alert('Trade not found.'); return; }
+  // Data validation (V4.7.0 spec §10): never substitute current price for
+  // a missing/invalid entry price. Block the confirmation entirely rather
+  // than guessing.
+  const entryPx = entry.actualEntry!=null ? entry.actualEntry
+                : (entry.entryPrice!=null ? entry.entryPrice : entry.price);
+  if(entryPx==null || typeof entryPx!=='number' || !isFinite(entryPx)){
+    alert('Cannot confirm break-even: no valid entry price is recorded for this trade.');
+    return;
+  }
+  const ok = confirm(
+    'Move stop to break-even?\n\n' +
+    'Stop price:\n' + fmt(entryPx) + '\n\n' +
+    'This confirms you have moved (or are moving) your stop-loss to break-even on Bitunix. ' +
+    'TDAS does not place this order automatically.'
+  );
+  if(!ok) return;
+  // Live market price at confirmation — analytics only, never the stop
+  // level. Numeric-validated; stored as null (not guessed) if unavailable.
+  const liveData = currentScanData[entry.symbol];
+  const livePrice = (liveData && typeof liveData.price==='number' && isFinite(liveData.price)) ? liveData.price : null;
+  entry.beStopConfirmed      = true;
+  entry.beStopConfirmedAt    = new Date().toISOString();
+  entry.beStopConfirmedPrice = livePrice;
+  entry.beStopLevel          = entryPx;
+  entry.beStopSource         = 'manual_advisory';
+  Object.assign(entry, stampUpdate(entry));
+  sessionDirtyIds.add(entry.id);
+  const _sym = entry.symbol;
+  console.log('[WRITE] action started: confirmBeStop', _sym);
+  commitJournalChange('confirmBeStop:'+_sym, entry.id).then(()=>{
+    if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+  });
+}
+
+// Undo — available from Trade Desk (renderOrderTicketCard) only. Not
+// exposed on the compact Scanner active-trade placeholder card, per spec.
+function undoBeStop(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry || !entry.beStopConfirmed) return;
+  const ok = confirm(
+    'Undo break-even confirmation?\n\n' +
+    'This will mark the stop as not confirmed at break-even.'
+  );
+  if(!ok) return;
+  entry.beStopConfirmed      = false;
+  entry.beStopConfirmedAt    = null;
+  entry.beStopConfirmedPrice = null;
+  entry.beStopLevel          = null;
+  entry.beStopSource         = null;
+  Object.assign(entry, stampUpdate(entry));
+  sessionDirtyIds.add(entry.id);
+  const _sym = entry.symbol;
+  console.log('[WRITE] action started: undoBeStop', _sym);
+  commitJournalChange('undoBeStop:'+_sym, entry.id).then(()=>{
+    if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+  });
+}
+
 function editEntryPrice(id){
   const entry=journal.find(j=>j.id===id);
   if(!entry)return;
@@ -10020,9 +10169,20 @@ function renderOrderTicketCard(e){
   // SL to BE, since past TP1 the relevant prompt is partial profit / tighten
   // stop, not simply moving to break even. Never replaces or alters the
   // main advisory headline/detail text.
-  const _slToBe = !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  // TDAS V4.7.0 — persistent confirmed state (see this version's delivery
+  // note, §6): once confirmed, "✓ SL at BE" always shows regardless of
+  // CLOSE/TP1/advisory changes — a historical user action, not a
+  // recalculated indicator. Trade Desk is one of the two surfaces (with
+  // Full Analysis) where Undo is permitted, so the confirmed pill here is
+  // clickable and opens undoBeStop()'s confirmation dialog. The
+  // unconfirmed prompt is now clickable too, opening confirmBeStop().
+  const _beConfirmed = !!e.beStopConfirmed;
+  const beConfirmedHtml = _beConfirmed
+    ? `<span class="sl-be-pill sl-be-confirmed sl-be-clickable" title="Stop confirmed at break-even (${e.beStopLevel!=null?fmt(e.beStopLevel):'—'}). Click to undo." onclick="event.stopPropagation();undoBeStop(${e.id});">\u2713 SL at BE</span>`
+    : '';
+  const _slToBe = !_beConfirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
   const slToBeHtml = _slToBe
-    ? `<span class="sl-be-pill" title="Price has moved +1R. Consider moving stop to break even.">SL to BE</span>`
+    ? `<span class="sl-be-pill sl-be-clickable" title="Price has moved +1R. Click to confirm you have moved your stop to break-even." onclick="event.stopPropagation();confirmBeStop(${e.id});">SL to BE</span>`
     : '';
 
   const advisoryHtml = advisory
@@ -10030,6 +10190,7 @@ function renderOrderTicketCard(e){
       + `<div class="tdas-advisory-header-row">`
       + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
       + tp1Html
+      + beConfirmedHtml
       + slToBeHtml
       + `</div>`
       + (advisory.detail ? `<div class="tdas-advisory-detail">${advisory.detail}</div>` : '')
@@ -10684,7 +10845,8 @@ function exportJournal(){
     'Notes',
     'Deleted','Deleted At',
     'Entry Improvement %','Entry Improvement Label','Entry Improvement From Watch Price',
-    '1H Timing State','1H Timing Direction','1H Timing Timestamp'
+    '1H Timing State','1H Timing Direction','1H Timing Timestamp',
+    'BE Stop Confirmed','BE Stop Confirmed At','BE Stop Confirmed Price','BE Stop Level','BE Stop Source'
   ];
   function sf(v){ return v!=null?String(v):''; }
   function nf(v,d){ const n=parseFloat(v); return isFinite(n)?n.toFixed(d||4):''; }
@@ -10710,7 +10872,12 @@ function exportJournal(){
     nf(e.entryImprovementFromWatchPrice,4),
     sf(e.oneHourTimingState||''),
     sf(e.oneHourTimingDirection||''),
-    sf(e.oneHourTimingTimestamp||'')
+    sf(e.oneHourTimingTimestamp||''),
+    sf(e.beStopConfirmed?'TRUE':'FALSE'),
+    sf(e.beStopConfirmedAt||''),
+    nf(e.beStopConfirmedPrice,4),
+    nf(e.beStopLevel,4),
+    sf(e.beStopSource||'')
   ]);
   const csv=[headers,...rows].map(r=>r.join(',')).join('\n');
   const a=document.createElement('a');
