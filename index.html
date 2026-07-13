@@ -1591,7 +1591,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.7.2';
+const APP_BUILD = 'V4.7.3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -4171,21 +4171,49 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     const freshness = classifyUtFreshness(st.utBot.barsAgoFlip);
     return { isAdverse:true, isFresh: freshness.key==='fresh', freshness, tfLabel:_stateTfTag, bars: st.utBot.barsAgoFlip };
   }
-  // Concise HOLD wording (Task §2/§6): "the setup remains intact" plus, only
-  // if relevant, a brief mention of a non-fresh adverse UT condition — never
-  // a list of every supportive condition (TEMA/UT/price-vs-SMA), which
-  // belongs in Full Analysis, not the front card.
-  function _buildHoldDetail(tradeDir, adverseInfo){
-    let msg = _setupTf + ' ' + tradeDir + ' intact.';
+  // TDAS V4.7.3 — HOLD secondary-clause priority selector. HOLD stayed
+  // correct after V4.7.2 but became too sparse ("1H short intact." with
+  // nothing else) even when one genuinely useful nuance was available.
+  // Picks at most one clause, in priority order:
+  //  P1 setup-tf TEMA convergence (only when the current view genuinely IS
+  //     the setup tf — no independent 1H-separation data source exists to
+  //     check this when they differ, so it's skipped rather than guessed).
+  //  P2 stale/active-not-fresh adverse UT (from _adverseUtInfo above).
+  //  P3 extreme RSI, optionally combined with P4's HTF clause into one
+  //     compact sentence (the one explicitly-permitted two-fact exception).
+  //  P4 plain HTF trend support, shown alone only when nothing else applies.
+  function _viewTrendSupportClause(tradeDir){
+    const reg = d.regime;
+    if (!reg || !reg.direction || reg.direction === 'neutral') return null;
+    const supports = tradeDir==='long' ? reg.direction==='bullish' : reg.direction==='bearish';
+    if (!supports) return null;
+    return _stateTfTag + ' trend remains ' + (tradeDir==='long' ? 'bullish' : 'bearish');
+  }
+  function _selectHoldSecondaryClause(tradeDir, adverseInfo){
+    const viewMatchesSetup = (d.tf||'').toLowerCase() === (openTrade.tf||'').toLowerCase();
+    const temaStillSupports = tradeDir==='short' ? st.crossShort===true : st.crossLong===true;
+    if (viewMatchesSetup && st.temaWidening === false && temaStillSupports) {
+      return 'TEMA momentum is converging.';
+    }
     if (adverseInfo && adverseInfo.isAdverse && !adverseInfo.isFresh) {
       const opposite = tradeDir === 'long' ? 'bearish' : 'bullish';
-      if (adverseInfo.freshness.key === 'stale') {
-        msg += ' ' + adverseInfo.tfLabel + ' UT remains stale ' + opposite + ' (' + adverseInfo.bars + ' bars).';
-      } else {
-        msg += ' ' + adverseInfo.tfLabel + ' UT remains ' + opposite + ' against ' + tradeDir + '.';
-      }
+      return adverseInfo.freshness.key === 'stale'
+        ? (adverseInfo.tfLabel + ' UT remains stale ' + opposite + ' (' + adverseInfo.bars + ' bars).')
+        : (adverseInfo.tfLabel + ' UT remains ' + opposite + ' against ' + tradeDir + '.');
     }
-    return msg;
+    const rsiExtreme = tradeDir==='short' ? (st.rsi!=null && st.rsi<30) : (st.rsi!=null && st.rsi>70);
+    const htfClause = _viewTrendSupportClause(tradeDir);
+    if (htfClause && rsiExtreme) return htfClause + '; RSI is ' + (tradeDir==='short'?'oversold':'overbought') + '.';
+    if (rsiExtreme) return 'RSI is ' + (tradeDir==='short'?'oversold':'overbought') + '.';
+    if (htfClause) return htfClause + '.';
+    return null;
+  }
+  // Concise HOLD wording (Task §1/§5): "the setup remains intact" plus at
+  // most one secondary clause from the priority selector above — never a
+  // list of every supportive condition, which belongs in Full Analysis.
+  function _buildHoldDetail(tradeDir, adverseInfo){
+    const secondary = _selectHoldSecondaryClause(tradeDir, adverseInfo);
+    return _setupTf + ' ' + tradeDir + ' intact.' + (secondary ? ' ' + secondary : '');
   }
 
   let action, headline, detail;
@@ -8675,9 +8703,26 @@ function openAnalysisPanel(symbol){
   // d.tf fallback for consistency (calcPair doesn't currently set d.tf, but
   // this mirrors the same defensive pattern used elsewhere rather than
   // assuming one source only).
+  // TDAS V4.7.3 — corrected setup vs. view timeframe labelling (Full
+  // Analysis heading audit). d.tf/the #tf dropdown is the currently-
+  // selected VIEW/ANALYSIS timeframe — NOT necessarily the trade's own
+  // setup timeframe (openTrade.tf). Root cause of the reported bug: this
+  // value was named setupTfLabel and its suffix said "setup" even though
+  // it's the view. Signal Summary and Evaluation are both computed
+  // straight from `d` at this view timeframe, so they're correctly
+  // labelled "view". Lifecycle is specifically about the open trade's own
+  // status when one exists, so it's labelled from openTrade.tf ("setup")
+  // in that case, falling back to the view label when there's no open
+  // trade (e.g. a scanner opportunity with no position yet). _setupPrefix
+  // (UT Bot Alert/Fibonacci/Risk levels headings) is unchanged — it's a
+  // bare timeframe value with no "setup"/"view" word attached, so it makes
+  // no false claim either way.
   const _tfEl = (typeof document!=='undefined') ? document.getElementById('tf') : null;
   const setupTfLabel = (d.tf || (_tfEl && _tfEl.value) || '').toUpperCase();
-  const _setupSuffix = setupTfLabel ? (' \u00b7 ' + setupTfLabel + ' setup') : '';
+  const _viewSuffix = setupTfLabel ? (' \u00b7 ' + setupTfLabel + ' view') : '';
+  const _openTradeForLabel = _entryForTiming.openTrade;
+  const _lifecycleTfLabel = (_openTradeForLabel && _openTradeForLabel.tf) ? _openTradeForLabel.tf.toUpperCase() : setupTfLabel;
+  const _lifecycleSuffix = _lifecycleTfLabel ? (' \u00b7 ' + _lifecycleTfLabel + (_openTradeForLabel ? ' setup' : ' view')) : '';
   const _setupPrefix = setupTfLabel ? (setupTfLabel + ' ') : '';
 
   // Pre-compute HTF Trend Context section — string concat avoids nested backtick issue
@@ -8715,7 +8760,7 @@ function openAnalysisPanel(symbol){
     if(_lc.state==='REDUCE') _lcColor='var(--amber-text)';
     if(_lc.state==='CONFIRMED'||_lc.state==='HIGH_PROBABILITY') _lcColor='var(--green-text)';
     _lifecycleHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">Lifecycle'+_setupSuffix+'</div>'
+      +'<div class="ap-section-title">Lifecycle'+_lifecycleSuffix+'</div>'
       +'<div class="ap-row"><span>State</span><span style="color:'+_lcColor+';font-weight:600;">'+_lc.state.replace(/_/g,' ')+'</span></div>'
       +'<div class="ap-row"><span>Stage</span><span style="color:var(--text2);">'+_lc.stage+'</span></div>'
       +'<div class="ap-row"><span>Confidence</span><span style="color:var(--text2);">'+_lc.confidence+'</span></div>'
@@ -8766,7 +8811,7 @@ function openAnalysisPanel(symbol){
     if(_ev.confirms.rsi)   _cbadges.push('✓ RSI');   else _cbadges.push('✗ RSI');
     if(_ev.confirms.regime)_cbadges.push('✓ Regime');else _cbadges.push('✗ Regime');
     _evalHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">Evaluation'+_setupSuffix+'</div>'
+      +'<div class="ap-section-title">Evaluation'+_viewSuffix+'</div>'
       +'<div class="ap-row"><span>Setup quality</span><span style="color:'+_sqColor+';font-weight:600;">'+_ev.setupQuality+'</span></div>'
       +'<div class="ap-row"><span>Action bias</span><span style="color:'+_abColor+';font-weight:600;">'+_ev.actionBias.replace(/_/g,' ')+'</span></div>'
       +'<div class="ap-row"><span>High probability</span><span style="color:'+_hpColor+';">'+_hpText+'</span></div>'
@@ -8854,7 +8899,7 @@ function openAnalysisPanel(symbol){
     ${_beStatusHtml}
     <!-- Signal summary -->
     <div class="ap-section">
-      <div class="ap-section-title">Signal summary${_setupSuffix}</div>
+      <div class="ap-section-title">Signal summary${_viewSuffix}</div>
       <div class="ap-row"><span>Signal</span><span style="color:${signal==='long'?'var(--green-text)':signal==='short'?'var(--red-text)':'var(--text3)'};">${signal==='long'?'▲ Long':signal==='short'?'▼ Short':'Neutral'}</span></div>
       <div class="ap-row"><span>Score</span><span>${score||0}%</span></div>
       <div class="ap-row"><span>HTF alignment</span><span style="color:${htfAlign==='aligned'?'var(--green-text)':htfAlign==='conflict'?'var(--red-text)':'var(--text3)'};">${htfAlign==='aligned'?'Aligned ✓':htfAlign==='conflict'?'Conflict ✗':htfAlign==='insufficient'?'Insufficient data':'Neutral —'}</span></div>
