@@ -1591,7 +1591,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.7.1';
+const APP_BUILD = 'V4.7.2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -4047,7 +4047,20 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   // 1H inputs — may be entirely unavailable; never assumed either way
   const oneH = d._1hTiming || null;
   const oneHAvailable     = !!oneH;
-  const oneHTurnedAgainst = oneH ? (dir === 'short' ? oneH.crossLong1h === true  : oneH.crossLong1h === false) : null;
+  // TDAS V4.7.2 (Task Case C) — also true on a genuine 1H UT flip against
+  // the trade, not just a 1H TEMA cross. oneH.utDirection1h (added this
+  // version, see _calc1HTiming) is independently maintained and never
+  // view-dependent, so this correctly reflects the trade's own 1H
+  // structure regardless of what the current view/d.tf happens to show.
+  // No freshness gate here (unlike _adverseUtInfo below) — a flip in the
+  // trade's own setup timeframe matters whenever it happened, since it's
+  // not adjacent/HTF context, it's the trade's own structure.
+  const oneH1hUtAgainst = oneH && typeof oneH.utDirection1h === 'number'
+    ? (dir === 'short' ? oneH.utDirection1h === 1 : oneH.utDirection1h === -1)
+    : false;
+  const oneHTurnedAgainst = oneH ? (
+    (dir === 'short' ? oneH.crossLong1h === true  : oneH.crossLong1h === false) || oneH1hUtAgainst
+  ) : null;
   // Structure reclaim/loss — Phase 1B broadens this beyond 1H 200MA alone to
   // include 1H 135SMA (matches the UT Bot timing chart's own trend reference).
   // Either level qualifying is sufficient — this is "OR", not "AND".
@@ -4120,6 +4133,61 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     return { aboveSma: null, label: setupTfLc==='4h' ? '80 SMA' : '135 SMA', available: false };
   })();
 
+  // TDAS V4.7.2 — Advisory Hierarchy Refinement. Root cause of the reported
+  // bug (full investigation in this version's delivery note): the front-
+  // card message conflated two different things that happen to share the
+  // same underlying `utDir`/_stateTfTag data — "is there a fresh, newly-
+  // meaningful adverse UT signal worth a warning" vs. "is the trade's own
+  // setup-timeframe structure still intact". `utDir` (st.utBot.direction)
+  // always correctly reflects whatever timeframe is CURRENTLY BEING VIEWED
+  // (d.tf) — on Trade Desk that's always openTrade.tf, but the Scanner
+  // active-trade placeholder can legitimately be viewing a different
+  // timeframe than the trade's own setup (e.g. scanner dropdown on 4H for
+  // a 1H-setup trade). The data itself isn't wrong — a 59-bars-old 4H
+  // bullish UT reading really is what 4H currently shows — the bug was
+  // treating that adjacent-timeframe reading as if it settled the trade's
+  // own (1H) structural integrity, and using "flipped" language for a
+  // signal that was 59 bars old.
+  //
+  // Fix, in two independent parts:
+  //  1. _adverseUtInfo() below reads the CURRENT VIEW's own UT (utDir +
+  //     st.utBot.barsAgoFlip, labelled by _stateTfTag, whatever timeframe
+  //     that view genuinely is) and classifies it by freshness. Only a
+  //     genuinely FRESH adverse reading escalates to REVIEW (Task Case B:
+  //     a freshly-flipped 4H UT against a 1H trade is real new evidence,
+  //     even though 4H isn't the setup timeframe). A stale/recent/mature
+  //     adverse reading never escalates on its own — it's surfaced only as
+  //     brief HOLD context (Task Case A).
+  //  2. oneHTurnedAgainst (existing 1H-specific check, further below) is
+  //     extended to also cover a genuine 1H UT flip — using
+  //     d._1hTiming.utDirection1h, added this version (see _calc1HTiming),
+  //     which is independently maintained and never view-dependent. This
+  //     covers Task Case C ("1H UT flips" as one of the genuine 1H
+  //     deterioration triggers) regardless of what the current view shows.
+  function _adverseUtInfo(tradeDir){
+    const adverseDir = tradeDir === 'long' ? -1 : 1;
+    const isAdverse = !!st.utBot && utDir === adverseDir;
+    if(!isAdverse) return { isAdverse:false, isFresh:false };
+    const freshness = classifyUtFreshness(st.utBot.barsAgoFlip);
+    return { isAdverse:true, isFresh: freshness.key==='fresh', freshness, tfLabel:_stateTfTag, bars: st.utBot.barsAgoFlip };
+  }
+  // Concise HOLD wording (Task §2/§6): "the setup remains intact" plus, only
+  // if relevant, a brief mention of a non-fresh adverse UT condition — never
+  // a list of every supportive condition (TEMA/UT/price-vs-SMA), which
+  // belongs in Full Analysis, not the front card.
+  function _buildHoldDetail(tradeDir, adverseInfo){
+    let msg = _setupTf + ' ' + tradeDir + ' intact.';
+    if (adverseInfo && adverseInfo.isAdverse && !adverseInfo.isFresh) {
+      const opposite = tradeDir === 'long' ? 'bearish' : 'bullish';
+      if (adverseInfo.freshness.key === 'stale') {
+        msg += ' ' + adverseInfo.tfLabel + ' UT remains stale ' + opposite + ' (' + adverseInfo.bars + ' bars).';
+      } else {
+        msg += ' ' + adverseInfo.tfLabel + ' UT remains ' + opposite + ' against ' + tradeDir + '.';
+      }
+    }
+    return msg;
+  }
+
   let action, headline, detail;
 
   // ── Stop-loss breach override — highest priority risk control. Checked
@@ -4155,6 +4223,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     const structureReclaimedForClose = st.aboveMA_closed === true;
     const temaCrossAgainst   = st.crossLong === true;  // setup-tf TEMA now bullish — see _stateTfTag
     const tema92Rising       = st.tema92Slope === 'rising';
+    const _adverseUtShort    = _adverseUtInfo('short'); // TDAS V4.7.2
 
     if (utDir === 1 && structureReclaimedForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
@@ -4167,20 +4236,24 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = _stateTfTag + ' TEMA crossed against short and TEMA 92 is rising.';
     } else if (inProfit && utDir === 1 && _tp50Sma.aboveSma === true) {
       // TDAS V4.6.0 — bare UT-flip TP50 path, now gated on SMA confirmation.
+      // Unchanged by V4.7.2 — this trigger already requires a genuine price
+      // break (SMA confirmation) alongside profit, which is stronger,
+      // fresher evidence than a raw UT flip alone; out of this version's
+      // scope (see delivery note).
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = _stateTfTag + ' UT flipped bullish and price reclaimed ' + _tp50Sma.label + '.';
-    } else if (utDir === 1 && _tp50Sma.available && _tp50Sma.aboveSma === false) {
-      // TDAS V4.6.0 — UT flipped against the trade but price has not
-      // confirmed via the SMA filter yet: downgrade to REVIEW rather than
-      // firing TP50 on the UT flip alone.
+    } else if (_adverseUtShort.isAdverse && _adverseUtShort.isFresh) {
+      // TDAS V4.7.2 — Advisory Hierarchy Refinement. Replaces the old
+      // freshness-unaware "utDir===1" REVIEW branches (V4.6.0): those
+      // escalated to REVIEW whenever utDir (the CURRENT VIEW's own UT read)
+      // was adverse, regardless of how many bars ago that UT state actually
+      // flipped — exactly the reported bug (a 59-bar-old 4H bullish UT
+      // read as if it were a fresh reversal). Now gated on freshness via
+      // _adverseUtInfo (see resolver above) — only a fresh adverse flip
+      // escalates to REVIEW; a stale one is HOLD context only (see
+      // _buildHoldDetail).
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _stateTfTag + ' UT flipped bullish against short, but price remains below ' + _tp50Sma.label + '.';
-    } else if (utDir === 1 && !_tp50Sma.available) {
-      // TDAS V4.6.0 — UT flipped against the trade but the setup-timeframe
-      // SMA isn't available from already-computed data in this render (see
-      // the resolver's header comment) — do not guess; report the gap.
-      action = 'REVIEW'; headline = 'REVIEW';
-      detail = _stateTfTag + ' UT flipped bullish against short; ' + _tp50Sma.label + ' confirmation unavailable at the current view.';
+      detail = _adverseUtShort.tfLabel + ' UT flipped bullish against short. ' + _setupTf + ' short remains intact.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
@@ -4189,7 +4262,20 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = '1H structure reclaimed against short.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal developing. ' + _stateTfTag + ' UT still bearish.';
+      // TDAS V4.7.2 (Task Case C) — this branch now also fires on a genuine
+      // 1H UT flip (oneH1hUtAgainst, see its definition above), not only a
+      // 1H TEMA cross. The old fixed wording ("1H reversal developing. {tf}
+      // UT still bearish.") would be factually wrong when the UT itself is
+      // what turned — foreground whichever 1H condition(s) actually
+      // deteriorated instead of asserting a fixed claim.
+      const _1hTemaAgainstShort = oneH && oneH.crossLong1h === true;
+      if (oneH1hUtAgainst && _1hTemaAgainstShort) {
+        detail = '1H UT flipped bullish and 1H TEMA turned against short.';
+      } else if (oneH1hUtAgainst) {
+        detail = '1H UT flipped bullish against short.';
+      } else {
+        detail = '1H reversal developing. ' + _stateTfTag + ' UT still bearish.';
+      }
     } else if (temaCrossAgainst && utDir === -1) {
       action = 'REVIEW'; headline = 'REVIEW';
       // Setup-timeframe TEMA has crossed against the trade, but setup-tf UT
@@ -4207,11 +4293,13 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
+      // TDAS V4.7.2 — concise HOLD wording (Task §2/§6). Replaces the old
+      // buildHtfSupportPhrase-based verbose message ("4H TEMA and UT still
+      // support short.") with "{setup} short intact." plus, only if
+      // relevant, a brief non-fresh-adverse-UT mention. buildHtfSupportPhrase
+      // itself is untouched and still used by the REVIEW branch above.
       action = 'HOLD'; headline = 'HOLD';
-      const _htfPhraseHold = buildHtfSupportPhrase(d, openTrade, 'short');
-      detail = _htfPhraseHold
-        ? (_stateTfTag + ' trade intact; ' + _htfPhraseHold)
-        : (_stateTfTag + ' TEMA and UT still support short.');
+      detail = _buildHoldDetail('short', _adverseUtShort);
     }
   } else {
     // ── Mirrored LONG logic — fields are symmetric, safe to mirror ──
@@ -4219,6 +4307,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     const structureLostForClose = st.aboveMA_closed === false;
     const temaCrossAgainst = st.crossShort === true;  // setup-tf TEMA now bearish — see _stateTfTag
     const tema92Falling    = st.tema92Slope === 'falling';
+    const _adverseUtLong   = _adverseUtInfo('long'); // TDAS V4.7.2
 
     if (utDir === -1 && structureLostForClose) {
       action = 'CLOSE'; headline = 'CLOSE';
@@ -4230,20 +4319,14 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = _stateTfTag + ' TEMA crossed against long and TEMA 92 is falling.';
     } else if (inProfit && utDir === -1 && _tp50Sma.aboveSma === false) {
       // TDAS V4.6.0 — bare UT-flip TP50 path, now gated on SMA confirmation.
+      // Unchanged by V4.7.2 — see mirrored comment in the short branch above.
       action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
       detail = _stateTfTag + ' UT flipped bearish and price lost ' + _tp50Sma.label + '.';
-    } else if (utDir === -1 && _tp50Sma.available && _tp50Sma.aboveSma === true) {
-      // TDAS V4.6.0 — UT flipped against the trade but price has not
-      // confirmed via the SMA filter yet: downgrade to REVIEW rather than
-      // firing TP50 on the UT flip alone.
+    } else if (_adverseUtLong.isAdverse && _adverseUtLong.isFresh) {
+      // TDAS V4.7.2 — Advisory Hierarchy Refinement. See mirrored comment in
+      // the short branch above for the full root-cause explanation.
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _stateTfTag + ' UT flipped bearish against long, but price remains above ' + _tp50Sma.label + '.';
-    } else if (utDir === -1 && !_tp50Sma.available) {
-      // TDAS V4.6.0 — UT flipped against the trade but the setup-timeframe
-      // SMA isn't available from already-computed data in this render —
-      // do not guess; report the gap (see resolver's header comment).
-      action = 'REVIEW'; headline = 'REVIEW';
-      detail = _stateTfTag + ' UT flipped bearish against long; ' + _tp50Sma.label + ' confirmation unavailable at the current view.';
+      detail = _adverseUtLong.tfLabel + ' UT flipped bearish against long. ' + _setupTf + ' long remains intact.';
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
@@ -4252,7 +4335,15 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       detail = '1H structure lost against long.';
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H reversal developing. ' + _stateTfTag + ' UT still bullish.';
+      // TDAS V4.7.2 (Task Case C) — mirrors the short branch fix above.
+      const _1hTemaAgainstLong = oneH && oneH.crossLong1h === false;
+      if (oneH1hUtAgainst && _1hTemaAgainstLong) {
+        detail = '1H UT flipped bearish and 1H TEMA turned against long.';
+      } else if (oneH1hUtAgainst) {
+        detail = '1H UT flipped bearish against long.';
+      } else {
+        detail = '1H reversal developing. ' + _stateTfTag + ' UT still bullish.';
+      }
     } else if (temaCrossAgainst && utDir === 1) {
       action = 'REVIEW'; headline = 'REVIEW';
       // See short-branch comment above — genuine HTF evidence is shown when
@@ -4265,11 +4356,9 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
+      // TDAS V4.7.2 — concise HOLD wording, mirrors the short branch above.
       action = 'HOLD'; headline = 'HOLD';
-      const _htfPhraseHold = buildHtfSupportPhrase(d, openTrade, 'long');
-      detail = _htfPhraseHold
-        ? (_stateTfTag + ' trade intact; ' + _htfPhraseHold)
-        : (_stateTfTag + ' TEMA and UT still support long.');
+      detail = _buildHoldDetail('long', _adverseUtLong);
     }
   }
 
@@ -10710,12 +10799,24 @@ async function _calc1HTiming(symbol) {
     const timing = _derive1HTimingState(d4h.signal, d4h.htfAlign, d4h.aboveMA, utBot1h);
     // Return timing state (may be null) plus structural fields regardless.
     // buildTradeMgmtHtml uses crossLong1h/aboveMA1h/maDist1h independently of timing.state.
+    // TDAS V4.7.2 — Advisory Hierarchy Refinement. utBot1h.direction/
+    // barsAgoFlip were already being computed above (needed by
+    // _derive1HTimingState just below) but discarded — not returned to the
+    // caller. Exposing them here is what lets _buildActiveTradeAdvisory's
+    // oneHTurnedAgainst check detect a genuine 1H UT flip against the trade
+    // (Task Case C) independent of whatever timeframe the current view/
+    // d.tf happens to be — see that function's own comments for the full
+    // root-cause explanation. This does not change UT Bot's calculation in
+    // any way; calcUTBot() itself, above, is untouched — only its
+    // already-computed result is no longer thrown away.
     return {
       ...(timing || {}),
       crossLong1h,
       aboveMA1h,
       maDist1h,
       sma135_1h, aboveSma135_1h, sma135Slope_1h, sma135SlopeDelta_1h,
+      utDirection1h: utBot1h.direction,
+      utBarsAgoFlip1h: utBot1h.barsAgoFlip != null ? utBot1h.barsAgoFlip : null,
       updatedAt: new Date().toISOString(),
     };
   } catch(e) {
