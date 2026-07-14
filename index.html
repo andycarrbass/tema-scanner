@@ -1591,7 +1591,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.7.3';
+const APP_BUILD = 'V4.8.0';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3177,7 +3177,17 @@ function evaluateSetup(d) {
   const cUtBot  = tradeBias === 'LONG'
     ? !!(st.utBot && st.utBot.direction === 1)
     : !!(st.utBot && st.utBot.direction === -1);
-  const cHtf    = st.htfAlign === 'aligned';
+  // TDAS V4.8.0 Phase A — HTF input unification. cHtf/htfSupportive now
+  // consume the same direction-aware HTF derivation used by the HTF
+  // pill/checklist-dot (getHtfDirectionState, defined below), instead of
+  // the signal-relative st.htfAlign field. sig is guaranteed 'long'/'short'
+  // here (the NEUTRAL tradeBias case already returned above), so it's a
+  // safe direction argument — no new direction model introduced.
+  // getHtfDirectionState is pure/degrades to 'neutral' on missing data —
+  // see its own header comment. st.htfAlign itself is left untouched below
+  // (still calculated, still used for legacy display/history/score/warnings).
+  const _htfDirState = getHtfDirectionState(d, sig);
+  const cHtf    = _htfDirState === 'aligned';
   const cAdx    = !!st.adxTrending;
   const cRsi    = tradeBias === 'LONG' ? !!st.rsiOk_long     : !!st.rsiOk_short;
   const cRegime = signalRegimeAligned;
@@ -3189,8 +3199,9 @@ function evaluateSetup(d) {
     rsi: cRsi, regime: cRegime, aboveMA: cAboveMA,
   };
 
-  // HTF supportive: aligned, or at minimum not in conflict
-  const htfSupportive = st.htfAlign === 'aligned' || st.htfAlign === 'neutral';
+  // HTF supportive: aligned, or at minimum not in conflict — same
+  // direction-aware state as cHtf above (TDAS V4.8.0 Phase A).
+  const htfSupportive = _htfDirState === 'aligned' || _htfDirState === 'neutral';
 
   // ── Step 4: Count core confirms and assign setupQuality ────────────────
   const coreConfirms = [cTema, cUtBot, cHtf, cAdx, cRsi, cRegime];
@@ -4317,7 +4328,13 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // never TEMA, so it can never contradict the TEMA-crossed clause.
       const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'short');
       detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports short.'));
-    } else if (st.htfAlign === 'conflict') {
+    } else if (getHtfDirectionState(d, 'short') === 'conflict') {
+      // TDAS V4.8.0 Phase A — was st.htfAlign === 'conflict' (signal-
+      // relative, only meaningful on a fresh signal bar). Now assessed via
+      // the same direction-aware helper the HTF pill/dot uses, relative to
+      // the open trade's own direction (dir === 'short' here), not the
+      // current scan's signal. Action/headline/detail wording and branch
+      // position unchanged.
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
@@ -4380,7 +4397,9 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // condition) and never contradicts the TEMA-crossed clause.
       const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'long');
       detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports long.'));
-    } else if (st.htfAlign === 'conflict') {
+    } else if (getHtfDirectionState(d, 'long') === 'conflict') {
+      // TDAS V4.8.0 Phase A — mirrors the short-branch fix above; see that
+      // comment for full rationale. dir === 'long' here.
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
     } else {
