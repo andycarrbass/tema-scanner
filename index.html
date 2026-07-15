@@ -3334,6 +3334,407 @@ function evaluateSetup(d) {
 
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.8 PHASE B — Market Evidence Foundation                         ║
+// ║  buildEvidence(d, entry)                                                 ║
+// ║                                                                          ║
+// ║  Purpose: produce a complete, frozen MarketEvidence object in parallel   ║
+// ║  with existing production classification/advisory output. ADDITIVE AND  ║
+// ║  DIAGNOSTIC ONLY — no existing consumer reads d.evidence in Phase B.     ║
+// ║                                                                          ║
+// ║  Contract:                                                               ║
+// ║    - Input:  d     — the calcPair() result (has d.states, d.regime,     ║
+// ║                       d.evaluation, d._1hTiming, d.htfTrendContext,      ║
+// ║                       d.htfUtBot, and identity/value fields already      ║
+// ║                       present on d, e.g. d.tf/d.htf/d.price/d.atr/       ║
+// ║                       d.trendSMA)                                       ║
+// ║              entry — resolveJournalEntry(symbol) result, or null.       ║
+// ║                       Never looked up internally — always passed in.    ║
+// ║    - Output: the complete frozen MarketEvidence schema (§3 of the V4.8   ║
+// ║              Phase B spec) — every field always present, every enum     ║
+// ║              field always one of its allowed values.                    ║
+// ║    - Pure function: no DOM access, no fetching, no indicator            ║
+// ║      recalculation, no hidden journal lookup, no mutation of d/entry/    ║
+// ║      d.states/d._1hTiming or any nested object. Never throws.           ║
+// ║                                                                          ║
+// ║  Pipeline position:                                                      ║
+// ║    computeStates(d)        → d.states      [Phase 0]                    ║
+// ║    classifyRegime(states)  → d.regime      [Phase 1]                    ║
+// ║    evaluateSetup(d)        → d.evaluation  [Phase 1.5]                  ║
+// ║    buildEvidence(d, entry) → d.evidence    [Phase 1.75 — NEW]           ║
+// ║    classifyLifecycle(d,e)  → d.lifecycle   [Phase 2]                    ║
+// ║                                                                          ║
+// ║  Does NOT consume legacy signal-relative d.htfAlign anywhere — HTF       ║
+// ║  context is derived only from genuine d.htfTrendContext/d.htfUtBot,      ║
+// ║  building on the same inputs Phase A's getHtfDirectionState() uses       ║
+// ║  (that existing helper and its callers are themselves untouched — see   ║
+// ║  _marketEvidenceHtfContext() below, a small pure evidence-specific       ║
+// ║  helper with a richer enum, added beside it rather than replacing it).  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── Frozen configurable constants (§3.7) — extension model thresholds ──────
+// Named/exported per spec so they are visible and tunable in one place,
+// matching the existing UT_BOT_KEY_VALUE / REGIME_MA_PRESSURE_PCT style.
+// Deliberately separate from the existing HIGH CONVICTION RSI caps
+// (32/38/62/68) — those remain untouched and are not reused here.
+const MARKET_EVIDENCE_RSI_OVERBOUGHT = 70;
+const MARKET_EVIDENCE_RSI_OVERSOLD   = 30;
+const MARKET_EVIDENCE_STRETCHED_ATR  = 2.5;
+const MARKET_EVIDENCE_CLIMACTIC_ATR  = 3.0;
+
+// ── §5 Direction/alignment resolution — direction-eligible voters only ─────
+// Tier 1 (setup-TF structure — decides direction): TEMA cross, UT trail
+// direction. Tier 2 (setup-TF location — breaks ties): price vs setup
+// trend SMA, price vs setup 200MA. RSI/ADX/volume/TEMA widening/freshness/
+// distance-from-MA/score/regime-quality/market-context never vote — see
+// §5.1 explicit exclusions.
+//
+// APPROVED INTERPRETATION (Phase B review): `alignment` is graded from
+// Tier 1 + Tier 2 (setup-timeframe structure and location) only — it never
+// factors in Tier 3 / HTF context. A setup-timeframe structure can
+// therefore be alignment:'strong' at the same time htfContext is
+// 'opposing' or 'strongly_opposing' (see the HYPE fixture: setup-TF TEMA +
+// UT + Tier-2 location unanimous bearish → alignment 'strong', while the
+// 1D regime opposes → htfContext 'opposing', simultaneously). HTF
+// opposition is represented separately via htfContext and intentionally
+// does not erase or downgrade setup-TF alignment — this is the approved
+// reading, not an unresolved ambiguity.
+//
+// Only UT Bot direction carries a bars-ago/freshness concept in this
+// codebase (classifyUtFreshness(st.utBot.barsAgoFlip)) — TEMA cross has no
+// equivalent age field. A Tier-1 split can therefore only be resolved via
+// §5.2 rule 2 when UT Bot is the stale/mature dissenter; a TEMA-side
+// dissent can never be verified fresh/stale from available data and always
+// falls through to 'conflicted'/'neutral'. This is a genuine data-
+// availability limitation, not an implementation choice — flagged in the
+// delivery note.
+function _marketEvidenceDirectionAlignment(d) {
+  const st = (d && d.states) || {};
+  const temaVote = st.crossLong === true ? 'bullish' : st.crossShort === true ? 'bearish' : null;
+  const utDirRaw = (st.utBot && typeof st.utBot.direction === 'number') ? st.utBot.direction : null;
+  const utVote = utDirRaw === 1 ? 'bullish' : utDirRaw === -1 ? 'bearish' : null;
+  const tier1 = [temaVote, utVote].filter(v => v !== null);
+
+  if (tier1.length === 0) {
+    return { direction: 'neutral', alignment: 'none', alignmentDissent: null };
+  }
+
+  const smaVote = st.aboveTrendSMA === true ? 'bullish' : st.aboveTrendSMA === false ? 'bearish' : null;
+  const maVote  = st.aboveMA === true ? 'bullish' : st.aboveMA === false ? 'bearish' : null;
+  const tier2 = [smaVote, maVote].filter(v => v !== null);
+  const t2Bull = tier2.filter(v => v === 'bullish').length;
+  const t2Bear = tier2.filter(v => v === 'bearish').length;
+  const tier2Majority = t2Bull > t2Bear ? 'bullish' : t2Bear > t2Bull ? 'bearish' : null;
+
+  // Single Tier-1 voter available — direction follows it, but this never
+  // reaches 'strong' by this implementation's convention: 'strong' is
+  // reserved for genuine 2-of-2 Tier-1 agreement (§5.3). Documented choice.
+  if (tier1.length === 1) {
+    const direction = tier1[0];
+    return { direction, alignment: 'moderate', alignmentDissent: null };
+  }
+
+  // Tier 1 unanimous (both voters agree)
+  if (temaVote === utVote) {
+    const direction = temaVote;
+    const alignment = (tier2Majority === direction) ? 'strong' : 'moderate';
+    return { direction, alignment, alignmentDissent: null };
+  }
+
+  // Tier 1 split (temaVote !== utVote, both present)
+  const utFreshness = st.utBot ? classifyUtFreshness(st.utBot.barsAgoFlip) : { key: 'none' };
+  const utDissentStale = (utFreshness.key === 'mature' || utFreshness.key === 'stale');
+  if (utDissentStale && tier2Majority === temaVote) {
+    // UT Bot is the stale/mature dissenter; TEMA + Tier-2 majority agree —
+    // resolves to the TEMA/Tier-2 side with UT named as the dissent.
+    return {
+      direction: temaVote,
+      alignment: 'partial',
+      alignmentDissent: { voter: 'utBot', tf: 'setup', freshnessKey: utFreshness.key },
+    };
+  }
+  // Either no Tier-2 majority, or the dissent cannot be verified stale/
+  // mature (fresh/recent/unavailable UT, or a TEMA-side dissent that has no
+  // freshness data at all) — fresh conflict / unresolved split (§5.2 rule 3,
+  // §5.3 'conflicted').
+  return { direction: 'neutral', alignment: 'conflicted', alignmentDissent: null };
+}
+
+// ── §6 HTF context — small pure evidence-specific helper ───────────────────
+// Builds on the same genuine HTF inputs Phase A's getHtfDirectionState()
+// uses (d.htfTrendContext, d.htfUtBot) but returns the richer 6-value
+// evidence enum instead of forcing the existing 3-value aligned/conflict/
+// neutral pill enum onto it — getHtfDirectionState() itself and its
+// existing callers (HTF pill/dot, Phase A evaluateSetup()/advisory
+// consumers) are completely untouched. Never consumes legacy d.htfAlign.
+function _marketEvidenceHtfContext(direction, htfTrendContext, htfUtBot) {
+  if (direction !== 'bullish' && direction !== 'bearish') return 'unknown';
+  const bullishKeys = ['bullish', 'bullish-weak', 'mixed-bullish'];
+  const bearishKeys = ['bearish', 'bearish-weak', 'mixed-bearish'];
+
+  let temaVote = null; // null = source unavailable
+  if (htfTrendContext && htfTrendContext.key) {
+    temaVote = bullishKeys.indexOf(htfTrendContext.key) !== -1 ? 'bullish'
+             : bearishKeys.indexOf(htfTrendContext.key) !== -1 ? 'bearish'
+             : 'neutral'; // htfTrendContext.key === 'neutral'
+  }
+  let utVote = null;
+  if (htfUtBot && typeof htfUtBot.direction === 'number') {
+    utVote = htfUtBot.direction === 1 ? 'bullish' : htfUtBot.direction === -1 ? 'bearish' : 'neutral';
+  }
+
+  const votes = [temaVote, utVote].filter(v => v !== null);
+  if (votes.length === 0) return 'unknown';
+
+  const supportCount = votes.filter(v => v === direction).length;
+  const opposeCount  = votes.filter(v => v !== 'neutral' && v !== direction).length;
+
+  if (supportCount === 0 && opposeCount === 0) return 'neutral'; // available but neutral
+  if (opposeCount === 0) {
+    return (votes.length >= 2 && supportCount === votes.length) ? 'aligned' : 'supportive';
+  }
+  if (supportCount === 0) {
+    return (votes.length >= 2 && opposeCount === votes.length) ? 'strongly_opposing' : 'opposing';
+  }
+  return 'neutral'; // mixed — one supports, one opposes
+}
+
+// ── §3.6 trendQuality — quality only, never direction ──────────────────────
+// Reuses the existing adxTrending (adx>=25) / adxStrong (adx>=40) states
+// already calculated by TDAS — no second ADX threshold system. This
+// codebase has no independent signal distinguishing 'weak' (ADX low but
+// not structurally rangebound) from 'ranging' (genuinely no directional
+// movement) beyond the same two booleans, so — per the spec's own
+// instruction to "use the least assertive value supported by the actual
+// data" — this implementation never emits 'ranging' from ADX alone; it
+// uses 'weak' for every not-trending case. Documented limitation, flagged
+// in the delivery note; not invented precision.
+function _marketEvidenceTrendQuality(d) {
+  const st = (d && d.states) || {};
+  const adx = (st.adx != null && isFinite(st.adx)) ? st.adx
+            : (d && d.adx != null && isFinite(d.adx)) ? d.adx : null;
+  if (adx == null) return 'weak'; // missing ADX — never directional, safest non-strong default
+  const adxStrong   = !!st.adxStrong;
+  const adxTrending = !!st.adxTrending;
+  const widening    = st.temaWidening === true; // converging (temaWidening===false) blocks 'strong'
+  if (adxStrong && widening) return 'strong';
+  if (adxStrong || adxTrending) return 'trending'; // ADX>=40 without widening remains 'trending'
+  return 'weak';
+}
+
+// ── §3.7 extension — RSI/ATR-distance based, never directional ─────────────
+// Precedence: climactic > stretched > overbought/oversold > recovering >
+// neutral. 'recovering' requires an explicit, verifiable recovery signal;
+// no such field currently exists in production data, so this
+// implementation never infers it from RSI band position alone (per spec
+// instruction) — flagged as a documented limitation, not invented.
+function _marketEvidenceExtension(d) {
+  const st = (d && d.states) || {};
+  const rsi = (st.rsi != null && isFinite(st.rsi)) ? st.rsi
+            : (d && d.rsi != null && isFinite(d.rsi)) ? d.rsi : null;
+  const atr = (d && d.atr != null && isFinite(d.atr) && d.atr > 0) ? d.atr : null;
+  const price = (d && d.price != null && isFinite(d.price)) ? d.price : null;
+  const trendSMA = (d && d.trendSMA != null && isFinite(d.trendSMA)) ? d.trendSMA : null;
+
+  let atrDistance = null;
+  if (atr != null && price != null && trendSMA != null) {
+    atrDistance = Math.abs(price - trendSMA) / atr;
+  }
+
+  if (atrDistance != null && atrDistance >= MARKET_EVIDENCE_CLIMACTIC_ATR) return 'climactic';
+  if (atrDistance != null && atrDistance >= MARKET_EVIDENCE_STRETCHED_ATR) return 'stretched';
+  if (rsi != null && rsi >= MARKET_EVIDENCE_RSI_OVERBOUGHT) return 'overbought';
+  if (rsi != null && rsi <= MARKET_EVIDENCE_RSI_OVERSOLD) return 'oversold';
+  if (rsi == null && atrDistance == null) return 'unknown';
+  return 'neutral';
+}
+
+// ── §3.8 freshness — reuses classifyUtFreshness() thresholds unchanged ─────
+// Each source keeps its own timeframe + bars-ago count; a 4H bars-ago value
+// is never labelled as 1H evidence (and vice versa).
+function _marketEvidenceFreshnessSource(barsAgo, tf) {
+  const classified = classifyUtFreshness(barsAgo);
+  return {
+    key: classified.key,
+    tf: tf || null,
+    barsAgo: (barsAgo != null && isFinite(barsAgo)) ? barsAgo : null,
+  };
+}
+function _marketEvidenceFreshness(d) {
+  const st = (d && d.states) || {};
+  const setupUtBars    = (st.utBot && st.utBot.barsAgoFlip != null) ? st.utBot.barsAgoFlip : null;
+  const adjacentUtBars = (d && d.htfUtBot && d.htfUtBot.barsAgoFlip != null) ? d.htfUtBot.barsAgoFlip : null;
+  const oneHUtBars     = (d && d._1hTiming && d._1hTiming.utBarsAgoFlip1h != null) ? d._1hTiming.utBarsAgoFlip1h : null;
+  return {
+    setupUt:    _marketEvidenceFreshnessSource(setupUtBars,    (d && d.tf)  || null),
+    adjacentUt: _marketEvidenceFreshnessSource(adjacentUtBars, (d && d.htf) || null),
+    oneHUt:     _marketEvidenceFreshnessSource(oneHUtBars,     '1h'),
+  };
+}
+
+// ── §3.9 setupIntegrity — active trades only, judged only from genuine ────
+// setup-TF data. Never redefines trade identity from the current view.
+//
+// APPROVED INTERPRETATION (Phase B review) on "TEMA convergence": the spec
+// text (§3.9) lists bare "TEMA convergence" as a standalone 'weakening'
+// trigger. Read literally, that would flag ADA 1H's frozen fixture case —
+// an active short where setup-TF TEMA is converging while still confirming
+// the trade direction (temaWidening===false, crossShort===true) — as
+// 'weakening'. Approved reading: TEMA convergence alone does NOT change
+// setupIntegrity from 'intact' while TEMA still confirms the trade
+// direction. It contributes to 'weakening' only when accompanied by loss
+// of directional structure (the setup-TF TEMA no longer confirming the
+// trade direction) or another adverse setup-TF condition (a mature/stale
+// adverse UT reading — see below). This matches the existing production
+// HOLD-detail precedent (_buildActiveTradeAdvisory's
+// _selectHoldSecondaryClause, unchanged), which already treats
+// still-confirming-but-converging as HOLD/intact context, not a demotion.
+function _marketEvidenceSetupIntegrity(d, openTrade) {
+  if (!openTrade) return null;
+  const setupTf = (openTrade.tf || '').toLowerCase();
+  const viewTf  = ((d && d.tf) || '').toLowerCase();
+  if (!setupTf || !viewTf || setupTf !== viewTf) return null; // cannot verify setup-TF state from this d
+  const st = (d && d.states) || {};
+  const dir = openTrade.signal === 'long' ? 'long' : openTrade.signal === 'short' ? 'short' : null;
+  if (!dir) return null;
+
+  const price = (d && d.price != null && isFinite(d.price)) ? d.price : null;
+  const stop = openTrade.stop != null ? openTrade.stop : (openTrade.stopPrice != null ? openTrade.stopPrice : null);
+  const stopBreached = (stop != null && price != null && isFinite(stop))
+    ? (dir === 'long' ? price <= stop : price >= stop) : false;
+
+  const utDir = (st.utBot && typeof st.utBot.direction === 'number') ? st.utBot.direction : 0;
+  const closedInvalidated = dir === 'long'
+    ? (utDir === -1 && st.aboveMA_closed === false)
+    : (utDir === 1 && st.aboveMA_closed === true);
+  if (stopBreached || closedInvalidated) return 'invalidated';
+
+  const utAdverse = dir === 'long' ? utDir === -1 : utDir === 1;
+  const utAdverseFreshness = (utAdverse && st.utBot) ? classifyUtFreshness(st.utBot.barsAgoFlip) : null;
+  if (utAdverseFreshness && (utAdverseFreshness.key === 'fresh' || utAdverseFreshness.key === 'recent')) return 'threatened';
+  if (utAdverseFreshness && (utAdverseFreshness.key === 'mature' || utAdverseFreshness.key === 'stale')) return 'weakening';
+
+  return 'intact';
+}
+
+// ── §3.10 stage — derived from the passed entry + already-available P&L ───
+function _marketEvidenceStage(d, entry) {
+  const e = entry || {};
+  if (e.closedEntry) return 'terminal';
+  if (e.openTrade) {
+    const openTrade = e.openTrade;
+    const price = (d && d.price != null && isFinite(d.price)) ? d.price : null;
+    const entryPx = openTrade.actualEntry != null ? openTrade.actualEntry
+                  : (openTrade.price != null ? openTrade.price : null);
+    let pnlPositive = null;
+    if (entryPx != null && price != null && isFinite(entryPx)) {
+      const dir = openTrade.signal === 'long' ? 'long' : 'short';
+      pnlPositive = dir === 'short' ? (price < entryPx) : (price > entryPx);
+    } else if (openTrade.pnlPct != null && isFinite(openTrade.pnlPct)) {
+      pnlPositive = openTrade.pnlPct > 0;
+    }
+    return pnlPositive === true ? 'active_profit' : 'active_early';
+  }
+  if (e.openWatch) return 'watch';
+  return 'entry';
+}
+
+// ── §3.11 blockers — hard facts only. Never RSI/ADX/HTF/staleness/score. ──
+function _marketEvidenceBlockers(d, openTrade) {
+  const blockers = [];
+  const st = (d && d.states) || {};
+  if (openTrade) {
+    const dir = openTrade.signal === 'long' ? 'long' : openTrade.signal === 'short' ? 'short' : null;
+    const price = (d && d.price != null && isFinite(d.price)) ? d.price : null;
+    const stop = openTrade.stop != null ? openTrade.stop : (openTrade.stopPrice != null ? openTrade.stopPrice : null);
+    if (dir && stop != null && price != null && isFinite(stop)) {
+      const breached = dir === 'long' ? price <= stop : price >= stop;
+      if (breached) blockers.push('stop_breach');
+    }
+    const utDir = (st.utBot && typeof st.utBot.direction === 'number') ? st.utBot.direction : 0;
+    const closedInvalidated = dir === 'long'
+      ? (utDir === -1 && st.aboveMA_closed === false)
+      : dir === 'short'
+        ? (utDir === 1 && st.aboveMA_closed === true)
+        : false;
+    if (closedInvalidated) blockers.push('closed_candle_invalidation');
+  }
+  const needsRegime = (d && d.signal && d.signal !== 'neutral') || !!openTrade;
+  if (needsRegime && (!d || !d.regime || !d.regime.direction || d.regime.key === 'NEUTRAL')) {
+    blockers.push('regime_data_unavailable');
+  }
+  return blockers;
+}
+
+// ── §3.12 sourceTf — never conflates d.tf / entry.tf / d.htf ───────────────
+function _marketEvidenceSourceTf(d, openTrade, openWatch) {
+  const view = (d && d.tf) || null;
+  const setup = (openTrade && openTrade.tf) || (openWatch && openWatch.tf) || (d && d.tf) || null;
+  const htf = (d && d.htf) || null;
+  return { view, setup, htf };
+}
+
+// ── buildEvidence(d, entry) — assembles the complete frozen schema ─────────
+function buildEvidence(d, entry) {
+  const SAFE_DEFAULT = {
+    direction: 'neutral', alignment: 'none', alignmentDissent: null,
+    htfContext: 'unknown', marketContext: 'unknown',
+    trendQuality: 'weak', extension: 'unknown',
+    freshness: {
+      setupUt:    { key: 'none', tf: null, barsAgo: null },
+      adjacentUt: { key: 'none', tf: null, barsAgo: null },
+      oneHUt:     { key: 'none', tf: null, barsAgo: null },
+    },
+    setupIntegrity: null, stage: 'entry', blockers: [], sourceTf: { view: null, setup: null, htf: null },
+  };
+  try {
+    const e = entry || {};
+    const openTrade = e.openTrade || null;
+    const openWatch = e.openWatch || null;
+
+    const { direction, alignment, alignmentDissent } = _marketEvidenceDirectionAlignment(d);
+    const htfContext = _marketEvidenceHtfContext(direction, d && d.htfTrendContext, d && d.htfUtBot);
+
+    return {
+      direction,
+      alignment,
+      alignmentDissent,
+      htfContext,
+      marketContext: 'unknown', // hardwired for all Phase B output — no BTC/breadth context added
+      trendQuality: _marketEvidenceTrendQuality(d),
+      extension: _marketEvidenceExtension(d),
+      freshness: _marketEvidenceFreshness(d),
+      setupIntegrity: _marketEvidenceSetupIntegrity(d, openTrade),
+      stage: _marketEvidenceStage(d, e),
+      blockers: _marketEvidenceBlockers(d, openTrade),
+      sourceTf: _marketEvidenceSourceTf(d, openTrade, openWatch),
+    };
+  } catch (err) {
+    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) {
+      console.warn('[buildEvidence] unexpected error — returning safe default', err);
+    }
+    return SAFE_DEFAULT;
+  }
+}
+
+// ── Diagnostic-only shadow label (§10) — normalizes MarketEvidence into ────
+// the same coarse vocabulary as the existing Technical Summary label, for
+// shadow-mode disagreement comparison only. Never used by any production
+// classification, card class, or action.
+function getMarketEvidenceShadowLabel(evidence) {
+  if (!evidence) return 'INSUFFICIENT';
+  const { direction, alignment } = evidence;
+  if (alignment === 'none') return 'INSUFFICIENT';
+  if (alignment === 'conflicted') return 'CONFLICTED';
+  if (direction === 'neutral') return 'NEUTRAL';
+  if (direction === 'bullish' && (alignment === 'strong' || alignment === 'moderate')) return 'BULLISH ALIGNED';
+  if (direction === 'bearish' && (alignment === 'strong' || alignment === 'moderate')) return 'BEARISH ALIGNED';
+  if (direction === 'bullish' && alignment === 'partial') return 'BULLISH PARTIAL';
+  if (direction === 'bearish' && alignment === 'partial') return 'BEARISH PARTIAL';
+  return 'INSUFFICIENT';
+}
+
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
 // ║  TDAS PHASE 2 — Lifecycle Engine                                        ║
 // ║  classifyLifecycle(d)                                                    ║
 // ║                                                                          ║
@@ -5501,6 +5902,7 @@ const DIAG = {
   xrpHaUtParityAudit:        false,  // XRP HA UT BOT PARITY AUDIT (4H vs 1H control) — root cause found (Spot vs Futures), off for now
   binanceFuturesSwitchValidation: false, // BINANCE FUTURES SWITCH VALIDATION (XRP+SOL 4H) — validated, off for now
   dataSourceAudit:           false,  // [DataSource] concise klines/ticker source confirmation — off for production
+  marketEvidence:            false,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -7164,9 +7566,17 @@ async function calcPair(symbol,tf){
   _result.regime = classifyRegime(_result.states);
   // TDAS Phase 1.5: evaluate setup quality from states + regime — pure, no re-derivation
   _result.evaluation = evaluateSetup(_result);
+  // TDAS V4.8 Phase B — Phase 1.75: calculate MarketEvidence in parallel.
+  // Additive/diagnostic only — no existing consumer reads d.evidence yet.
+  // Resolved entry passed explicitly; buildEvidence() performs no journal
+  // lookup of its own. Reuses the same resolveJournalEntry(symbol) call
+  // already made just below for classifyLifecycle — not a second impure
+  // lookup pattern, just computed once and reused for both.
+  const _entryForEvidence = resolveJournalEntry(symbol);
+  _result.evidence = buildEvidence(_result, _entryForEvidence);
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
-  _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
+  _result.lifecycle = classifyLifecycle(_result, _entryForEvidence);
   if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && DIAG.internalsAudit){
     console.debug('[TDAS Phase2 lifecycle]', _result.symbol||'', _result.lifecycle);
     console.debug('[TDAS Phase1 regime]', _result.symbol||'', {
@@ -8661,6 +9071,131 @@ function toggleDetail(symbol){
   openAnalysisPanel(symbol);
 }
 
+// ── TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) ──
+// Diagnostic-only renderer. Reads d.evidence; does NOT recompute any
+// evidence dimension from raw states. Only rendered when
+// DIAG.marketEvidence === true (openAnalysisPanel gates the call site).
+// Reuses the existing .ap-section/.ap-section-title/.ap-row Full Analysis
+// styles — no new CSS. Must degrade safely: any failure here returns a
+// small inline error note rather than throwing (which would blank the
+// whole Full Analysis panel) or silently omitting the section.
+function buildMarketEvidenceDiagnosticHtml(d){
+  try {
+    const ev = d && d.evidence;
+    if (!ev) {
+      return '<div class="ap-section">'
+        + '<div class="ap-section-title">Market Evidence (diagnostic)</div>'
+        + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>'
+        + '</div>';
+    }
+    const dash = '\u2014';
+    const dirLabel = ev.direction === 'bullish' ? 'Bullish' : ev.direction === 'bearish' ? 'Bearish' : 'Neutral';
+    const alignLabel = ev.alignment ? (ev.alignment.charAt(0).toUpperCase() + ev.alignment.slice(1)) : dash;
+    const dissentHtml = ev.alignmentDissent
+      ? '<div class="ap-row"><span>Named dissent</span><span>' + ev.alignmentDissent.voter + ' \u00b7 ' + (ev.alignmentDissent.tf || dash)
+        + (ev.alignmentDissent.freshnessKey ? ' \u00b7 ' + ev.alignmentDissent.freshnessKey : '') + '</span></div>'
+      : '';
+    const htfLabel = ev.htfContext ? ev.htfContext.replace(/_/g, ' ') : 'Unknown';
+    const marketLabel = ev.marketContext ? (ev.marketContext.charAt(0).toUpperCase() + ev.marketContext.slice(1)) : 'Unknown';
+    const trendLabel = ev.trendQuality ? (ev.trendQuality.charAt(0).toUpperCase() + ev.trendQuality.slice(1)) : dash;
+    const extLabel = ev.extension ? ev.extension.charAt(0).toUpperCase() + ev.extension.slice(1) : 'Unknown';
+    function freshRow(label, src){
+      if (!src) return '<div class="ap-row"><span>' + label + '</span><span>None</span></div>';
+      const keyLabel = src.key ? (src.key.charAt(0).toUpperCase() + src.key.slice(1)) : 'None';
+      const tfPart = src.tf ? (' \u00b7 ' + src.tf.toUpperCase()) : '';
+      const barsPart = (src.barsAgo != null) ? (' \u00b7 ' + src.barsAgo + ' bars') : '';
+      return '<div class="ap-row"><span>' + label + '</span><span>' + keyLabel + tfPart + barsPart + '</span></div>';
+    }
+    const integrityLabel = ev.setupIntegrity ? (ev.setupIntegrity.charAt(0).toUpperCase() + ev.setupIntegrity.slice(1)) : 'None';
+    const stageLabel = ev.stage || dash;
+    const blockersLabel = (ev.blockers && ev.blockers.length) ? ev.blockers.join(', ') : 'None';
+    const src = ev.sourceTf || {};
+
+    return '<div class="ap-section">'
+      + '<div class="ap-section-title">Market Evidence (diagnostic)</div>'
+      + '<div class="ap-row"><span>Direction</span><span>' + dirLabel + '</span></div>'
+      + '<div class="ap-row"><span>Alignment</span><span>' + alignLabel + '</span></div>'
+      + dissentHtml
+      + '<div class="ap-row"><span>HTF Context</span><span>' + htfLabel + '</span></div>'
+      + '<div class="ap-row"><span>Market Context</span><span>' + marketLabel + '</span></div>'
+      + '<div class="ap-row"><span>Trend Quality</span><span>' + trendLabel + '</span></div>'
+      + '<div class="ap-row"><span>Extension</span><span>' + extLabel + '</span></div>'
+      + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
+      + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
+      + freshRow('1H UT freshness', ev.freshness && ev.freshness.oneHUt)
+      + '<div class="ap-row"><span>Setup Integrity</span><span>' + integrityLabel + '</span></div>'
+      + '<div class="ap-row"><span>Stage</span><span>' + stageLabel + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Blockers</span><span style="font-size:11px;text-align:right;">' + blockersLabel + '</span></div>'
+      + '<div class="ap-row"><span>Source TF \u00b7 View</span><span>' + (src.view ? src.view.toUpperCase() : dash) + '</span></div>'
+      + '<div class="ap-row"><span>Source TF \u00b7 Setup</span><span>' + (src.setup ? src.setup.toUpperCase() : dash) + '</span></div>'
+      + '<div class="ap-row"><span>Source TF \u00b7 HTF</span><span>' + (src.htf ? src.htf.toUpperCase() : dash) + '</span></div>'
+      + '</div>';
+  } catch(e){
+    if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildMarketEvidenceDiagnosticHtml] render failure', e);
+    return '<div class="ap-section"><div class="ap-section-title">Market Evidence (diagnostic)</div>'
+      + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div></div>';
+  }
+}
+
+// ── TDAS V4.8 Phase B — shadow-mode disagreement diagnostic (§10) ─────────
+// Diagnostic only. Does not alter buildTechnicalSummaryHtml(), Evaluation,
+// Advisory, lifecycle, card classes, or action buttons. Calls the existing,
+// completely unchanged buildTechnicalSummaryHtml(d) renderer and extracts/
+// normalizes its already-rendered label text — this is the "safe,
+// deterministic" normalization of an unchanged existing renderer's output
+// the spec explicitly permits, not a re-implementation of its vote logic.
+function _marketEvidenceCurrentTechSummaryLabel(d){
+  try {
+    if (typeof buildTechnicalSummaryHtml !== 'function') return null;
+    const html = buildTechnicalSummaryHtml(d);
+    const m = /<div class="tdas-techsummary-label">([^<]*)<\/div>/.exec(html || '');
+    return m ? m[1] : null;
+  } catch(e) { return null; }
+}
+// Maps the existing 5-value Technical Summary label vocabulary onto the
+// same 7-value normalized vocabulary as getMarketEvidenceShadowLabel(), for
+// disagreement comparison only. 'MIXED TECHNICALS' (majority exists but a
+// meaningful opposing minority) has no exact MarketEvidence counterpart and
+// is coarsely mapped to 'NEUTRAL' — documented, not a precision claim.
+function _normalizeTechSummaryLabel(label){
+  switch(label){
+    case 'BULLISH TECHNICALS':    return 'BULLISH ALIGNED';
+    case 'BEARISH TECHNICALS':    return 'BEARISH ALIGNED';
+    case 'CONFLICTED TECHNICALS': return 'CONFLICTED';
+    case 'MIXED TECHNICALS':      return 'NEUTRAL';
+    case 'WEAK TECHNICALS':       return 'INSUFFICIENT';
+    default:                      return 'INSUFFICIENT';
+  }
+}
+// Logs one concise structured console entry ONLY when the normalized
+// MarketEvidence shadow label disagrees with the normalized current
+// Technical Summary label, and only when DIAG.marketEvidence === true.
+// Never persists, never alerts, never touches scan ordering/async behaviour.
+function _logMarketEvidenceShadowDisagreement(symbol, d, openTrade){
+  try {
+    if (DIAG.marketEvidence !== true) return;
+    const ev = d && d.evidence;
+    if (!ev) return;
+    const shadowLabel = getMarketEvidenceShadowLabel(ev);
+    const currentLabelRaw = _marketEvidenceCurrentTechSummaryLabel(d);
+    const currentLabelNorm = _normalizeTechSummaryLabel(currentLabelRaw);
+    if (shadowLabel === currentLabelNorm) return; // agreement — do not log
+    console.log('[MarketEvidence Shadow Disagreement]', {
+      symbol: symbol || null,
+      viewTf: (d && d.tf) || null,
+      setupTf: (openTrade && openTrade.tf) || (d && d.tf) || null,
+      technicalSummaryLabel: currentLabelRaw,
+      marketEvidenceShadowLabel: shadowLabel,
+      direction: ev.direction,
+      alignment: ev.alignment,
+      htfContext: ev.htfContext,
+      trendQuality: ev.trendQuality,
+      extension: ev.extension,
+      alignmentDissent: ev.alignmentDissent || null,
+    });
+  } catch(e) { /* diagnostic only — never throw into the render path */ }
+}
+
 // ── Analysis slide-over panel ─────────────────────────────────────────────
 function openAnalysisPanel(symbol){
   const d = currentScanData[symbol];
@@ -8671,6 +9206,15 @@ function openAnalysisPanel(symbol){
   // or any path that stores a calcPair result without going through the full pipeline.
   if(!d.evaluation && typeof evaluateSetup === 'function' && d.states && d.regime){
     d.evaluation = evaluateSetup(d);
+  }
+  // TDAS V4.8 Phase B — late-binding fallback: compute d.evidence if absent.
+  // Same rationale as the Phase 1.5/2 fallbacks above — handles stale
+  // currentScanData entries produced before Phase 1.75 was deployed.
+  // Explicitly resolves the journal entry here (no hidden lookup inside
+  // buildEvidence()) and does not duplicate the calculation when d.evidence
+  // already exists for this scan object.
+  if(!d.evidence && typeof buildEvidence === 'function'){
+    d.evidence = buildEvidence(d, resolveJournalEntry(symbol));
   }
   // TDAS Phase 2 — late-binding fallback: compute d.lifecycle if absent.
   // Passes resolveJournalEntry(symbol) so classifyLifecycle stays pure.
@@ -8912,15 +9456,28 @@ function openAnalysisPanel(symbol){
       + '</div>'
     : '';
 
+  // TDAS V4.8 Phase B — Market Evidence diagnostic block + shadow-mode
+  // disagreement log. Both strictly gated on DIAG.marketEvidence: when
+  // false, no block renders and nothing is logged, and all existing UI is
+  // visually unchanged (matches every other DIAG.* switch in this file).
+  const _marketEvidenceHtml = (DIAG.marketEvidence === true)
+    ? buildMarketEvidenceDiagnosticHtml(d)
+    : '';
+  if (DIAG.marketEvidence === true) {
+    _logMarketEvidenceShadowDisagreement(symbol, d, _beOpenTrade);
+  }
+
   body.innerHTML = `
     ${_advisoryHtml}
     ${_tradeReadyHtml}
     ${_beStatusHtml}
+    ${_marketEvidenceHtml}
     <!-- Signal summary -->
     <div class="ap-section">
       <div class="ap-section-title">Signal summary${_viewSuffix}</div>
       <div class="ap-row"><span>Signal</span><span style="color:${signal==='long'?'var(--green-text)':signal==='short'?'var(--red-text)':'var(--text3)'};">${signal==='long'?'▲ Long':signal==='short'?'▼ Short':'Neutral'}</span></div>
       <div class="ap-row"><span>Score</span><span>${score||0}%</span></div>
+
       <div class="ap-row"><span>HTF alignment</span><span style="color:${htfAlign==='aligned'?'var(--green-text)':htfAlign==='conflict'?'var(--red-text)':'var(--text3)'};">${htfAlign==='aligned'?'Aligned ✓':htfAlign==='conflict'?'Conflict ✗':htfAlign==='insufficient'?'Insufficient data':'Neutral —'}</span></div>
       <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>
     </div>
