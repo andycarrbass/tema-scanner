@@ -3830,6 +3830,83 @@ function findOpenTrade(symbol) {
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.8 Phase B Shadow Fix — MarketEvidence entry resolver            ║
+// ║  resolveMarketEvidenceEntry(symbol, setupTf)                             ║
+// ║                                                                          ║
+// ║  Purpose: the dedicated journal-entry resolver for MarketEvidence call   ║
+// ║  sites only. Fixes the confirmed bug where a fresh Scanner/Full Analysis ║
+// ║  view for a symbol with an old completed journal trade inherited that    ║
+// ║  closed row via resolveJournalEntry()'s closedEntry field, making        ║
+// ║  buildEvidence() report stage:'terminal' for a setup with no current     ║
+// ║  journal state at all.                                                   ║
+// ║                                                                          ║
+// ║  Returns ONLY a current active watch or a current active open trade —    ║
+// ║  NEVER a closed/deleted/cancelled/skipped/missed/superseded/historical   ║
+// ║  row, regardless of symbol match. Returns null when neither exists.      ║
+// ║                                                                          ║
+// ║  resolveJournalEntry() itself is UNCHANGED and still intentionally       ║
+// ║  surfaces closedEntry — classifyLifecycle() legitimately uses it to      ║
+// ║  report a genuine terminal lifecycle state for a closed trade, and no    ║
+// ║  other resolveJournalEntry() caller is touched by this fix.              ║
+// ║  MarketEvidence's "fresh setup" semantics are simply different: a        ║
+// ║  historical completed trade on the same symbol must never make a fresh  ║
+// ║  Scanner view look terminal.                                            ║
+// ║                                                                          ║
+// ║  Reuses the existing house predicates rather than inventing a second,    ║
+// ║  parallel definition of "active":                                        ║
+// ║    - open trade  → findOpenTrade(symbol) (TDAS AUDIT FIX H1's canonical  ║
+// ║      !deleted && decision==='took' && !outcome guard, forward-first —    ║
+// ║      same array-order convention as every other findOpenTrade() caller). ║
+// ║    - active watch → isActiveWatch(j) (!deleted && decision==='watching'  ║
+// ║      && !outcome && status!=='closed' && !closeTimestamp; already        ║
+// ║      excludes superseded watches for free, since a superseded watch has  ║
+// ║      outcome:'taken' — see isSupersededWatch()). Most-recent-last wins,  ║
+// ║      mirroring resolveJournalEntry()'s own most-recent-first scan        ║
+// ║      convention (no existing dedicated watch-finder to reuse here).      ║
+// ║                                                                          ║
+// ║  Timeframe matching: when a reliable setupTf is supplied (the caller's   ║
+// ║  d.tf — the scan/view timeframe, the same identity already used as the   ║
+// ║  sourceTf.setup fallback elsewhere in MarketEvidence), a candidate row   ║
+// ║  must share that timeframe to be attached — an active 1H trade must      ║
+// ║  never attach to a fresh 4H setup and vice versa. When setupTf is        ║
+// ║  unavailable, or a candidate row has no .tf of its own, the timeframe    ║
+// ║  check is skipped rather than over-filtering a legitimately eligible     ║
+// ║  row into oblivion.                                                      ║
+// ║                                                                          ║
+// ║  Priority when both an active trade and an active watch exist for the    ║
+// ║  same symbol/timeframe (should be rare in practice — see                 ║
+// ║  isSupersededWatch()): the open trade wins, matching                     ║
+// ║  resolveJournalEntry()'s own openTrade-before-openWatch precedence and   ║
+// ║  classifyLifecycle()'s existing "if openTrade" priority order.           ║
+// ║                                                                          ║
+// ║  Return shape: { openTrade, openWatch } with exactly one populated (the  ║
+// ║  other null), matching buildEvidence()'s existing entry contract — or    ║
+// ║  null. NEVER includes closedEntry.                                       ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function resolveMarketEvidenceEntry(symbol, setupTf) {
+  if (!symbol || typeof journal === 'undefined' || !Array.isArray(journal)) return null;
+
+  const tfMatches = (rowTf) => {
+    if (!setupTf || !rowTf) return true; // no reliable setup-TF identity available — don't over-filter
+    return String(rowTf).toLowerCase() === String(setupTf).toLowerCase();
+  };
+
+  const candidateTrade = findOpenTrade(symbol);
+  if (candidateTrade && tfMatches(candidateTrade.tf)) {
+    return { openTrade: candidateTrade, openWatch: null };
+  }
+
+  for (let i = journal.length - 1; i >= 0; i--) {
+    const j = journal[i];
+    if (j && j.symbol === symbol && typeof isActiveWatch === 'function' && isActiveWatch(j) && tfMatches(j.tf)) {
+      return { openTrade: null, openWatch: j };
+    }
+  }
+
+  return null;
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
 // ║  TDAS AUDIT FIX H4 — Trade plan coherence guard                         ║
 // ║  validateTradePlanCoherence(entry)                                        ║
 // ║                                                                          ║
@@ -7569,14 +7646,22 @@ async function calcPair(symbol,tf){
   // TDAS V4.8 Phase B — Phase 1.75: calculate MarketEvidence in parallel.
   // Additive/diagnostic only — no existing consumer reads d.evidence yet.
   // Resolved entry passed explicitly; buildEvidence() performs no journal
-  // lookup of its own. Reuses the same resolveJournalEntry(symbol) call
-  // already made just below for classifyLifecycle — not a second impure
-  // lookup pattern, just computed once and reused for both.
-  const _entryForEvidence = resolveJournalEntry(symbol);
-  _result.evidence = buildEvidence(_result, _entryForEvidence);
+  // lookup of its own.
+  //
+  // TDAS V4.8 Phase B Shadow Fix: uses the dedicated
+  // resolveMarketEvidenceEntry(symbol, setupTf) resolver, NOT
+  // resolveJournalEntry(symbol) — a historical completed trade on this
+  // symbol must never surface as MarketEvidence stage:'terminal' for a
+  // fresh setup with no current watch/open trade. _result.tf is the
+  // setup/scan timeframe for this calcPair() call. classifyLifecycle()
+  // below intentionally still uses the full resolveJournalEntry(symbol)
+  // result (including closedEntry) — that is correct, unchanged Lifecycle
+  // behaviour and out of scope for this fix, so the two calls can no
+  // longer share a single resolved entry.
+  _result.evidence = buildEvidence(_result, resolveMarketEvidenceEntry(symbol, _result.tf));
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
-  _result.lifecycle = classifyLifecycle(_result, _entryForEvidence);
+  _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
   if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE && DIAG.internalsAudit){
     console.debug('[TDAS Phase2 lifecycle]', _result.symbol||'', _result.lifecycle);
     console.debug('[TDAS Phase1 regime]', _result.symbol||'', {
@@ -9213,8 +9298,14 @@ function openAnalysisPanel(symbol){
   // Explicitly resolves the journal entry here (no hidden lookup inside
   // buildEvidence()) and does not duplicate the calculation when d.evidence
   // already exists for this scan object.
+  //
+  // TDAS V4.8 Phase B Shadow Fix: uses resolveMarketEvidenceEntry(symbol,
+  // d.tf) — NOT resolveJournalEntry(symbol) — so a historical completed
+  // trade on this symbol cannot surface as stage:'terminal' for a fresh
+  // setup with no current watch/open trade. See resolveMarketEvidenceEntry()
+  // for full rationale; d.tf is this scan's setup/view timeframe.
   if(!d.evidence && typeof buildEvidence === 'function'){
-    d.evidence = buildEvidence(d, resolveJournalEntry(symbol));
+    d.evidence = buildEvidence(d, resolveMarketEvidenceEntry(symbol, d.tf));
   }
   // TDAS Phase 2 — late-binding fallback: compute d.lifecycle if absent.
   // Passes resolveJournalEntry(symbol) so classifyLifecycle stays pure.
