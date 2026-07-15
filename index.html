@@ -7643,6 +7643,31 @@ async function calcPair(symbol,tf){
   _result.regime = classifyRegime(_result.states);
   // TDAS Phase 1.5: evaluate setup quality from states + regime — pure, no re-derivation
   _result.evaluation = evaluateSetup(_result);
+  // TDAS V4.8 Phase B Shadow Fix — _1hTiming carry-forward (root-cause fix
+  // for the MarketEvidence oneHUt "None · 1H" audit).
+  //
+  // Root cause identified: _1hTiming is not part of calcPair()'s own
+  // calculation — see _calc1HTiming()'s own header comment — it's
+  // maintained by a separate engine and stored only on
+  // currentScanData[symbol]._1hTiming (populated by _timingRefresh() for
+  // active watches and _ensureActiveTrade1HTiming()/_ensure1HTimingFor()
+  // for active open trades). Every caller that replaces
+  // currentScanData[symbol] wholesale with a fresh calcPair() result —
+  // runScan()'s regular Scanner cycle, in particular — was silently
+  // discarding any already-computed _1hTiming for that symbol on every
+  // scan tick, because a fresh calcPair() result naturally has no
+  // _1hTiming field of its own. _tdSignalRefresh() already worked around
+  // this manually for its own Trade-Desk-only refresh path (see its own
+  // "must be explicitly carried forward" comment); this preserves the same
+  // value here, inside calcPair() itself, so every caller — including
+  // runScan(), which this fix does not otherwise touch — benefits
+  // automatically without runScan()'s own code needing to change. This is
+  // a plain carry-forward of an already-computed, independently-maintained
+  // value; it does not recalculate UT Bot, fetch additional candles, or
+  // duplicate _calc1HTiming()'s logic in any way.
+  if (typeof currentScanData !== 'undefined' && currentScanData && currentScanData[symbol] && currentScanData[symbol]._1hTiming) {
+    _result._1hTiming = currentScanData[symbol]._1hTiming;
+  }
   // TDAS V4.8 Phase B — Phase 1.75: calculate MarketEvidence in parallel.
   // Additive/diagnostic only — no existing consumer reads d.evidence yet.
   // Resolved entry passed explicitly; buildEvidence() performs no journal
@@ -9184,13 +9209,21 @@ function buildMarketEvidenceDiagnosticHtml(d){
     const marketLabel = ev.marketContext ? (ev.marketContext.charAt(0).toUpperCase() + ev.marketContext.slice(1)) : 'Unknown';
     const trendLabel = ev.trendQuality ? (ev.trendQuality.charAt(0).toUpperCase() + ev.trendQuality.slice(1)) : dash;
     const extLabel = ev.extension ? ev.extension.charAt(0).toUpperCase() + ev.extension.slice(1) : 'Unknown';
-    function freshRow(label, src){
+    function freshRow(label, src, notApplicable){
+      if (notApplicable) return '<div class="ap-row"><span>' + label + '</span><span>Not applicable</span></div>';
       if (!src) return '<div class="ap-row"><span>' + label + '</span><span>None</span></div>';
       const keyLabel = src.key ? (src.key.charAt(0).toUpperCase() + src.key.slice(1)) : 'None';
       const tfPart = src.tf ? (' \u00b7 ' + src.tf.toUpperCase()) : '';
       const barsPart = (src.barsAgo != null) ? (' \u00b7 ' + src.barsAgo + ' bars') : '';
       return '<div class="ap-row"><span>' + label + '</span><span>' + keyLabel + tfPart + barsPart + '</span></div>';
     }
+    // TDAS V4.8 Phase B Shadow Fix — 1H timing is only a genuinely separate
+    // evidence source on 4H (or higher) setups; on a 1H setup, setupUt IS
+    // the 1H reading, so oneHUt is not a distinct source and must not be
+    // shown as if data were simply missing. Uses ev.sourceTf.setup (the
+    // frozen, already-computed evidence field) rather than re-deriving
+    // timeframe identity from raw d.tf here.
+    const isOneHSetup = !!(ev.sourceTf && ev.sourceTf.setup === '1h');
     const integrityLabel = ev.setupIntegrity ? (ev.setupIntegrity.charAt(0).toUpperCase() + ev.setupIntegrity.slice(1)) : 'None';
     const stageLabel = ev.stage || dash;
     const blockersLabel = (ev.blockers && ev.blockers.length) ? ev.blockers.join(', ') : 'None';
@@ -9207,7 +9240,7 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + '<div class="ap-row"><span>Extension</span><span>' + extLabel + '</span></div>'
       + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
       + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
-      + freshRow('1H UT freshness', ev.freshness && ev.freshness.oneHUt)
+      + freshRow('1H timing UT freshness', ev.freshness && ev.freshness.oneHUt, isOneHSetup)
       + '<div class="ap-row"><span>Setup Integrity</span><span>' + integrityLabel + '</span></div>'
       + '<div class="ap-row"><span>Stage</span><span>' + stageLabel + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Blockers</span><span style="font-size:11px;text-align:right;">' + blockersLabel + '</span></div>'
