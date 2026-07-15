@@ -5902,7 +5902,7 @@ const DIAG = {
   xrpHaUtParityAudit:        false,  // XRP HA UT BOT PARITY AUDIT (4H vs 1H control) — root cause found (Spot vs Futures), off for now
   binanceFuturesSwitchValidation: false, // BINANCE FUTURES SWITCH VALIDATION (XRP+SOL 4H) — validated, off for now
   dataSourceAudit:           false,  // [DataSource] concise klines/ticker source confirmation — off for production
-  marketEvidence:            false,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log
+  marketEvidence:            true,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log — ENABLED for live shadow observation ahead of Phase C
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
