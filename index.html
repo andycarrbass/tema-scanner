@@ -4330,6 +4330,306 @@ function _capReasonText(ev, d) {
   return 'not high-probability';
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.8 Phase D — Advisory Evidence Grammar                          ║
+// ║  Shared pure wording helpers reading d.evidence (MarketEvidence) only.   ║
+// ║                                                                          ║
+// ║  Contract for every helper below:                                        ║
+// ║    - pure: no DOM access, no fetch, no journal lookup, no mutation.      ║
+// ║    - never throws; returns null/a safe default on missing/malformed      ║
+// ║      input so callers can fall back to the existing legacy wording path. ║
+// ║    - formats/selects wording ONLY — never decides action/headline/       ║
+// ║      trigger. Every call site below is a `detail =` assignment; not one  ║
+// ║      `action =`/`headline =` line changed anywhere in this phase.        ║
+// ║    - does not call buildEvidence() — evidence must already exist on d.   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// §8 Freshness verb table. 'flipped' is reachable ONLY for key==='fresh' —
+// every other branch (including the 'none' no-statement case) makes the
+// XRP-class "stale signal described as flipped" bug structurally
+// unreachable, since there is no code path that emits 'flipped' outside
+// this one condition.
+function _formatUtFreshnessVerb(freshnessKey, direction, barsAgo){
+  if (freshnessKey === 'fresh') return 'flipped ' + direction;
+  if (freshnessKey === 'recent' || freshnessKey === 'mature') return 'remains ' + direction;
+  if (freshnessKey === 'stale') {
+    return (barsAgo != null && isFinite(barsAgo))
+      ? ('remains stale ' + direction + ' (' + barsAgo + ' bars)')
+      : ('remains stale ' + direction);
+  }
+  return null; // 'none' or unrecognized — no directional UT statement at all
+}
+
+// §9 HTF context phrase table, relative to the active setup/trade
+// direction. Prefers an explicit timeframe label when available. Never
+// produces legacy "HTF neutral — no directional tailwind"-style wording
+// that could contradict an opposing/strongly_opposing evidence value.
+function _formatHtfContextPhrase(htfContext, tradeDirWord, htfLabel){
+  const label = htfLabel ? htfLabel + ' context' : 'HTF context';
+  switch (htfContext) {
+    case 'aligned':           return label + ' is aligned.';
+    case 'supportive':        return label + ' remains supportive.';
+    case 'neutral':           return label + ' is neutral.';
+    case 'opposing':          return label + ' opposes the ' + tradeDirWord + '.';
+    case 'strongly_opposing': return label + ' strongly opposes the ' + tradeDirWord + '.';
+    case 'unknown':
+    default:                  return 'HTF context is unavailable.';
+  }
+}
+
+// §10 Alignment phrase — used by scanner wording; active-trade HOLD uses
+// the richer P1 multi-timeframe form instead (see _selectEvidenceHoldOpening).
+function _formatAlignmentPhrase(direction, alignment, dissent){
+  const dirWord = direction === 'bullish' ? 'Bullish' : direction === 'bearish' ? 'Bearish' : 'Directional';
+  if (alignment === 'strong')   return dirWord + ' alignment is strong.';
+  if (alignment === 'moderate') return dirWord + ' structure remains aligned.';
+  if (alignment === 'partial')  return _formatEvidenceDissent(dissent, direction); // reuses the unchanged Phase C helper — not a second classifier
+  if (alignment === 'conflicted') return 'Fresh setup-timeframe signals are opposing.';
+  if (alignment === 'none') return 'Directional evidence is insufficient.';
+  return null;
+}
+
+// §11 Trend quality / extension clauses — identical wording table to Phase
+// C's Technical Summary helpers, reimplemented here as separate small
+// functions (not shared call) so Advisory and Technical Summary remain
+// independently editable per their own explicit-non-goals lists, while
+// still both being pure evidence formatters with no second classifier.
+function _formatTrendQualityClause(trendQuality){
+  switch (trendQuality) {
+    case 'strong':   return 'Trend quality is strong.';
+    case 'trending': return 'Trend quality is supportive.';
+    case 'weak':     return 'Trend quality is weak.';
+    case 'ranging':  return 'Trend conditions are ranging.';
+    default:         return null;
+  }
+}
+function _formatExtensionClause(extension){
+  switch (extension) {
+    case 'overbought': return 'RSI is overbought.';
+    case 'oversold':   return 'RSI is oversold.';
+    case 'stretched':  return 'The move is stretched.';
+    case 'climactic':  return 'The move is climactic.';
+    case 'recovering': return 'Extension is recovering.';
+    case 'neutral':
+    case 'unknown':
+    default:           return null;
+  }
+}
+
+// §7 Active-trade HOLD qualifier priority selector (P1-P6), plus the P1
+// identity-upgrade opening. Returns { opening, qualifier } — `opening` is
+// either null (caller uses its own plain "{setupTf} {dir} intact."
+// identity) or the richer multi-timeframe alignment identity variant;
+// `qualifier` is at most one trailing clause (itself allowed to be a
+// compound "extension; quality" per §7 P4's explicit two-fact exception).
+// Never selects a contradictory clause combination — each P-tier is
+// mutually exclusive by construction (an early return prevents falling
+// into a later tier).
+function _selectEvidenceHoldWording(d, openTrade, tradeDirWord, legacyAdverseInfo){
+  const ev = d && d.evidence;
+  if (!ev || typeof ev.direction !== 'string' || typeof ev.alignment !== 'string') return null; // caller falls back to legacy wording entirely
+  const tradeDirection = tradeDirWord === 'long' ? 'bullish' : 'bearish';
+  const oppositeDirection = tradeDirWord === 'long' ? 'bearish' : 'bullish';
+  const st = (d && d.states) || {};
+  const viewMatchesSetup = (d.tf || '').toLowerCase() === ((openTrade && openTrade.tf) || '').toLowerCase();
+  const srcTf = ev.sourceTf || {};
+  const setupLabel = (srcTf.setup || '').toUpperCase();
+  const htfLabelUpper = (srcTf.htf || '').toUpperCase();
+
+  // Joins two clauses as "A; b." (strips A's trailing period, lower-cases
+  // b's leading letter) — the one explicitly-permitted two-fact
+  // composition (§7 P4's own exception, also used to attach an extension
+  // fact onto a P5 HTF-trend fact — see the approved ADA 4H canonical case).
+  function _joinClause(a, b){
+    if (!a) return b;
+    if (!b) return a;
+    const firstWord = b.split(' ')[0];
+    const isAcronymLead = firstWord.length > 1 && firstWord === firstWord.toUpperCase() && /[A-Z]/.test(firstWord);
+    const bAdj = isAcronymLead ? b : (b.charAt(0).toLowerCase() + b.slice(1));
+    return a.replace(/\.$/, '') + '; ' + bAdj;
+  }
+
+  // ── P1 — multi-timeframe alignment identity upgrade ──────────────────
+  // Restricted to the specific, approved "4H setup + genuine 1H timing
+  // support" case (matches the TAO canonical case exactly) — this is what
+  // §7's own P1 sub-note ("For 4H setups with valid 1H timing support")
+  // describes; a generic setup/HTF pairing is deliberately NOT upgraded to
+  // this identity form (see the ADA 4H canonical case, a 1H setup with
+  // supportive 4H context, which keeps the plain "1H short intact."
+  // identity and surfaces the HTF fact as a qualifier instead — §7 P5).
+  // d._1hTiming.utDirection1h is read directly here (not via
+  // evidence.freshness.oneHUt, which carries no direction) — an
+  // already-computed field, not a new indicator calculation, and the same
+  // field this function already reads elsewhere in this codebase.
+  let opening = null;
+  const alignedStrongOrModerate = (ev.alignment === 'strong' || ev.alignment === 'moderate') && ev.direction === tradeDirection;
+  if (alignedStrongOrModerate && setupLabel === '4H') {
+    const oneH = d && d._1hTiming;
+    const oneHDirNum = oneH && typeof oneH.utDirection1h === 'number' ? oneH.utDirection1h : null;
+    const oneHSupports = oneHDirNum != null && (tradeDirWord === 'long' ? oneHDirNum === 1 : oneHDirNum === -1);
+    if (oneHSupports) opening = '1H/4H ' + tradeDirection + ' alignment intact.';
+  }
+
+  const extClause  = _formatExtensionClause(ev.extension);
+  const qualClauseRaw = _formatTrendQualityClause(ev.trendQuality);
+  const qualClause = (qualClauseRaw && ev.trendQuality !== 'trending') ? qualClauseRaw : null; // 'trending' alone is too unremarkable to surface
+
+  let qualifier = null;
+
+  // P2 — momentum weakening/convergence. Only meaningful when the current
+  // view genuinely IS the setup timeframe.
+  const temaStillSupports = tradeDirWord === 'short' ? st.crossShort === true : st.crossLong === true;
+  if (qualifier === null && viewMatchesSetup && st.temaWidening === false && temaStillSupports) {
+    qualifier = 'TEMA momentum is converging.';
+  }
+
+  // P3 — non-fresh adverse UT context, freshness-aware. Checks the
+  // setup-TF adverse UT first (legacyAdverseInfo, from the existing
+  // _adverseUtInfo() helper — unchanged), then the adjacent/HTF-tier
+  // adverse UT using evidence.freshness.adjacentUt (evidence-owned
+  // freshness/bars) combined with d.htfUtBot.direction (already-computed,
+  // the same raw field _marketEvidenceFreshness() itself draws from) for
+  // which way it reads — matches the approved XRP canonical case exactly.
+  if (qualifier === null && legacyAdverseInfo && legacyAdverseInfo.isAdverse && !legacyAdverseInfo.isFresh) {
+    const verb = _formatUtFreshnessVerb(legacyAdverseInfo.freshness.key, oppositeDirection, legacyAdverseInfo.bars);
+    if (verb) qualifier = legacyAdverseInfo.tfLabel + ' UT ' + verb + (legacyAdverseInfo.freshness.key === 'stale' ? '.' : ' against ' + tradeDirWord + '.');
+  }
+  if (qualifier === null) {
+    const htfUt = d && d.htfUtBot;
+    const htfUtDirNum = htfUt && typeof htfUt.direction === 'number' ? htfUt.direction : null;
+    const htfUtAdverse = htfUtDirNum != null && (tradeDirWord === 'long' ? htfUtDirNum === -1 : htfUtDirNum === 1);
+    const adjFresh = ev.freshness && ev.freshness.adjacentUt;
+    if (htfUtAdverse && adjFresh && adjFresh.key !== 'none' && adjFresh.key !== 'fresh') {
+      const verb = _formatUtFreshnessVerb(adjFresh.key, oppositeDirection, adjFresh.barsAgo);
+      if (verb) {
+        const adjLabel = (adjFresh.tf || htfLabelUpper || '').toUpperCase();
+        qualifier = adjLabel + ' UT ' + verb + (adjFresh.key === 'stale' ? '.' : ' against ' + tradeDirWord + '.');
+      }
+    }
+  }
+
+  // P5 — HTF context. Skipped when P1 already claimed multi-timeframe
+  // alignment (which itself implies genuine HTF confirmation — restating
+  // it here would be redundant; see the TAO canonical case, which reaches
+  // P4 instead). Opposing/strongly_opposing always use the honest §9
+  // phrase. Aligned/supportive use the more informative "{tf} trend
+  // remains {direction}." form, with any available extension fact
+  // attached (matches the approved ADA 4H canonical case exactly).
+  if (qualifier === null && opening === null && ev.htfContext && ev.htfContext !== 'unknown') {
+    if (ev.htfContext === 'opposing' || ev.htfContext === 'strongly_opposing') {
+      qualifier = _formatHtfContextPhrase(ev.htfContext, tradeDirWord, htfLabelUpper);
+    } else if ((ev.htfContext === 'aligned' || ev.htfContext === 'supportive') && htfLabelUpper) {
+      qualifier = _joinClause(htfLabelUpper + ' trend remains ' + tradeDirection + '.', extClause);
+    } else if (ev.htfContext === 'neutral') {
+      qualifier = _formatHtfContextPhrase('neutral', tradeDirWord, htfLabelUpper);
+    }
+  }
+
+  // P4 — extension, then quality (compound clause allowed per §7's own
+  // exception) — only reached when nothing above already fired.
+  if (qualifier === null) {
+    if (extClause && qualClause) qualifier = _joinClause(extClause, qualClause);
+    else if (extClause) qualifier = extClause;
+    else if (qualClause) qualifier = qualClause;
+  }
+
+  // P6 — neutral fallback.
+  if (qualifier === null) qualifier = 'Trade thesis remains intact.';
+
+  return { opening, qualifier };
+}
+
+// Builds the full evidence-driven HOLD detail string: "{identity}
+// {qualifier}". Falls back to null (caller uses the existing legacy
+// _buildHoldDetail) when evidence is unusable.
+function _buildEvidenceHoldDetail(d, openTrade, tradeDirWord, legacyAdverseInfo, plainIdentity){
+  const wording = _selectEvidenceHoldWording(d, openTrade, tradeDirWord, legacyAdverseInfo);
+  if (!wording) return null;
+  const identity = wording.opening || plainIdentity;
+  return identity + (wording.qualifier ? ' ' + wording.qualifier : '');
+}
+
+// §13 Scanner/entry interpretive detail. dirWord: 'LONG'|'SHORT' (the
+// card's proposed trade direction). Returns null when evidence is
+// unusable or disagrees with the card's proposed direction (evaluateSetup
+// already gates most such disagreement upstream; this never asserts
+// something the evidence doesn't support) — callers fall back to the
+// existing legacy detail source (ev.reasons[0]/ev.warnings[0]/etc.).
+function _buildScannerEvidenceDetail(d, dirWord){
+  const ev = d && d.evidence;
+  if (!ev || typeof ev.direction !== 'string' || typeof ev.alignment !== 'string') return null;
+  const tradeDirection = dirWord === 'LONG' ? 'bullish' : 'bearish';
+  const capWord = tradeDirection.charAt(0).toUpperCase() + tradeDirection.slice(1);
+
+  if (ev.alignment === 'none') return 'Directional evidence is insufficient.';
+  if (ev.alignment === 'conflicted') return 'Fresh setup-timeframe signals are opposing. Wait for structure to resolve.';
+  if (ev.alignment === 'partial') {
+    if (ev.direction !== tradeDirection) return null; // dissent-named direction doesn't match the card — degrade to legacy rather than misstate
+    let base = _formatEvidenceDissent(ev.alignmentDissent, ev.direction);
+    const qualClause = _formatTrendQualityClause(ev.trendQuality);
+    if (qualClause && ev.trendQuality !== 'trending') base += ' ' + qualClause;
+    return base;
+  }
+  if (ev.direction !== tradeDirection) return null; // strong/moderate but disagreeing direction — do not assert
+
+  if (ev.htfContext === 'opposing' || ev.htfContext === 'strongly_opposing') {
+    const q = ev.htfContext === 'strongly_opposing' ? 'strongly opposes' : 'opposes';
+    return capWord + ' setup structure is intact, but HTF context ' + q + '.';
+  }
+
+  let base = 'Strong ' + tradeDirection + ' structure';
+  base += (ev.htfContext === 'aligned') ? ' with aligned HTF context.' : '.';
+  const extClause = _formatExtensionClause(ev.extension);
+  const qualClause = _formatTrendQualityClause(ev.trendQuality);
+  const tail = extClause || (qualClause && ev.trendQuality !== 'trending' ? qualClause : null);
+  return tail ? base + ' ' + tail : base;
+}
+
+// TDAS V4.8 Phase D Completion Fix — evidence-driven HTF warning phrase.
+// Distinct from _formatHtfContextPhrase (Advisory *detail* sentences,
+// which end in a period): this formats a short warnings[]-list item, in
+// the same terse style as the array's other entries ('TEMA not yet
+// confirmed', 'ADX ranging — reduced trend reliability') — no trailing
+// period. Opposing/strongly_opposing name both the HTF label and the
+// setup timeframe + direction being opposed (matches the required
+// examples exactly); neutral/supportive stay generic, matching the
+// required examples exactly. Returns null for 'unknown' or an
+// unrecognized value — caller keeps the legacy wording in that case.
+function _formatHtfWarningPhrase(htfContext, htfLabel, setupTfLabel, tradeDirWord){
+  const label = htfLabel || 'HTF';
+  const dirPhrase = (setupTfLabel ? setupTfLabel + ' ' : '') + tradeDirWord;
+  switch (htfContext) {
+    case 'opposing':          return label + ' context opposes the ' + dirPhrase;
+    case 'strongly_opposing': return label + ' context strongly opposes the ' + dirPhrase;
+    case 'neutral':           return 'HTF context is neutral';
+    case 'aligned':
+    case 'supportive':        return 'HTF context remains supportive';
+    default:                  return null; // 'unknown' or unrecognized — caller keeps legacy wording
+  }
+}
+
+// Returns a NEW warnings array (never mutates the input) with the legacy
+// 'HTF neutral — no directional tailwind' entry's TEXT replaced by the
+// evidence-driven phrase above, when d.evidence is usable — same
+// condition that produced the entry, same array position, nothing added/
+// removed/reordered. Falls back to the exact legacy string when
+// d.evidence is missing/malformed or htfContext is 'unknown'.
+function _reconcileHtfWarningWording(rawWarnings, d, dirWord){
+  const LEGACY_HTF_NEUTRAL_TEXT = 'HTF neutral — no directional tailwind';
+  if (!Array.isArray(rawWarnings) || rawWarnings.indexOf(LEGACY_HTF_NEUTRAL_TEXT) === -1) {
+    return rawWarnings || [];
+  }
+  const ev = d && d.evidence;
+  if (!ev || typeof ev.htfContext !== 'string') return rawWarnings; // no usable evidence — legacy fallback
+  const srcTf = ev.sourceTf || {};
+  const htfLabel = (srcTf.htf || d.htf || '').toUpperCase();
+  const setupTfLabel = (srcTf.setup || '').toUpperCase();
+  const tradeDirWord = dirWord === 'LONG' ? 'long' : dirWord === 'SHORT' ? 'short' : '';
+  const replacement = _formatHtfWarningPhrase(ev.htfContext, htfLabel, setupTfLabel, tradeDirWord);
+  if (!replacement) return rawWarnings; // htfContext 'unknown' or unrecognized — legacy fallback
+  return rawWarnings.map(w => w === LEGACY_HTF_NEUTRAL_TEXT ? replacement : w);
+}
+
 function _buildScannerAdvisory(d) {
   const ev = d.evaluation;
   if (!ev || ev.tradeBias === 'NEUTRAL' || ev.actionBias === ACTION_BIAS.NO_SETUP) {
@@ -4359,9 +4659,15 @@ function _buildScannerAdvisory(d) {
       action = 'WATCH'; headline = 'WATCH ' + dir;
       next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
       const htfLabel = (d.htf || 'HTF').toUpperCase();
-      detail = dir === 'LONG'
+      // TDAS V4.8 Phase D — prefer the evidence-driven interpretive
+      // sentence (matches §13's "opposing HTF" example: "Bullish setup
+      // structure is intact, but 1D context strongly opposes.") over the
+      // fixed regime-only sentence, when evidence is available and agrees
+      // with the card's proposed direction. Falls back to the original
+      // wording otherwise — action/headline/next are unchanged either way.
+      detail = _buildScannerEvidenceDetail(d, dir) || (dir === 'LONG'
         ? '4H long setup, but ' + htfLabel + ' regime still opposes.'
-        : '4H short setup, but ' + htfLabel + ' regime still opposes.';
+        : '4H short setup, but ' + htfLabel + ' regime still opposes.');
     } else {
       action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
       next = 'Wait for regime improvement or a cleaner reset before considering entry.';
@@ -4370,18 +4676,23 @@ function _buildScannerAdvisory(d) {
   } else if (ev.actionBias === ACTION_BIAS['WATCH' + sfx]) {
     action = 'WATCH'; headline = 'WATCH';
     next = 'Wait for stronger confirmation before considering entry.';
-    // WATCH should explain what's missing/unresolved, not lead with a
-    // supporting fact — warnings[] describes exactly that; reasons[] is
-    // the fallback only when there are genuinely no warnings recorded.
-    detail = (ev.warnings && ev.warnings.length) ? ev.warnings[0]
+    // TDAS V4.8 Phase D — prefer the evidence-driven interpretive sentence
+    // over restating the raw dot row (evaluateSetup's warnings[0]/
+    // reasons[0]) when evidence is available and agrees with the card's
+    // proposed direction. WATCH should explain what's missing/unresolved,
+    // not lead with a supporting fact — warnings[] remains the fallback
+    // source and is otherwise unchanged.
+    detail = _buildScannerEvidenceDetail(d, dir)
+      || ((ev.warnings && ev.warnings.length) ? ev.warnings[0]
       : (ev.reasons && ev.reasons.length) ? ev.reasons[0]
-      : 'Setup forming, confirmation missing.';
+      : 'Setup forming, confirmation missing.');
   } else if (ev.actionBias === ACTION_BIAS['CONSIDER' + sfx]) {
     action = 'CONSIDER' + sfx; headline = 'CONSIDER ' + dir;
     next = 'Review position size and entry trigger.';
-    // CONSIDER should explain the main support — reasons[0] already does
-    // this correctly (reviewed per Task 3, no change needed).
-    detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
+    // TDAS V4.8 Phase D — prefer the evidence-driven interpretive sentence;
+    // reasons[0] remains the fallback (reviewed per Task 3, still correct
+    // when evidence is unavailable/disagrees).
+    detail = _buildScannerEvidenceDetail(d, dir) || ((ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : ''));
   } else if (ev.actionBias === ACTION_BIAS['STRONG' + sfx]) {
     // RSI-stretched cap (Advisory: RSI timing) — computed once, used by
     // both branches below. Direction/signal itself is unaffected; this only
@@ -4390,12 +4701,11 @@ function _buildScannerAdvisory(d) {
     if (ev.highProbability === true && !_rsiCapped) {
       action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
       next = 'Consider entry if position size and risk are acceptable.';
-      // HIGH CONVICTION should explain strongest confluence — reasons[0] is
-      // already correct here too (reviewed per Task 3, no change needed):
-      // for a genuine STRONG setup nearly every confirm is true, so the
-      // first-populated reason (regime/TEMA/UT/HTF, in that fixed order) is
-      // itself a legitimate top piece of confluence, not an arbitrary pick.
-      detail = (ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : '');
+      // TDAS V4.8 Phase D — prefer the evidence-driven interpretive
+      // sentence; reasons[0] remains the fallback (reviewed per Task 3,
+      // still a legitimate top piece of confluence when evidence is
+      // unavailable/disagrees).
+      detail = _buildScannerEvidenceDetail(d, dir) || ((ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : ''));
     } else {
       // Advisory Calibration Phase 1 — presentation-layer cap. actionBias
       // can be STRONG_* from setupQuality==='HIGH' alone, without passing
@@ -4475,7 +4785,19 @@ function _buildScannerAdvisory(d) {
     readyLabel: tradeReady ? 'TRADE READY' : null,
     supporting: ev.reasons  || [],
     blocking:   ev.blockers || [],
-    warnings:   ev.warnings || [],
+    // TDAS V4.8 Phase D Completion Fix — the raw ev.warnings array can
+    // contain the legacy signal-relative 'HTF neutral — no directional
+    // tailwind' entry (from evaluateSetup(), which runs before
+    // buildEvidence() in the pipeline and therefore cannot itself read
+    // d.evidence) even when the real evidence-derived htfContext is
+    // 'opposing'/'strongly_opposing' — a direct wording contradiction.
+    // _reconcileHtfWarningWording() returns a NEW array with only that one
+    // exact entry's TEXT corrected when d.evidence is usable (same
+    // trigger condition, same position, same membership — nothing added/
+    // removed/reordered); ev.warnings itself is never mutated, so
+    // _capReasonText() and this function's own WATCH-branch fallback
+    // (both of which read ev.warnings[0] directly, above) are unaffected.
+    warnings: _reconcileHtfWarningWording(ev.warnings, d, dir),
     // Internal-only, not rendered anywhere as "NOT READY" — a short trail
     // for why tradeReady came out false, for future diagnostic use.
     tradeReadyBlockedReasons: _tradeReadyBlockedReasons,
@@ -4878,18 +5200,32 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // relative, only meaningful on a fresh signal bar). Now assessed via
       // the same direction-aware helper the HTF pill/dot uses, relative to
       // the open trade's own direction (dir === 'short' here), not the
-      // current scan's signal. Action/headline/detail wording and branch
-      // position unchanged.
+      // current scan's signal. Action/branch position unchanged.
+      // TDAS V4.8 Phase D — detail wording now prefers the evidence-driven
+      // HTF phrase (§9) when d.evidence.htfContext is usable, so this
+      // REVIEW's wording cannot contradict htfContext (e.g. calling it
+      // "weakening" when evidence says strongly_opposing). Falls back to
+      // the original fixed sentence when evidence is unavailable.
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
+      const _evHtfShort = d && d.evidence && d.evidence.htfContext;
+      detail = (_evHtfShort && _evHtfShort !== 'unknown')
+        ? _formatHtfContextPhrase(_evHtfShort, 'short', _htfTag) + ' No primary exit trigger yet.'
+        : (_htfTag + ' regime weakening. No primary exit trigger yet.');
     } else {
       // TDAS V4.7.2 — concise HOLD wording (Task §2/§6). Replaces the old
       // buildHtfSupportPhrase-based verbose message ("4H TEMA and UT still
       // support short.") with "{setup} short intact." plus, only if
       // relevant, a brief non-fresh-adverse-UT mention. buildHtfSupportPhrase
       // itself is untouched and still used by the REVIEW branch above.
+      //
+      // TDAS V4.8 Phase D — prefers the evidence-driven qualifier selector
+      // (_buildEvidenceHoldDetail, §7 P1-P6) when d.evidence is usable;
+      // falls back to the original _buildHoldDetail wording otherwise.
+      // action/headline are unaffected either way — this is a `detail =`
+      // assignment only.
       action = 'HOLD'; headline = 'HOLD';
-      detail = _buildHoldDetail('short', _adverseUtShort);
+      detail = _buildEvidenceHoldDetail(d, openTrade, 'short', _adverseUtShort, _setupTf + ' short intact.')
+        || _buildHoldDetail('short', _adverseUtShort);
     }
   } else {
     // ── Mirrored LONG logic — fields are symmetric, safe to mirror ──
@@ -4945,12 +5281,20 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     } else if (getHtfDirectionState(d, 'long') === 'conflict') {
       // TDAS V4.8.0 Phase A — mirrors the short-branch fix above; see that
       // comment for full rationale. dir === 'long' here.
+      // TDAS V4.8 Phase D — mirrors the short branch's evidence-driven HTF
+      // phrase fix above.
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _htfTag + ' regime weakening. No primary exit trigger yet.';
+      const _evHtfLong = d && d.evidence && d.evidence.htfContext;
+      detail = (_evHtfLong && _evHtfLong !== 'unknown')
+        ? _formatHtfContextPhrase(_evHtfLong, 'long', _htfTag) + ' No primary exit trigger yet.'
+        : (_htfTag + ' regime weakening. No primary exit trigger yet.');
     } else {
       // TDAS V4.7.2 — concise HOLD wording, mirrors the short branch above.
+      // TDAS V4.8 Phase D — mirrors the short branch's evidence-driven
+      // HOLD wording fix above; see that comment for full rationale.
       action = 'HOLD'; headline = 'HOLD';
-      detail = _buildHoldDetail('long', _adverseUtLong);
+      detail = _buildEvidenceHoldDetail(d, openTrade, 'long', _adverseUtLong, _setupTf + ' long intact.')
+        || _buildHoldDetail('long', _adverseUtLong);
     }
   }
 
