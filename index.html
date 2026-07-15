@@ -3882,6 +3882,35 @@ function findOpenTrade(symbol) {
 // ║  Return shape: { openTrade, openWatch } with exactly one populated (the  ║
 // ║  other null), matching buildEvidence()'s existing entry contract — or    ║
 // ║  null. NEVER includes closedEntry.                                       ║
+// ║                                                                          ║
+// ║  TDAS V4.8 Phase B Shadow Fix (3rd audit) — CONFIRMED ROOT CAUSE of an   ║
+// ║  active trade losing its setup identity (stage reverting to 'entry',    ║
+// ║  setupIntegrity going null, 1H timing showing "Not applicable") whenever ║
+// ║  Full Analysis was viewed through a DIFFERENT Scanner lens than the      ║
+// ║  trade's own setup timeframe (e.g. a 4H trade viewed at 1H or 1D):       ║
+// ║                                                                          ║
+// ║    The original tfMatches(candidateTrade.tf) requirement — added to      ║
+// ║    stop an unrelated-timeframe trade from attaching to a genuinely      ║
+// ║    different fresh setup — was being fed the CURRENTLY SELECTED VIEW    ║
+// ║    timeframe (d.tf) as setupTf. For an ACTIVE TRADE specifically, this   ║
+// ║    is the wrong comparison: an active trade's identity is owned by its   ║
+// ║    OWN entry.tf, not by whichever lens the user currently has Full       ║
+// ║    Analysis open at. Requiring them to match meant simply switching the  ║
+// ║    Scanner's view dropdown away from the trade's own tf made the         ║
+// ║    resolver reject the trade entirely.                                   ║
+// ║                                                                          ║
+// ║  FIX (Priority 1, revised): an active open trade is now returned         ║
+// ║  UNCONDITIONALLY on symbol match alone — never tf-filtered. This is safe ║
+// ║  because there is at most one active open trade per symbol at a time    ║
+// ║  (findOpenTrade()'s own guarantee) — there is no "other" 4H setup for    ║
+// ║  the same symbol competing for attachment the way there could be for a   ║
+// ║  fresh Scanner entry. The trade's own entry.tf still owns sourceTf.setup ║
+// ║  (see _marketEvidenceSourceTf(), unchanged) regardless of which lens     ║
+// ║  d.tf currently reflects.                                                ║
+// ║                                                                          ║
+// ║  Priority 2 (active watch) keeps its ORIGINAL narrow tf-matching         ║
+// ║  semantics, unchanged — a watch only attaches when its own tf matches    ║
+// ║  the current setup/view timeframe, exactly as before.                    ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 function resolveMarketEvidenceEntry(symbol, setupTf) {
   if (!symbol || typeof journal === 'undefined' || !Array.isArray(journal)) return null;
@@ -3891,11 +3920,16 @@ function resolveMarketEvidenceEntry(symbol, setupTf) {
     return String(rowTf).toLowerCase() === String(setupTf).toLowerCase();
   };
 
+  // Priority 1 — active open trade: attaches regardless of the selected
+  // view/lens timeframe. See header comment above for the full root-cause
+  // rationale — this is an intentional, doctrine-confirmed change from the
+  // previous tf-filtered behaviour.
   const candidateTrade = findOpenTrade(symbol);
-  if (candidateTrade && tfMatches(candidateTrade.tf)) {
+  if (candidateTrade) {
     return { openTrade: candidateTrade, openWatch: null };
   }
 
+  // Priority 2 — active watch: unchanged narrow tf-matching semantics.
   for (let i = journal.length - 1; i >= 0; i--) {
     const j = journal[i];
     if (j && j.symbol === symbol && typeof isActiveWatch === 'function' && isActiveWatch(j) && tfMatches(j.tf)) {
@@ -3903,6 +3937,7 @@ function resolveMarketEvidenceEntry(symbol, setupTf) {
     }
   }
 
+  // Priority 3 — no current state.
   return null;
 }
 
