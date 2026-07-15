@@ -7684,6 +7684,15 @@ async function calcPair(symbol,tf){
   // behaviour and out of scope for this fix, so the two calls can no
   // longer share a single resolved entry.
   _result.evidence = buildEvidence(_result, resolveMarketEvidenceEntry(symbol, _result.tf));
+  // TDAS V4.8 Phase B Shadow Fix (2nd audit) — records which _1hTiming
+  // reference this evidence was built from. calcPair() itself always
+  // rebuilds evidence fresh on every call, so this marker isn't needed
+  // here for correctness — it exists so openAnalysisPanel()'s cached/
+  // conditional late-binding path (which does NOT always rebuild) can
+  // reliably detect staleness relative to a _1hTiming value that changed
+  // via a background driver in between calcPair() calls. See that call
+  // site's own comment for the full root-cause explanation.
+  _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
   _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
@@ -9330,15 +9339,48 @@ function openAnalysisPanel(symbol){
   // currentScanData entries produced before Phase 1.75 was deployed.
   // Explicitly resolves the journal entry here (no hidden lookup inside
   // buildEvidence()) and does not duplicate the calculation when d.evidence
-  // already exists for this scan object.
+  // already exists for this scan object AND is not stale relative to the
+  // current _1hTiming (see the staleness condition below).
   //
   // TDAS V4.8 Phase B Shadow Fix: uses resolveMarketEvidenceEntry(symbol,
   // d.tf) — NOT resolveJournalEntry(symbol) — so a historical completed
   // trade on this symbol cannot surface as stage:'terminal' for a fresh
   // setup with no current watch/open trade. See resolveMarketEvidenceEntry()
   // for full rationale; d.tf is this scan's setup/view timeframe.
-  if(!d.evidence && typeof buildEvidence === 'function'){
+  //
+  // TDAS V4.8 Phase B Shadow Fix (2nd audit) — CONFIRMED ROOT CAUSE of a
+  // live active 4H trade permanently showing "1H timing UT freshness: None
+  // · 1H" even after waiting and reopening Full Analysis:
+  //
+  //   d._1hTiming can be populated IN PLACE by a background driver
+  //   (_ensureActiveTrade1HTiming()/_timingRefresh(), both tab-independent
+  //   or tab-gated respectively) at any time, completely independent of
+  //   when d.evidence was last computed. d.evidence itself was only ever
+  //   rebuilt here when it was entirely ABSENT (`if(!d.evidence)`) — so if
+  //   d.evidence had already been computed once (e.g. by calcPair()'s
+  //   Phase 1.75, at a moment _1hTiming didn't exist yet), it would never
+  //   be rebuilt again by this fallback, no matter how many times the
+  //   panel was reopened, even after _1hTiming later became available.
+  //
+  //   The on-demand-timing fetch below (the fix from the previous task)
+  //   does not rescue this either: its own "only rebuild if genuinely NEW
+  //   data" check compares _ensure1HTimingFor()'s result against
+  //   d._1hTiming captured at the START of THIS call — but if the
+  //   background driver already populated d._1hTiming BEFORE this call,
+  //   _ensure1HTimingFor()'s own freshness-cache short-circuit returns
+  //   that SAME already-fresh object, so `result !== _before1h` is false
+  //   and the rebuild never fires there either. Net effect: d.evidence can
+  //   permanently lag behind an already-populated d._1hTiming.
+  //
+  //   Fix: track which _1hTiming reference d.evidence was actually built
+  //   from (_evidenceBuiltFrom1hTiming, set here and in calcPair()'s Phase
+  //   1.75) and rebuild whenever the current d._1hTiming no longer matches
+  //   it — not only when d.evidence is completely absent. This is a plain
+  //   staleness check against an already-computed value; it does not
+  //   recalculate UT Bot, fetch anything, or duplicate any timing logic.
+  if((!d.evidence || d._evidenceBuiltFrom1hTiming !== d._1hTiming) && typeof buildEvidence === 'function'){
     d.evidence = buildEvidence(d, resolveMarketEvidenceEntry(symbol, d.tf));
+    d._evidenceBuiltFrom1hTiming = d._1hTiming;
   }
   // TDAS Phase 2 — late-binding fallback: compute d.lifecycle if absent.
   // Passes resolveJournalEntry(symbol) so classifyLifecycle stays pure.
@@ -9380,6 +9422,7 @@ function openAnalysisPanel(symbol){
         const _liveD = currentScanData[symbol];
         if (typeof buildEvidence === 'function') {
           _liveD.evidence = buildEvidence(_liveD, resolveMarketEvidenceEntry(symbol, _liveD.tf));
+          _liveD._evidenceBuiltFrom1hTiming = _liveD._1hTiming;
         }
         openAnalysisPanel(symbol);
       }
