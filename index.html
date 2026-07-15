@@ -8579,13 +8579,63 @@ function _joinNames(names){
 }
 
 // ── Technical Summary block — "what does the chart say?" ────────────────
-// Deliberately independent of any active trade signal/bias — reads
-// d.regime (Phase 1, always computed regardless of signal) plus raw
-// direction fields from d.states only. Does NOT read d.evaluation.confirms
-// (those are signal-bias-relative and would be meaningless/misleading on a
+// TDAS V4.8 Phase C: the ACTIVE path is now evidence-driven — see
+// _getEvidenceTechnicalSummaryModel() below, which reads d.evidence
+// (direction/alignment/alignmentDissent/htfContext/trendQuality) only. It
+// does not reread d.states/d.regime and does not recompute anything
+// buildEvidence() already determined — this satisfies the governing
+// invariant that the Technical Summary may not reinterpret raw states.
+//
+// The original four-vote (Regime/TEMA/UT/HTF) interpreter is retained,
+// UNCHANGED, as _buildLegacyTechnicalSummaryModel(d) below — dormant in
+// normal operation, kept for:
+//   (a) rollback-safety fallback here, when d.evidence is absent/malformed
+//       (this file always tries to degrade safely rather than blank a
+//       card — same principle as every other fallback in this codebase);
+//   (b) the "legacy" side of the Phase B/C shadow disagreement comparison
+//       (see _logMarketEvidenceShadowDisagreement() further down), which
+//       now necessarily compares the legacy vote-counter against the new
+//       evidence-driven label, since comparing the visible Technical
+//       Summary against itself would be meaningless post-Phase C.
+// Do not delete this legacy function; do not remove the legacy CSS
+// classes (tech-bullish/tech-bearish/tech-mixed/tech-conflicted) it uses.
+function buildTechnicalSummaryHtml(d){
+  let model;
+  const ev = d && d.evidence;
+  const hasUsableEvidence = ev && typeof ev === 'object'
+    && typeof ev.direction === 'string' && typeof ev.alignment === 'string';
+  if (hasUsableEvidence) {
+    try {
+      model = _getEvidenceTechnicalSummaryModel(d);
+    } catch(e) {
+      if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildTechnicalSummaryHtml] evidence path failed, falling back to legacy', e);
+      model = _buildLegacyTechnicalSummaryModel(d);
+    }
+  } else {
+    // Rollback-safety fallback only — d.evidence should normally exist by
+    // Phase C. Never throws, never blanks the card.
+    model = _buildLegacyTechnicalSummaryModel(d);
+  }
+
+  return '<div class="tdas-techsummary-block '+model.colorCls+'">'
+    + '<div class="tdas-techsummary-label">'+model.label+'</div>'
+    + '<div class="tdas-techsummary-detail">'+model.detail+'</div>'
+    + '</div>';
+}
+
+// ── DORMANT — legacy four-vote (Regime/TEMA/UT/HTF) interpreter ─────────
+// Retained verbatim (as a model-returning function instead of an HTML
+// string, for reuse by the fallback and shadow-diagnostic paths — no
+// other logic changed) for rollback/regression reference. Not called by
+// any active production path except buildTechnicalSummaryHtml()'s
+// fallback and the shadow disagreement diagnostic. Deliberately
+// independent of any active trade signal/bias — reads d.regime (Phase 1,
+// always computed regardless of signal) plus raw direction fields from
+// d.states only. Does NOT read d.evaluation.confirms (those are
+// signal-bias-relative and would be meaningless/misleading on a
 // neutral-signal card). Does not call or duplicate classifyRegime/
 // evaluateSetup — pure formatting over already-computed fields.
-function buildTechnicalSummaryHtml(d){
+function _buildLegacyTechnicalSummaryModel(d){
   const reg = (d && d.regime) || {direction:'neutral', label:'Neutral / Insufficient Data'};
   const st  = (d && d.states) || {};
   const votes = [];
@@ -8671,10 +8721,149 @@ function buildTechnicalSummaryHtml(d){
     colorCls = cls;
   }
 
-  return '<div class="tdas-techsummary-block '+colorCls+'">'
-    + '<div class="tdas-techsummary-label">'+label+'</div>'
-    + '<div class="tdas-techsummary-detail">'+detail+'</div>'
-    + '</div>';
+  return { label, detail, colorCls, cls };
+}
+
+// ── TDAS V4.8 Phase C — evidence-driven Technical Summary (ACTIVE path) ──
+// Pure: reads only d.evidence and d.signal (for colour-class agreement
+// grading, mirroring the legacy interpreter's own use of d.signal). No DOM
+// access, no fetching, no indicator recalculation, no mutation. Does not
+// call buildEvidence() — evidence must already exist on d.
+function _getEvidenceTechnicalSummaryModel(d){
+  const ev = d.evidence;
+  const direction    = ev.direction;
+  const alignment    = ev.alignment;
+  const htfContext   = ev.htfContext;
+  const trendQuality = ev.trendQuality;
+  const dissent      = ev.alignmentDissent;
+
+  let label, cls, detail;
+
+  if (alignment === 'none') {
+    // §4.1 Insufficient data — the only path permitted to claim this.
+    label = 'INSUFFICIENT DATA';
+    cls = 'insufficient';
+    detail = 'Not enough directional evidence to classify the setup.';
+  } else if (alignment === 'conflicted') {
+    // §4.2 Genuine conflict — the only path permitted to claim no clear
+    // directional edge. Weak ADX/RSI extension/HTF opposition can never
+    // reach this branch — buildEvidence() itself never produces
+    // 'conflicted' from those inputs (see its own frozen exclusions).
+    label = 'CONFLICTED TECHNICALS';
+    cls = 'conflicted';
+    detail = 'Fresh directional evidence is opposing on the setup timeframe.';
+  } else if (alignment === 'partial') {
+    // §4.3 Partial alignment — names the dissenting voter honestly.
+    label = direction === 'bullish' ? 'BULLISH STRUCTURE \u2014 PARTIAL ALIGNMENT'
+          : direction === 'bearish' ? 'BEARISH STRUCTURE \u2014 PARTIAL ALIGNMENT'
+          : 'PARTIAL ALIGNMENT'; // defensive only — not produced by the frozen schema's own direction/alignment coupling
+    cls = 'partial';
+    detail = _formatEvidenceDissent(dissent, direction);
+    const q = _composeQualityClause(trendQuality);
+    if (q) detail += ' ' + q;
+  } else if (direction === 'bullish' || direction === 'bearish') {
+    // §4.4 / §4.5 Strong or moderate alignment.
+    label = direction === 'bullish' ? 'BULLISH TECHNICALS' : 'BEARISH TECHNICALS';
+    cls = 'strongdir';
+    detail = _composeEvidenceTechnicalDetail(direction, htfContext);
+    const q = _composeQualityClause(trendQuality);
+    if (q) detail += ' ' + q;
+  } else {
+    // §4.6 Neutral direction (alignment already excluded 'none'/'conflicted'
+    // above — this branch is 'strong'/'moderate'/'partial' paired with a
+    // neutral direction; not produced by the current buildEvidence()
+    // direction/alignment coupling, but handled honestly if ever supplied).
+    label = 'NEUTRAL TECHNICALS';
+    cls = 'neutral';
+    detail = 'Directional evidence is balanced on the setup timeframe.';
+  }
+
+  const colorCls = _getEvidenceTechnicalClass(d, { direction, alignment });
+
+  return { label, detail, colorCls, cls };
+}
+
+// Composes the base directional detail sentence for §4.4/§4.5 (strong or
+// moderate alignment), varying honestly by htfContext. HTF opposition
+// never erases direction or produces conflicted wording here.
+function _composeEvidenceTechnicalDetail(direction, htfContext){
+  const dirWord  = direction === 'bullish' ? 'upside' : 'downside';
+  const dirLabel = direction === 'bullish' ? 'Bullish' : 'Bearish';
+  switch (htfContext) {
+    case 'aligned':           return 'TEMA, UT and HTF support ' + dirWord + '.';
+    case 'supportive':        return 'TEMA and UT support ' + dirWord + '; HTF context is supportive.';
+    case 'neutral':           return 'TEMA and UT support ' + dirWord + '; HTF context is neutral.';
+    case 'opposing':          return dirLabel + ' setup structure is intact, but HTF context opposes.';
+    case 'strongly_opposing': return dirLabel + ' setup structure is intact, but HTF context strongly opposes.';
+    case 'unknown':
+    default:                  return 'TEMA and UT support ' + dirWord + '; HTF context is unavailable.';
+  }
+}
+
+// Maps a frozen alignmentDissent.voter value to a readable name. 'utBot'
+// with tf 'setup' (the only combination the current buildEvidence()
+// implementation actually produces) reads as "UT Bot"; a hypothetical
+// HTF-tier UT dissent (tf 'htf'/'adjacent') reads as "HTF UT" per §4.3's
+// own example — handled honestly if such data is ever supplied, without
+// inventing a second MarketEvidence classifier.
+function _formatEvidenceVoterName(voter, tf){
+  if (voter === 'utBot') return (tf === 'htf' || tf === 'adjacent') ? 'HTF UT' : 'UT Bot';
+  if (voter === 'tema') return 'TEMA';
+  return 'One input';
+}
+
+// Formats the §4.3 partial-alignment detail sentence. Never invents a
+// dissenter when alignmentDissent is missing/malformed — degrades to the
+// honest generic sentence instead.
+function _formatEvidenceDissent(dissent, direction){
+  const dirLabel = direction === 'bullish' ? 'Bullish' : direction === 'bearish' ? 'Bearish' : 'Directional';
+  if (!dissent || typeof dissent !== 'object' || !dissent.voter) {
+    return 'Directional structure remains dominant, with one opposing input.';
+  }
+  return dirLabel + ' structure remains dominant; ' + _formatEvidenceVoterName(dissent.voter, dissent.tf) + ' dissents.';
+}
+
+// §5 Trend quality clause — one concise addition to the detail, never a
+// directional claim. Does not mention ADX directly (Phase C does not
+// reread d.states.adx) — 'weak'/'ranging' are the evidence's own quality
+// enum values, not raw ADX numbers.
+function _composeQualityClause(trendQuality){
+  switch (trendQuality) {
+    case 'strong':   return 'Trend quality is strong.';
+    case 'trending': return 'Trend quality is supportive.';
+    case 'weak':     return 'Trend quality is weak.';
+    case 'ranging':  return 'Trend conditions are ranging.';
+    default:         return '';
+  }
+}
+
+// §6 Colour semantics — reuses ONLY the existing approved classes
+// (tech-support/tech-caution/tech-avoid/tech-weak, plus the dormant
+// tech-bullish/tech-bearish classes for the no-active-signal fallback,
+// exactly mirroring the legacy interpreter's own no-signal convention).
+// Colour represents suitability relative to the card's active LONG/SHORT
+// signal, never simply bullish=green/bearish=red.
+function _getEvidenceTechnicalClass(d, model){
+  const direction = model.direction, alignment = model.alignment;
+  const signalDir = d && d.signal === 'long' ? 'bullish' : d && d.signal === 'short' ? 'bearish' : null;
+
+  if (alignment === 'none') return 'tech-weak';
+  if (alignment === 'conflicted') return 'tech-avoid'; // always avoid — independent of signal, per §6
+
+  if (!signalDir) {
+    // No active signal — plain directional read, no "support" to grade
+    // against. Mirrors the legacy interpreter's own neutral-signal
+    // fallback, using only the existing approved classes.
+    if (alignment === 'partial') return 'tech-caution';
+    if (direction === 'bullish') return 'tech-bullish';
+    if (direction === 'bearish') return 'tech-bearish';
+    return 'tech-weak';
+  }
+
+  const agrees = signalDir === direction;
+  if (alignment === 'partial') return agrees ? 'tech-caution' : 'tech-avoid';
+  // strong or moderate
+  return agrees ? 'tech-support' : 'tech-avoid';
 }
 
 // ── Decision dots — "why" ─────────────────────────────────────────────
@@ -9299,22 +9488,33 @@ function buildMarketEvidenceDiagnosticHtml(d){
   }
 }
 
-// ── TDAS V4.8 Phase B — shadow-mode disagreement diagnostic (§10) ─────────
+// ── TDAS V4.8 Phase B/C — shadow-mode disagreement diagnostic (§10/§8) ────
 // Diagnostic only. Does not alter buildTechnicalSummaryHtml(), Evaluation,
-// Advisory, lifecycle, card classes, or action buttons. Calls the existing,
-// completely unchanged buildTechnicalSummaryHtml(d) renderer and extracts/
-// normalizes its already-rendered label text — this is the "safe,
-// deterministic" normalization of an unchanged existing renderer's output
-// the spec explicitly permits, not a re-implementation of its vote logic.
-function _marketEvidenceCurrentTechSummaryLabel(d){
+// Advisory, lifecycle, card classes, or action buttons.
+//
+// TDAS V4.8 Phase C update: prior to Phase C, buildTechnicalSummaryHtml()
+// was still the legacy vote-counter, so this diagnostic compared it
+// against the independently-derived MarketEvidence shadow label. Now that
+// buildTechnicalSummaryHtml() is itself evidence-driven (see that
+// function), comparing the VISIBLE Technical Summary against a label
+// derived from the same evidence would be meaningless — it would always
+// agree with itself. The comparison is therefore updated to be legacy
+// vote-counter vs. new evidence-driven Technical Summary: exactly the
+// "before/after Phase C" comparison this diagnostic exists to make.
+// Calls the dormant _buildLegacyTechnicalSummaryModel(d) directly (no HTML
+// scraping needed now that it's a model-returning function) for the
+// legacy side, and reuses the unchanged getMarketEvidenceShadowLabel(ev)
+// for the evidence side — both already exist and are not reimplemented
+// here. The console tag is kept unchanged for continuity with existing
+// Phase B log consumers/searches.
+function _getLegacyTechnicalSummaryLabel(d){
   try {
-    if (typeof buildTechnicalSummaryHtml !== 'function') return null;
-    const html = buildTechnicalSummaryHtml(d);
-    const m = /<div class="tdas-techsummary-label">([^<]*)<\/div>/.exec(html || '');
-    return m ? m[1] : null;
+    if (typeof _buildLegacyTechnicalSummaryModel !== 'function') return null;
+    const model = _buildLegacyTechnicalSummaryModel(d);
+    return (model && model.label) || null;
   } catch(e) { return null; }
 }
-// Maps the existing 5-value Technical Summary label vocabulary onto the
+// Maps the legacy 5-value Technical Summary label vocabulary onto the
 // same 7-value normalized vocabulary as getMarketEvidenceShadowLabel(), for
 // disagreement comparison only. 'MIXED TECHNICALS' (majority exists but a
 // meaningful opposing minority) has no exact MarketEvidence counterpart and
@@ -9330,24 +9530,24 @@ function _normalizeTechSummaryLabel(label){
   }
 }
 // Logs one concise structured console entry ONLY when the normalized
-// MarketEvidence shadow label disagrees with the normalized current
-// Technical Summary label, and only when DIAG.marketEvidence === true.
-// Never persists, never alerts, never touches scan ordering/async behaviour.
+// evidence-driven label disagrees with the normalized legacy vote-counter
+// label, and only when DIAG.marketEvidence === true. Never persists, never
+// alerts, never touches scan ordering/async behaviour.
 function _logMarketEvidenceShadowDisagreement(symbol, d, openTrade){
   try {
     if (DIAG.marketEvidence !== true) return;
     const ev = d && d.evidence;
     if (!ev) return;
-    const shadowLabel = getMarketEvidenceShadowLabel(ev);
-    const currentLabelRaw = _marketEvidenceCurrentTechSummaryLabel(d);
-    const currentLabelNorm = _normalizeTechSummaryLabel(currentLabelRaw);
-    if (shadowLabel === currentLabelNorm) return; // agreement — do not log
+    const evidenceLabelNorm = getMarketEvidenceShadowLabel(ev);
+    const legacyLabelRaw = _getLegacyTechnicalSummaryLabel(d);
+    const legacyLabelNorm = _normalizeTechSummaryLabel(legacyLabelRaw);
+    if (evidenceLabelNorm === legacyLabelNorm) return; // agreement — do not log
     console.log('[MarketEvidence Shadow Disagreement]', {
       symbol: symbol || null,
       viewTf: (d && d.tf) || null,
       setupTf: (openTrade && openTrade.tf) || (d && d.tf) || null,
-      technicalSummaryLabel: currentLabelRaw,
-      marketEvidenceShadowLabel: shadowLabel,
+      legacyTechnicalSummaryLabel: legacyLabelRaw,
+      evidenceTechnicalSummaryLabel: evidenceLabelNorm,
       direction: ev.direction,
       alignment: ev.alignment,
       htfContext: ev.htfContext,
