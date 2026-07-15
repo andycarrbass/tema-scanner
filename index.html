@@ -3674,6 +3674,22 @@ function _marketEvidenceSourceTf(d, openTrade, openWatch) {
 }
 
 // ── buildEvidence(d, entry) — assembles the complete frozen schema ─────────
+// ── TDAS V4.8 Phase C Follow-Up Fix — active-trade HTF reference direction ──
+// Normalizes only real trade direction values already used elsewhere in
+// this codebase (openTrade.signal === 'long'/'short', matching the same
+// normalization _marketEvidenceSetupIntegrity() and _marketEvidenceStage()
+// already perform) into the bullish/bearish vocabulary
+// _marketEvidenceHtfContext() expects. Does not invent a second direction
+// taxonomy. Missing/malformed values degrade to null (safe — the caller
+// treats null exactly like an unresolved setup direction).
+function _marketEvidenceNormalizeTradeDirection(openTrade) {
+  if (!openTrade) return null;
+  const sig = openTrade.signal;
+  if (sig === 'long') return 'bullish';
+  if (sig === 'short') return 'bearish';
+  return null;
+}
+
 function buildEvidence(d, entry) {
   const SAFE_DEFAULT = {
     direction: 'neutral', alignment: 'none', alignmentDissent: null,
@@ -3692,7 +3708,23 @@ function buildEvidence(d, entry) {
     const openWatch = e.openWatch || null;
 
     const { direction, alignment, alignmentDissent } = _marketEvidenceDirectionAlignment(d);
-    const htfContext = _marketEvidenceHtfContext(direction, d && d.htfTrendContext, d && d.htfUtBot);
+    // TDAS V4.8 Phase C Follow-Up Fix: when a genuine active open trade is
+    // passed AND the resolved setup-timeframe direction is neutral/
+    // unresolved (e.g. direction:'neutral', alignment:'conflicted'), HTF
+    // context should still be assessed relative to the trade's own
+    // direction rather than degrading straight to 'unknown' — an active
+    // trade has a real direction to be for/against even when the
+    // setup-TF Tier-1 voters themselves are split. Only ever falls back
+    // to a genuine active OPEN TRADE's direction (never an active watch,
+    // never a historical/closed row — openTrade here is already exactly
+    // and only what resolveMarketEvidenceEntry()'s Priority-1 produces).
+    // Does not rewrite direction/alignment themselves, and performs no
+    // lookup of its own — openTrade is only ever the already-passed entry.
+    const _activeTradeDirection = _marketEvidenceNormalizeTradeDirection(openTrade);
+    const _htfReferenceDirection = (direction === 'bullish' || direction === 'bearish')
+      ? direction
+      : _activeTradeDirection;
+    const htfContext = _marketEvidenceHtfContext(_htfReferenceDirection, d && d.htfTrendContext, d && d.htfUtBot);
 
     return {
       direction,
