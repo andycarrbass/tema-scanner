@@ -9345,15 +9345,44 @@ function openAnalysisPanel(symbol){
   if(!d.lifecycle && typeof classifyLifecycle === 'function' && d.evaluation){
     d.lifecycle = classifyLifecycle(d, resolveJournalEntry(symbol));
   }
-  // TDAS Phase 1B: on-demand 1H timing for active trades — don't make the
-  // user wait for the periodic interval. Fire-and-forget; only re-render if
-  // this call actually produced NEW data (reference check) — prevents a
-  // cache-hit resolve from re-triggering itself in a loop.
+  // TDAS Phase 1B: on-demand 1H timing — don't make the user wait for the
+  // periodic interval. Fire-and-forget; only re-render if this call
+  // actually produced NEW data (reference check) — prevents a cache-hit
+  // resolve from re-triggering itself in a loop.
+  //
+  // TDAS V4.8 Phase B Shadow Fix: was gated to _entryForTiming.openTrade
+  // only — confirmed root cause of "1H timing UT freshness: None · 1H" for
+  // eligible 4H Scanner-entry and active-watch analysis, which never got
+  // their first _1hTiming populated via this on-demand path (Scanner
+  // entries have no other path at all; watches depended solely on
+  // _timingRefresh()'s Trade-Desk-tab-gated cadence). Eligibility is now
+  // keyed on the setup timeframe alone — d.tf === '4h' — covering entry,
+  // active watch, and active trade uniformly (per the explicit "do not
+  // gate this solely on openTrade" requirement); historical/terminal
+  // journal rows remain irrelevant since resolveMarketEvidenceEntry()
+  // already excludes them from evidence/entry resolution. 1H (and any
+  // other non-4H) setups are excluded here — 1H timing is not a distinct
+  // evidence source there (see buildMarketEvidenceDiagnosticHtml's "Not
+  // applicable" handling, unchanged). _ensure1HTimingFor() remains the
+  // single fetch/cache/in-flight de-dupe point (see its own header
+  // comment) — reused unchanged, so this cannot create a second
+  // overlapping fetch or a second timing engine.
   const _entryForTiming = resolveJournalEntry(symbol);
-  if(_entryForTiming.openTrade && typeof _ensure1HTimingFor === 'function'){
+  const _eligibleFor1hTiming = d.tf === '4h';
+  if(_eligibleFor1hTiming && typeof _ensure1HTimingFor === 'function'){
     const _before1h = d._1hTiming;
     _ensure1HTimingFor(symbol).then(result => {
-      if(result && result !== _before1h && _openAnalysisSymbol === symbol) openAnalysisPanel(symbol);
+      // Required re-render sequence: same analysis symbol still open, scan
+      // object still exists, only then rebuild evidence and re-render.
+      // _ensure1HTimingFor() already stored the result on
+      // currentScanData[symbol]._1hTiming itself — not duplicated here.
+      if(result && result !== _before1h && _openAnalysisSymbol === symbol && currentScanData[symbol]){
+        const _liveD = currentScanData[symbol];
+        if (typeof buildEvidence === 'function') {
+          _liveD.evidence = buildEvidence(_liveD, resolveMarketEvidenceEntry(symbol, _liveD.tf));
+        }
+        openAnalysisPanel(symbol);
+      }
     });
   }
   const overlay = document.getElementById('analysisOverlay');
@@ -11627,8 +11656,20 @@ async function _timingRefresh() {
 // ║  _ensure1HTimingFor(symbol) — single-symbol core, freshness-checked.     ║
 // ║  Used both by the interval driver below and on-demand from              ║
 // ║  openAnalysisPanel so the detail view isn't left waiting on a timer.     ║
+// ║                                                                          ║
+// ║  TDAS V4.8 Phase B Shadow Fix: openAnalysisPanel's on-demand call is     ║
+// ║  now eligible for 4H Scanner-entry and active-watch analysis too (not    ║
+// ║  just active trades — see that call site's own comment), so two         ║
+// ║  legitimately independent callers (this batch driver's own interval,    ║
+// ║  and the on-demand Full Analysis call) can now race for the same        ║
+// ║  symbol. _1hTimingInFlight below is the added in-flight guard: a        ║
+// ║  second caller for a symbol already being fetched reuses the same       ║
+// ║  pending promise instead of firing a second overlapping                 ║
+// ║  _calc1HTiming() call — extending this function's own existing          ║
+// ║  freshness-cache de-dupe, not a second parallel mechanism.              ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 let _activeTiming1hBusy = false;
+let _1hTimingInFlight = {}; // symbol -> in-flight Promise<result>, TDAS V4.8 Phase B Shadow Fix
 
 // Returns the (possibly cached) 1H timing result for symbol, fetching only
 // if missing or older than TIMING_REFRESH_MS. Never fetches twice for the
@@ -11638,12 +11679,22 @@ async function _ensure1HTimingFor(symbol) {
   const fresh = existing && existing.updatedAt
     && (Date.now() - new Date(existing.updatedAt).getTime()) < TIMING_REFRESH_MS;
   if (fresh) return existing;
-  const result = await _calc1HTiming(symbol);
-  if (result) {
-    if (!currentScanData[symbol]) currentScanData[symbol] = {};
-    currentScanData[symbol]._1hTiming = result;
+  // In-flight guard — see header comment above.
+  if (_1hTimingInFlight[symbol]) return _1hTimingInFlight[symbol];
+  const _pending = (async () => {
+    const result = await _calc1HTiming(symbol);
+    if (result) {
+      if (!currentScanData[symbol]) currentScanData[symbol] = {};
+      currentScanData[symbol]._1hTiming = result;
+    }
+    return result;
+  })();
+  _1hTimingInFlight[symbol] = _pending;
+  try {
+    return await _pending;
+  } finally {
+    delete _1hTimingInFlight[symbol];
   }
-  return result;
 }
 
 // Batch driver — runs on its own interval, independent of any tab.
