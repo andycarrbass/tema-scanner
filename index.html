@@ -4425,6 +4425,113 @@ function _formatExtensionClause(extension){
 // Never selects a contradictory clause combination — each P-tier is
 // mutually exclusive by construction (an early return prevents falling
 // into a later tier).
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.8 Phase D Fix — 1H trade HTF calibration                       ║
+// ║                                                                          ║
+// ║  For a 1H-setup active trade: 1H owns identity/setup integrity; 4H is    ║
+// ║  the primary MANAGEMENT timeframe (confirmation/non-confirmation/        ║
+// ║  genuine deterioration); 1D is broader background context only and       ║
+// ║  must never independently drive REVIEW for a 1H trade.                   ║
+// ║                                                                          ║
+// ║  d.htfTrendContext/d.htfUtBot are only genuinely "the trade's own 4H"    ║
+// ║  when the current view IS the trade's own setup tf (d.tf === '1h'):      ║
+// ║  d.htf/d.htfTrendContext/d.htfUtBot are always relative to whatever      ║
+// ║  d.tf the CURRENT calcPair() call used (HTF['1h']='4h', HTF['4h']='1d'), ║
+// ║  not to the trade's own stored setup timeframe. Viewed through a         ║
+// ║  mismatched lens (e.g. Scanner dropdown on 4H for a 1H trade), those      ║
+// ║  fields are genuinely 1D-relative-to-the-4H-view data, NOT the trade's    ║
+// ║  own 4H management context — using them as if they were would be         ║
+// ║  exactly the reported LINK bug (1D opposition misread as active 4H       ║
+// ║  management deterioration). No new fetch/recalculation is available to   ║
+// ║  correct this when mismatched, so the state degrades to 'unknown'         ║
+// ║  rather than fabricating a 4H read from 1D data — the existing P3/P4/P5  ║
+// ║  qualifiers and the existing (unmodified) REVIEW trigger remain the      ║
+// ║  fallback in that case, exactly as before this fix.                      ║
+// ║                                                                          ║
+// ║  Pure: no DOM/fetch/journal access, no mutation, no persistence, never   ║
+// ║  throws. Reuses classifyUtFreshness() (unchanged) — no new freshness     ║
+// ║  mechanism. Does not call buildEvidence() or recalculate indicators.     ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function _classifyActive1hHtfState(d, openTrade, tradeDirWord){
+  if (!openTrade || (openTrade.tf || '').toLowerCase() !== '1h') return null; // only applies to 1H-setup trades
+  const viewMatchesSetup = (d && d.tf || '').toLowerCase() === '1h';
+  // TDAS V4.8 Phase D Completion Fix (mismatched-lens HTF safety) — a
+  // mismatched view is distinguished from genuinely-missing-data-on-the-
+  // correct-lens ('unknown' below): 'view_unavailable' is the ONLY signal
+  // _selectEvidenceHoldWording() uses to also suppress the P3
+  // (adjacent-UT) and P5 (HTF context) qualifier tiers for this trade —
+  // both of those tiers read d.htfUtBot/ev.evidence.htfContext directly,
+  // which are genuinely 1D-relative (not this trade's 4H) in this exact
+  // scenario, and would otherwise still leak "1D context ..." wording into
+  // HOLD even though the REVIEW trigger itself is already correctly gated
+  // off by _shouldTriggerHtfConflictReview() below.
+  if (!viewMatchesSetup) return 'view_unavailable';
+
+  const tc = d && d.htfTrendContext;
+  const htUt = d && d.htfUtBot;
+  const bullishRegimeKeys = ['bullish', 'bullish-weak', 'mixed-bullish'];
+  const bearishRegimeKeys = ['bearish', 'bearish-weak', 'mixed-bearish'];
+
+  let temaSupports = null, temaAgainst = false;
+  if (tc && tc.key) {
+    temaSupports = tradeDirWord === 'long' ? bullishRegimeKeys.indexOf(tc.key) !== -1 : bearishRegimeKeys.indexOf(tc.key) !== -1;
+    temaAgainst  = tradeDirWord === 'long' ? bearishRegimeKeys.indexOf(tc.key) !== -1 : bullishRegimeKeys.indexOf(tc.key) !== -1;
+  }
+  const utDirNum = htUt && typeof htUt.direction === 'number' ? htUt.direction : null;
+  const utSupports = utDirNum != null ? (tradeDirWord === 'long' ? utDirNum === 1 : utDirNum === -1) : null;
+  const utOpposes  = utDirNum != null ? (tradeDirWord === 'long' ? utDirNum === -1 : utDirNum === 1) : null;
+
+  // Genuine deterioration: a FRESH adverse 4H UT flip (reuses the
+  // unchanged classifyUtFreshness() thresholds), or the 4H TEMA/regime
+  // itself genuinely on the opposing side (not merely mixed/neutral).
+  const htUtFreshness = (htUt && typeof htUt.barsAgoFlip === 'number') ? classifyUtFreshness(htUt.barsAgoFlip) : null;
+  const freshAdverseUt = utOpposes === true && htUtFreshness && htUtFreshness.key === 'fresh';
+  if (freshAdverseUt || temaAgainst) return 'deteriorating';
+
+  if (temaSupports === true && utSupports === true) return 'confirmed';
+  if (temaSupports === true && utOpposes === true) return 'awaiting_ut_confirmation';
+  if (temaSupports == null && utDirNum == null) return 'unknown'; // no usable 4H data at all
+  if (temaSupports === true && utDirNum == null) return 'unknown'; // TEMA supports but UT is genuinely unavailable (not neutral/opposing) — not enough NEW information to add a structural-state claim; existing P3/P5 wording stands
+  return 'not_confirmed'; // mixed/borderline — e.g. TEMA neutral, or UT present but not clearly supporting/opposing
+}
+
+// Phrase table for the states above — HOLD wording only; 'deteriorating'
+// intentionally returns null (caller falls back to the existing REVIEW
+// path — unchanged). 'unknown' also returns null (genuinely missing data
+// even on the correct lens — existing P3/P5 wording is still meaningful
+// there, since d.htfUtBot/ev.htfContext ARE genuinely this trade's own 4H
+// in that case, just incomplete). 'view_unavailable' (the mismatched-lens
+// case) returns the safe, honest phrase — this is the ONE state that must
+// itself claim the qualifier slot, since it's also what prevents P3/P5
+// from using mismatched-lens data (see _selectEvidenceHoldWording below).
+function _formatActive1hHtfState(state, tradeDirWord){
+  const dirWord = tradeDirWord === 'long' ? 'bullish' : 'bearish';
+  switch (state) {
+    case 'confirmed':               return '4H continuation confirmed.';
+    case 'awaiting_ut_confirmation':return '1H/4H structure is ' + dirWord + '; awaiting 4H UT confirmation.';
+    case 'not_confirmed':           return '4H structure has not yet confirmed the move.';
+    case 'view_unavailable':        return '4H confirmation state is unavailable in this view.';
+    case 'deteriorating':
+    case 'unknown':
+    default:                        return null;
+  }
+}
+
+// Gate for the existing (unmodified) getHtfDirectionState(d, dir)==='conflict'
+// REVIEW trigger. For non-1H-setup trades this always returns true —
+// completely unchanged behaviour, including for 4H setups, which keep 1D
+// as their management HTF exactly as before. For 1H-setup trades, this
+// trigger now additionally requires genuine deterioration (per
+// _classifyActive1hHtfState above) — merely non-confirmed or
+// awaiting-UT-confirmation states no longer escalate to REVIEW on their
+// own; every other existing hard trigger (stop breach, CLOSE, TP25, TP50,
+// fresh adverse setup-TF UT, setup-TF TEMA-cross REVIEW) is untouched and
+// still evaluated earlier in the same branch chain, unaffected by this gate.
+function _shouldTriggerHtfConflictReview(d, openTrade, tradeDirWord){
+  if (!openTrade || (openTrade.tf || '').toLowerCase() !== '1h') return true; // unchanged for non-1H setups
+  return _classifyActive1hHtfState(d, openTrade, tradeDirWord) === 'deteriorating';
+}
+
 function _selectEvidenceHoldWording(d, openTrade, tradeDirWord, legacyAdverseInfo){
   const ev = d && d.evidence;
   if (!ev || typeof ev.direction !== 'string' || typeof ev.alignment !== 'string') return null; // caller falls back to legacy wording entirely
@@ -4483,13 +4590,34 @@ function _selectEvidenceHoldWording(d, openTrade, tradeDirWord, legacyAdverseInf
     qualifier = 'TEMA momentum is converging.';
   }
 
+  // TDAS V4.8 Phase D Fix — 1H trade HTF calibration (§6C/§9). For a
+  // 1H-setup trade, the structural confirmed/awaiting-UT/not-confirmed
+  // state (see _classifyActive1hHtfState above) outranks the generic P3
+  // adverse-UT clause below — a lone dissenting 4H UT should not dominate
+  // the HOLD message when broader 1H/4H structure is aligned, and mere
+  // 4H non-confirmation should read as "not yet confirmed", not as a
+  // stale-adverse-signal warning. This intentionally supersedes the
+  // wording a pre-Phase-D-Fix 1H-setup trade with an isolated non-fresh
+  // adjacent-UT dissent would have received from P3 alone (flagged and
+  // documented in this delivery's notes — the underlying evidence
+  // classification/fixture values are unchanged, only which qualifier
+  // tier wins for this specific pattern). 'deteriorating'/'unknown'
+  // states fall through to P3-P6 unchanged.
+  if (qualifier === null) {
+    const _active1hState = _classifyActive1hHtfState(d, openTrade, tradeDirWord);
+    const _active1hPhrase = _formatActive1hHtfState(_active1hState, tradeDirWord);
+    if (_active1hPhrase) qualifier = _active1hPhrase;
+  }
+
   // P3 — non-fresh adverse UT context, freshness-aware. Checks the
   // setup-TF adverse UT first (legacyAdverseInfo, from the existing
   // _adverseUtInfo() helper — unchanged), then the adjacent/HTF-tier
   // adverse UT using evidence.freshness.adjacentUt (evidence-owned
   // freshness/bars) combined with d.htfUtBot.direction (already-computed,
   // the same raw field _marketEvidenceFreshness() itself draws from) for
-  // which way it reads — matches the approved XRP canonical case exactly.
+  // which way it reads. For non-1H setups (and 1H setups whose 4H state
+  // doesn't resolve to a P1.5 phrase above), this remains the operative
+  // qualifier exactly as before.
   if (qualifier === null && legacyAdverseInfo && legacyAdverseInfo.isAdverse && !legacyAdverseInfo.isFresh) {
     const verb = _formatUtFreshnessVerb(legacyAdverseInfo.freshness.key, oppositeDirection, legacyAdverseInfo.bars);
     if (verb) qualifier = legacyAdverseInfo.tfLabel + ' UT ' + verb + (legacyAdverseInfo.freshness.key === 'stale' ? '.' : ' against ' + tradeDirWord + '.');
@@ -5195,7 +5323,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // never TEMA, so it can never contradict the TEMA-crossed clause.
       const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'short');
       detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports short.'));
-    } else if (getHtfDirectionState(d, 'short') === 'conflict') {
+    } else if (getHtfDirectionState(d, 'short') === 'conflict' && _shouldTriggerHtfConflictReview(d, openTrade, 'short')) {
       // TDAS V4.8.0 Phase A — was st.htfAlign === 'conflict' (signal-
       // relative, only meaningful on a fresh signal bar). Now assessed via
       // the same direction-aware helper the HTF pill/dot uses, relative to
@@ -5206,6 +5334,13 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // REVIEW's wording cannot contradict htfContext (e.g. calling it
       // "weakening" when evidence says strongly_opposing). Falls back to
       // the original fixed sentence when evidence is unavailable.
+      // TDAS V4.8 Phase D Fix — for a 1H-setup trade, this trigger now
+      // additionally requires genuine deterioration
+      // (_shouldTriggerHtfConflictReview, gated on
+      // _classifyActive1hHtfState === 'deteriorating') rather than firing
+      // on mere non-confirmation/opposition alone — see that helper's own
+      // header comment for the full root-cause rationale. Unchanged for
+      // non-1H setups (4H trades keep existing 1D-driven behaviour).
       action = 'REVIEW'; headline = 'REVIEW';
       const _evHtfShort = d && d.evidence && d.evidence.htfContext;
       detail = (_evHtfShort && _evHtfShort !== 'unknown')
@@ -5278,11 +5413,13 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // condition) and never contradicts the TEMA-crossed clause.
       const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'long');
       detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports long.'));
-    } else if (getHtfDirectionState(d, 'long') === 'conflict') {
+    } else if (getHtfDirectionState(d, 'long') === 'conflict' && _shouldTriggerHtfConflictReview(d, openTrade, 'long')) {
       // TDAS V4.8.0 Phase A — mirrors the short-branch fix above; see that
       // comment for full rationale. dir === 'long' here.
       // TDAS V4.8 Phase D — mirrors the short branch's evidence-driven HTF
       // phrase fix above.
+      // TDAS V4.8 Phase D Fix — mirrors the short branch's 1H-trade
+      // deterioration gate above.
       action = 'REVIEW'; headline = 'REVIEW';
       const _evHtfLong = d && d.evidence && d.evidence.htfContext;
       detail = (_evHtfLong && _evHtfLong !== 'unknown')
