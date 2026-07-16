@@ -12043,10 +12043,32 @@ function renderTradeDesk(){
 function renderWatchCard(e){
   const liveData=currentScanData[e.symbol];
   const currentPrice=liveData?liveData.price:null;
-  const conds=liveData?[
+  // TDAS V4.8.x — Watch-Card Checkpoint Correctness Fix.
+  // (1) HTF checkpoint direction fix: liveData.htfAlign is computed inside
+  // calcPair() relative to THAT SCAN'S OWN currently-detected signal (see
+  // calcPair()'s own htfAlign block), not this watch's stored e.signal —
+  // the same class of signal-relative bug Phase A already fixed for
+  // active trades via getHtfDirectionState() (main.js, HTF-conflict
+  // REVIEW trigger). If the live scan's own signal has drifted to neutral
+  // since the watch was logged, htfAlign silently stays 'neutral'
+  // regardless of the genuine HTF trend — undercounting the checklist.
+  // Reusing that same proven helper here, direction-relative to e.signal.
+  // (2) Mismatched-lens guard: currentScanData is keyed by symbol only
+  // (calcPair() one cached result per symbol) — the Trade Desk column
+  // renders every active watch across every symbol/timeframe at once
+  // (renderTradeDesk()), so liveData may genuinely reflect a different
+  // timeframe than this watch's own e.tf (e.g. before _tdSignalRefresh()'s
+  // next tab-gated cycle, or when two watches share a symbol at different
+  // timeframes and only one can occupy the cache slot at a time). When
+  // the cache timeframe doesn't match, the five checkpoints are not
+  // evaluated at all — same "fail honest" convention used throughout this
+  // codebase for mismatched-lens active-trade data — rather than silently
+  // showing a fabricated 0/5.
+  const _tfMatches = !!liveData && (liveData.tf||'').toLowerCase() === (e.tf||'').toLowerCase();
+  const conds=_tfMatches?[
     liveData.temaWidening,
     liveData.adx>=25,
-    liveData.htfAlign==='aligned',
+    getHtfDirectionState(liveData, e.signal)==='aligned',
     (e.signal==='long'?liveData.utLongConfirm:liveData.utShortConfirm),
     (e.signal==='long'?liveData.aboveTrendSMA:!liveData.aboveTrendSMA)
   ]:[false,false,false,false,false];
@@ -12054,15 +12076,23 @@ function renderWatchCard(e){
   const litCount=conds.filter(Boolean).length;
   // Watch card status — visual guidance, not enforcement
   // Take Trade is always enabled regardless of condition count.
-  const fullConf  = litCount === 5;  // kept for CSS class / star compat
+  const fullConf  = _tfMatches && litCount === 5;  // kept for CSS class / star compat
   const condStatus = litCount === 5 ? 'Actionable'
                    : litCount >= 3  ? 'Developing'
                    :                  'Early';
-  const condColor  = litCount === 5 ? 'var(--green-text)'
+  const condColor  = !_tfMatches ? 'var(--text3)'
+                   : litCount === 5 ? 'var(--green-text)'
                    : litCount >= 3  ? 'var(--amber-text)'
                    :                  'var(--text3)';
-  const condWeight = litCount === 5 ? '600' : '400';
-  const condStarHtml = litCount === 5 ? ' · ⭐ Full confluence' : '';
+  const condWeight = fullConf ? '600' : '400';
+  const condStarHtml = fullConf ? ' · ⭐ Full confluence' : '';
+  // Honest pending state — never a fabricated "0/5" — shown in place of
+  // the progress fraction whenever this render lacks genuinely
+  // timeframe-matched data. Reuses the existing 11px muted inline-note
+  // convention already used elsewhere in this card (Trade Stage, 1H
+  // Timing rows) rather than introducing a new CSS class.
+  const _progressCountHtml = _tfMatches ? (litCount + '/5') : 'Pending';
+  const _tfPendingNoteHtml = _tfMatches ? '' : `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">Checkpoints pending — refreshing to this watch's ${(e.tf||'').toUpperCase()} timeframe.</div>`;
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   const dir=e.signal==='long'?'<span class="chip long" style="font-size:12px;">▲ Long</span>':'<span class="chip short" style="font-size:12px;">▼ Short</span>';
   // TDAS V4.6.5 — checklist display labels/order only (Task 3). conds[]
@@ -12112,8 +12142,9 @@ function renderWatchCard(e){
     </div>
     <div style="margin-bottom:6px;">${dir}</div>
     <div class="otc-meta" style="margin-bottom:10px;">${e.tf.toUpperCase()} WATCH · ${ts}</div>
+    ${_tfPendingNoteHtml}
     <div class="watch-cond-list">${condListHtml}</div>
-    <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span class="watch-progress-count" style="color:${condColor};font-weight:${condWeight};">${litCount}/5</span>${condStarHtml}</div>
+    <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span class="watch-progress-count" style="color:${condColor};font-weight:${condWeight};">${_progressCountHtml}</span>${condStarHtml}</div>
     <div class="entry-quality-row">${(()=>{
       // Entry Quality — Trade Desk only. Fixed-height container always rendered.
       const _sp = e.signalPrice || e.price;
