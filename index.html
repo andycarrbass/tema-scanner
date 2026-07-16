@@ -5102,6 +5102,11 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   const _setupTf = (openTrade.tf || d.tf || (_tfEl && _tfEl.value) || '').toUpperCase();
   const _stateTfTag = (d.tf || _setupTf || 'Setup TF').toUpperCase();
   const _htfTag = (d.htf || (typeof HTF !== 'undefined' && _setupTf ? HTF[_setupTf.toLowerCase()] : null) || 'HTF').toUpperCase();
+  // TDAS V4.8 — Adjacent Management 200MA Context (computed once; see
+  // _buildActiveTradeMa200Context()'s own header comment further below for
+  // the full model/rationale — function declarations are hoisted within
+  // this function's scope, so calling it here is safe).
+  const _ma200Context = _buildActiveTradeMa200Context(d, openTrade);
 
   // TDAS V4.6.0 — TAKE PROFIT 50% SMA confirmation. Root cause of the
   // over-sensitive trigger being fixed: a bare UT Bot flip against the
@@ -5243,16 +5248,84 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   // ║  (st.aboveMA_closed) and the 1H-timing-specific oneH.aboveMA1h are    ║
   // ║  ever available; d.htfTrendContext/d.htfUtBot give aggregate         ║
   // ║  regime/UT-direction only, not a separate "price vs [that tf]        ║
-  // ║  200MA" fact. Per this task's own explicit fallback rule ("where     ║
-  // ║  data is missing... omit the combined clause rather than making a    ║
-  // ║  broad claim"), these helpers therefore always name the SINGLE       ║
-  // ║  timeframe whose MA state is genuinely available/verified rather     ║
-  // ║  than literally claiming the combined pair — see delivery notes.     ║
+  // ║  200MA" fact — RESOLVED by this task (see below): htfAbove/htfMaDist ║
+  // ║  are now exposed on the calcPair() result (calcPair()'s own htfAbove  ║
+  // ║  local variable already existed, used only internally to classify     ║
+  // ║  htfTrendContext, and was never returned) — no new fetch, no new      ║
+  // ║  indicator calculation, purely exposing an already-computed value.    ║
   // ╚══════════════════════════════════════════════════════════════════════╝
 
-  // Setup-timeframe 200MA phrase — the only genuinely-available MA fact.
-  // Returns null when unavailable or when it does not genuinely support
-  // tradeDir (never fabricates support).
+  // TDAS V4.8 — Adjacent Management 200MA Context. Builds the distinct,
+  // direction-neutral { setup, management } price-vs-200MA state for this
+  // active trade's own setup timeframe and its adjacent management
+  // timeframe (1H setup -> 4H management; 4H setup -> 1D management).
+  // Both relations degrade to 'unknown' when the current view does not
+  // genuinely match the trade's own setup tf (d.tf !== openTrade.tf) —
+  // in that case st.aboveMA_closed/d.htfAbove are relative to whatever the
+  // CURRENT VIEW is, not this trade's own setup/management pair, and using
+  // them would misrepresent the trade exactly as the mismatched-lens HTF
+  // bug did in earlier tasks. 'at' reuses the existing, already-approved
+  // REGIME_MA_PRESSURE_PCT tolerance (unchanged, already used by
+  // classifyRegime()'s own nearMA) — no new threshold invented.
+  function _relationFromMaState(above, distPct){
+    if (typeof above !== 'boolean') return 'unknown';
+    if (distPct != null && isFinite(distPct) && Math.abs(distPct) <= REGIME_MA_PRESSURE_PCT) return 'at';
+    return above ? 'above' : 'below';
+  }
+  function _buildActiveTradeMa200Context(d, openTrade){
+    const setupTfLc = ((openTrade && openTrade.tf) || '').toLowerCase();
+    const viewTfLc = ((d && d.tf) || '').toLowerCase();
+    const managementTfLc = (typeof HTF !== 'undefined' && setupTfLc && HTF[setupTfLc])
+      || ((d && d.htf) ? String(d.htf).toLowerCase() : null);
+    const viewMatchesSetup = !!setupTfLc && !!viewTfLc && setupTfLc === viewTfLc;
+
+    const setupAbove = viewMatchesSetup && d.states ? d.states.aboveMA_closed : null;
+    const setupDist  = viewMatchesSetup && d.states ? d.states.maDist : null;
+    const managementAbove = viewMatchesSetup ? (d && d.htfAbove) : null;
+    const managementDist  = viewMatchesSetup ? (d && d.htfMaDist) : null;
+
+    return {
+      setup:      { tf: setupTfLc || null,      relation: _relationFromMaState(setupAbove, setupDist) },
+      management: { tf: managementTfLc || null, relation: _relationFromMaState(managementAbove, managementDist) },
+    };
+  }
+  // Composes the truthful 200MA phrase from the model above: combined
+  // timeframe clause when BOTH genuinely support tradeDir; single-
+  // timeframe clause when only one does; an honest mixed statement when
+  // they disagree; a "testing" statement when the near-tolerance ('at')
+  // fires on whichever side is otherwise unresolved; null (omit) when
+  // nothing genuinely supports or tests.
+  function _formatMa200ContextPhrase(tradeDir, ma200Context){
+    const wantRel = tradeDir === 'long' ? 'above' : 'below';
+    const oppRel  = tradeDir === 'long' ? 'below' : 'above';
+    const s = ma200Context.setup, m = ma200Context.management;
+    const sLabel = s.tf ? s.tf.toUpperCase() : null;
+    const mLabel = m.tf ? m.tf.toUpperCase() : null;
+    const sOk = s.relation === wantRel, mOk = m.relation === wantRel;
+    const sOpp = s.relation === oppRel, mOpp = m.relation === oppRel;
+
+    if (sOk && mOk && sLabel && mLabel) {
+      return 'price holds ' + wantRel + ' the ' + sLabel + '/' + mLabel + ' 200MA';
+    }
+    if (sOk && mOpp && sLabel && mLabel) {
+      return 'price holds ' + wantRel + ' the ' + sLabel + ' 200MA but remains ' + oppRel + ' the ' + mLabel + ' 200MA';
+    }
+    if (mOk && sOpp && sLabel && mLabel) {
+      return 'price holds ' + wantRel + ' the ' + mLabel + ' 200MA but remains ' + oppRel + ' the ' + sLabel + ' 200MA';
+    }
+    if (sOk && sLabel) return 'price holds ' + wantRel + ' the ' + sLabel + ' 200MA';
+    if (mOk && mLabel) return 'price holds ' + wantRel + ' the ' + mLabel + ' 200MA';
+    if (m.relation === 'at' && mLabel) return 'price is testing the ' + mLabel + ' 200MA';
+    if (s.relation === 'at' && sLabel) return 'price is testing the ' + sLabel + ' 200MA';
+    return null; // missing/unknown/genuinely opposing on both sides — omit rather than claim
+  }
+
+  // Setup-timeframe-only 200MA phrase — DORMANT/superseded by
+  // _formatMa200ContextPhrase above for the branches that now use the
+  // combined setup+management model; retained (not deleted) as it is still
+  // a correct, safe, standalone formatter reading only the setup-tf's own
+  // state. Returns null when unavailable or when it does not genuinely
+  // support tradeDir (never fabricates support).
   function _formatSetupMa200Phrase(tradeDir, tfLabel){
     if (st.aboveMA_closed == null) return null;
     const supports = tradeDir === 'long' ? st.aboveMA_closed === true : st.aboveMA_closed === false;
@@ -5295,28 +5368,29 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   // Fresh adverse setup-TF UT REVIEW — exact trigger + surviving TEMA +
   // setup 200MA context, matching the "4H short" representative example's
   // structure (see the data-limitation note above re: the MA label).
-  function _buildFreshAdverseUtReviewDetail(tradeDir, adverseInfo, tfLabel){
+  function _buildFreshAdverseUtReviewDetail(tradeDir, adverseInfo, tfLabel, ma200Context){
     const oppositeWord = tradeDir === 'long' ? 'bearish' : 'bullish';
     let out = tfLabel + ' UT flipped ' + oppositeWord + ' against the ' + tradeDir;
     const tail = _joinSurvivingClauses([
       _formatSurvivingTemaPhrase(tradeDir, tfLabel),
-      _formatSetupMa200Phrase(tradeDir, tfLabel),
+      _formatMa200ContextPhrase(tradeDir, ma200Context),
     ]);
     if (tail) out += '; ' + tail;
     return out + '.';
   }
 
   // Setup-TF TEMA-turning-against REVIEW (UT still supports) — exact
-  // trigger + surviving UT + setup 200MA context, matching the "1H long"
-  // representative example's structure. Falls back to the existing
-  // buildHtfSupportPhrase() (unchanged) only if, unexpectedly, neither
-  // surviving fact is available — this branch's own trigger guarantees UT
-  // support, so that fallback should not normally be reached.
-  function _buildTemaCrossAgainstReviewDetail(tradeDir, tfLabel){
+  // trigger + surviving UT + combined setup/management 200MA context,
+  // matching the "1H long" representative example's structure exactly
+  // (e.g. "...price holds above the 1H/4H 200MA"). Falls back to the
+  // existing buildHtfSupportPhrase() (unchanged) only if, unexpectedly,
+  // neither surviving fact is available — this branch's own trigger
+  // guarantees UT support, so that fallback should not normally be reached.
+  function _buildTemaCrossAgainstReviewDetail(tradeDir, tfLabel, ma200Context){
     let out = tfLabel + ' TEMA is turning against the ' + tradeDir;
     const tail = _joinSurvivingClauses([
       _formatSurvivingUtPhrase(tradeDir, tfLabel),
-      _formatSetupMa200Phrase(tradeDir, tfLabel),
+      _formatMa200ContextPhrase(tradeDir, ma200Context),
     ]);
     if (tail) {
       out += '; ' + tail;
@@ -5402,7 +5476,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // escalates to REVIEW; a stale one is HOLD context only (see
       // _buildHoldDetail).
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _buildFreshAdverseUtReviewDetail('short', _adverseUtShort, _adverseUtShort.tfLabel);
+      detail = _buildFreshAdverseUtReviewDetail('short', _adverseUtShort, _adverseUtShort.tfLabel, _ma200Context);
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
@@ -5429,8 +5503,17 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // "1H reversal developing. {tf} UT still bearish." fallback even
       // though the TEMA-alone fact was already known precisely. Added the
       // missing explicit case, naming the surviving 1H UT support and
-      // setup 200MA context where genuinely available (see the shared
-      // helpers' own header comment for the 200MA data-limitation note).
+      // 200MA context where genuinely available.
+      //
+      // TDAS V4.8 — Adjacent Management 200MA Context: this is the branch
+      // that actually produces LINK's real-world wording (oneHTurnedAgainst
+      // is checked before temaCrossAgainst, and a genuine 1H-setup trade
+      // always has _1hTiming available) — when the trade's OWN setup tf is
+      // 1H, _ma200Context's setup/management slots ARE this trade's 1H/4H
+      // pair, so the full combined phrase applies. For a 4H-setup trade
+      // using 1H timing as lower-tier corroboration, "1H" here is neither
+      // the setup nor the management slot, so the narrower 1H-only phrase
+      // remains the honest choice.
       const _1hTemaAgainstShort = oneH && oneH.crossLong1h === true;
       const _oneHUtSupportsShort = oneH && oneH.utDirection1h === -1;
       if (oneH1hUtAgainst && _1hTemaAgainstShort) {
@@ -5438,9 +5521,12 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       } else if (oneH1hUtAgainst) {
         detail = '1H UT flipped bullish against short.';
       } else if (_1hTemaAgainstShort) {
+        const _maPhrase = (_ma200Context.setup.tf === '1h')
+          ? _formatMa200ContextPhrase('short', _ma200Context)
+          : _formatOneH1hMa200Phrase('short');
         const _tail = _joinSurvivingClauses([
           _oneHUtSupportsShort ? '1H UT remains bearish' : null,
-          _formatOneH1hMa200Phrase('short'),
+          _maPhrase,
         ]);
         detail = '1H TEMA is turning against the short' + (_tail ? '; ' + _tail : '') + '.';
       } else {
@@ -5457,7 +5543,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // nothing) — this is always true here, since utDir === -1 is this
       // branch's own trigger condition, and it's carefully worded as UT,
       // never TEMA, so it can never contradict the TEMA-crossed clause.
-      detail = _buildTemaCrossAgainstReviewDetail('short', _stateTfTag);
+      detail = _buildTemaCrossAgainstReviewDetail('short', _stateTfTag, _ma200Context);
     } else if (getHtfDirectionState(d, 'short') === 'conflict' && _shouldTriggerHtfConflictReview(d, openTrade, 'short')) {
       // TDAS V4.8.0 Phase A — was st.htfAlign === 'conflict' (signal-
       // relative, only meaningful on a fresh signal bar). Now assessed via
@@ -5526,7 +5612,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // TDAS V4.7.2 — Advisory Hierarchy Refinement. See mirrored comment in
       // the short branch above for the full root-cause explanation.
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _buildFreshAdverseUtReviewDetail('long', _adverseUtLong, _adverseUtLong.tfLabel);
+      detail = _buildFreshAdverseUtReviewDetail('long', _adverseUtLong, _adverseUtLong.tfLabel, _ma200Context);
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
@@ -5544,6 +5630,8 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // 1H UT remains bullish...") is the missing TEMA-alone branch below —
       // see the short branch's own comment for the full root-cause
       // explanation.
+      // TDAS V4.8 — Adjacent Management 200MA Context: mirrors the short
+      // branch's setup-tf-aware MA selection above.
       const _1hTemaAgainstLong = oneH && oneH.crossLong1h === false;
       const _oneHUtSupportsLong = oneH && oneH.utDirection1h === 1;
       if (oneH1hUtAgainst && _1hTemaAgainstLong) {
@@ -5551,9 +5639,12 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       } else if (oneH1hUtAgainst) {
         detail = '1H UT flipped bearish against long.';
       } else if (_1hTemaAgainstLong) {
+        const _maPhrase = (_ma200Context.setup.tf === '1h')
+          ? _formatMa200ContextPhrase('long', _ma200Context)
+          : _formatOneH1hMa200Phrase('long');
         const _tail = _joinSurvivingClauses([
           _oneHUtSupportsLong ? '1H UT remains bullish' : null,
-          _formatOneH1hMa200Phrase('long'),
+          _maPhrase,
         ]);
         detail = '1H TEMA is turning against the long' + (_tail ? '; ' + _tail : '') + '.';
       } else {
@@ -5565,7 +5656,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // available; otherwise falls back to the same-tf UT fact, which is
       // always true here (utDir === 1 is this branch's own trigger
       // condition) and never contradicts the TEMA-crossed clause.
-      detail = _buildTemaCrossAgainstReviewDetail('long', _stateTfTag);
+      detail = _buildTemaCrossAgainstReviewDetail('long', _stateTfTag, _ma200Context);
     } else if (getHtfDirectionState(d, 'long') === 'conflict' && _shouldTriggerHtfConflictReview(d, openTrade, 'long')) {
       // TDAS V4.8.0 Phase A — mirrors the short-branch fix above; see that
       // comment for full rationale. dir === 'long' here.
@@ -7427,6 +7518,16 @@ async function calcPair(symbol,tf){
   const ht17=ht17a[ht17a.length-1],ht92=ht92a[ht92a.length-1];
   const _htfSma200=sma(hc,200);
   const htfAbove=_htfSma200!==null?hc[hc.length-1]>_htfSma200:null;
+  // TDAS V4.8 — Adjacent Management 200MA Context. htfAbove itself already
+  // existed (used internally to classify htfTrendContext below) but was
+  // never attached to the returned result — this exposes it, plus the
+  // matching distance-from-SMA percentage (htfMaDist, same formula already
+  // used for the setup-tf's own maDist a few lines above), so Advisory can
+  // build a genuine adjacent/management-timeframe 200MA state without any
+  // new fetch or indicator calculation — hc/_htfSma200 are the same
+  // already-fetched/already-computed HTF candles and SMA used for
+  // htfTrendContext itself.
+  const htfMaDist=(_htfSma200!==null && _htfSma200!==0)?(hc[hc.length-1]-_htfSma200)/_htfSma200*100:null;
   const htfLong=htfAbove!==null?ht17>ht92&&htfAbove:null;
   const htfShort=htfAbove!==null?ht17<ht92&&!htfAbove:null;
 
@@ -8336,7 +8437,7 @@ async function calcPair(symbol,tf){
     minsRemaining,secsRemaining,candleClosePct,
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
     tradeStage,tradeAgeHours,
-    htfTrendContext,htfWidening,htfUtBot};
+    htfTrendContext,htfWidening,htfUtBot,htfAbove,htfMaDist};
   // TDAS Phase 0: attach compute-once state object — all builders read from d.states
   _result.states = computeStates(_result);
   // TDAS Phase 1: classify market regime from Phase-0 states — pure, no re-derivation
