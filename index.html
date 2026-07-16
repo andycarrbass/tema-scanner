@@ -1344,7 +1344,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div class="summary" id="summary" style="margin-bottom:0;"></div>
     <div id="scannerStatusBar" class="tdas-status-block" style="display:none;"></div>
   </div>
-  <div class="status-row"><span id="status"></span></div>
+  <div class="status-row"><span id="status"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
   <div class="grid" id="grid"></div>
 </div>
 
@@ -1371,6 +1371,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">Watches developing · Active trades · Live P&amp;L</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+      <span id="activeTfTradeDesk" class="htf-note">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span>
       <button onclick="exportTrades()" style="font-size:12px;padding:6px 11px;">&#8595; Export</button>
     </div>
   </div>
@@ -14097,6 +14098,14 @@ async function runScan(auto){
   renderJournal();
   updateJournalCount();
   updateTradeCount();
+  // TDAS V4.8.x — Timeframe Refresh fix. Watch/Active-Trade cards previously
+  // only repainted on a tab switch INTO Trade Desk (showTab()'s 'trade'
+  // branch) — changing the tf dropdown while already on Trade Desk updated
+  // currentScanData for every symbol above, but left the visible cards
+  // stale. Same tab-active guard as renderAllJournalDependentUI().
+  const _tradeTabForRepaint = document.getElementById('tab-trade');
+  if(_tradeTabForRepaint && _tradeTabForRepaint.classList.contains('active')) renderTradeDesk();
+  _updateActiveTfIndicator();
   // Update confluence badge from scanner data (no extra fetches needed)
   // Scanner builds currentScanData for 4H; confluence also needs 1H.
   // We can only update badge if confScanData already has 1H data.
@@ -14296,7 +14305,22 @@ function stopScannerAutoRefresh(){
   if(scannerSignalTimer){clearInterval(scannerSignalTimer);scannerSignalTimer=null;}
 }
 
-document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false; runScan(); });
+// TDAS V4.8.x — Active TF status indicator. Purely reads the tf dropdown's
+// current value and writes it into both Scanner's and Trade Desk's own
+// indicator spans — no tab-visibility gating (updating hidden DOM is
+// harmless), so it stays correct regardless of which tab is showing.
+function _updateActiveTfIndicator(){
+  const tfEl = document.getElementById('tf');
+  if(!tfEl) return;
+  const tfLabel = (tfEl.value||'').toUpperCase();
+  const html = 'Active TF: <span style="color:var(--green-text);font-weight:600;">'+tfLabel+'</span>';
+  const scannerEl = document.getElementById('activeTfScanner');
+  const tradeEl    = document.getElementById('activeTfTradeDesk');
+  if(scannerEl) scannerEl.innerHTML = html;
+  if(tradeEl)    tradeEl.innerHTML   = html;
+}
+document.getElementById('tf').addEventListener('change',()=>{ _scanRunning=false; _updateActiveTfIndicator(); runScan(); });
+_updateActiveTfIndicator(); // correct initial state before any scan/change event
 
 // ── Set exchange label on load ────────────────────────────────────────────
 // Source disclosure (Signals/UT Bot/Prices) lives in the footer markup
