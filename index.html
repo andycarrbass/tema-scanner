@@ -5222,6 +5222,121 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     return _setupTf + ' ' + tradeDir + ' intact.' + (secondary ? ' ' + secondary : '');
   }
 
+  // ╔══════════════════════════════════════════════════════════════════════╗
+  // ║  TDAS V4.8 Phase D Follow-Up — richer REVIEW context helpers         ║
+  // ║                                                                      ║
+  // ║  REVIEW doctrine: unlike HOLD's "identity + one qualifier" limit,    ║
+  // ║  REVIEW should show the exact adverse trigger, the strongest         ║
+  // ║  surviving support, and relevant 200MA structural context — all in   ║
+  // ║  the existing TDAS vocabulary (TEMA/UT/200MA/structure), never a new ║
+  // ║  synonym set. These helpers only ever CHANGE detail STRINGS — no     ║
+  // ║  helper here decides action/headline, and none recalculates          ║
+  // ║  indicators, fetches, touches the DOM, or reads the Journal; each    ║
+  // ║  reads only st/oneH/d fields already computed earlier in this same   ║
+  // ║  function call.                                                      ║
+  // ║                                                                      ║
+  // ║  DATA LIMITATION (flagged, not silently worked around): the task's   ║
+  // ║  own prose examples show a combined "{setup}/{management} 200MA"     ║
+  // ║  claim (e.g. "price holds above the 1H/4H 200MA"). No genuine        ║
+  // ║  adjacent/management-timeframe 200MA boolean exists anywhere in the  ║
+  // ║  current data model — only the setup-timeframe's own MA state        ║
+  // ║  (st.aboveMA_closed) and the 1H-timing-specific oneH.aboveMA1h are    ║
+  // ║  ever available; d.htfTrendContext/d.htfUtBot give aggregate         ║
+  // ║  regime/UT-direction only, not a separate "price vs [that tf]        ║
+  // ║  200MA" fact. Per this task's own explicit fallback rule ("where     ║
+  // ║  data is missing... omit the combined clause rather than making a    ║
+  // ║  broad claim"), these helpers therefore always name the SINGLE       ║
+  // ║  timeframe whose MA state is genuinely available/verified rather     ║
+  // ║  than literally claiming the combined pair — see delivery notes.     ║
+  // ╚══════════════════════════════════════════════════════════════════════╝
+
+  // Setup-timeframe 200MA phrase — the only genuinely-available MA fact.
+  // Returns null when unavailable or when it does not genuinely support
+  // tradeDir (never fabricates support).
+  function _formatSetupMa200Phrase(tradeDir, tfLabel){
+    if (st.aboveMA_closed == null) return null;
+    const supports = tradeDir === 'long' ? st.aboveMA_closed === true : st.aboveMA_closed === false;
+    if (!supports) return null;
+    return 'price holds ' + (tradeDir === 'long' ? 'above' : 'below') + ' the ' + tfLabel + ' 200MA';
+  }
+  // 1H-timing-specific 200MA phrase (oneH.aboveMA1h) — used by the 1H
+  // reversal/turned-against branches, which are meaningful for any setup
+  // timeframe (1H timing is always labelled "1H", regardless of whether
+  // the trade's own setup is 1H or 4H).
+  function _formatOneH1hMa200Phrase(tradeDir){
+    if (!oneH || oneH.aboveMA1h == null) return null;
+    const supports = tradeDir === 'long' ? oneH.aboveMA1h === true : oneH.aboveMA1h === false;
+    if (!supports) return null;
+    return 'price holds ' + (tradeDir === 'long' ? 'above' : 'below') + ' the 1H 200MA';
+  }
+  // Surviving setup-timeframe TEMA support phrase — only when TEMA
+  // genuinely still confirms tradeDir (never claimed alongside a branch
+  // whose own trigger is that TEMA has turned against).
+  function _formatSurvivingTemaPhrase(tradeDir, tfLabel){
+    const supports = tradeDir === 'long' ? st.crossLong === true : st.crossShort === true;
+    if (!supports) return null;
+    return tfLabel + ' TEMA remains ' + (tradeDir === 'long' ? 'bullish' : 'bearish');
+  }
+  // Surviving setup-timeframe UT support phrase — only when UT genuinely
+  // still confirms tradeDir.
+  function _formatSurvivingUtPhrase(tradeDir, tfLabel){
+    const supports = tradeDir === 'long' ? utDir === 1 : utDir === -1;
+    if (!supports) return null;
+    return tfLabel + ' UT remains ' + (tradeDir === 'long' ? 'bullish' : 'bearish');
+  }
+  // Joins up to two surviving-support clauses with "and", per the
+  // language-uniformity examples (e.g. "...UT remains bullish and price
+  // holds above the 1H 200MA").
+  function _joinSurvivingClauses(clauses){
+    const present = clauses.filter(Boolean);
+    return present.length ? present.join(' and ') : null;
+  }
+
+  // Fresh adverse setup-TF UT REVIEW — exact trigger + surviving TEMA +
+  // setup 200MA context, matching the "4H short" representative example's
+  // structure (see the data-limitation note above re: the MA label).
+  function _buildFreshAdverseUtReviewDetail(tradeDir, adverseInfo, tfLabel){
+    const oppositeWord = tradeDir === 'long' ? 'bearish' : 'bullish';
+    let out = tfLabel + ' UT flipped ' + oppositeWord + ' against the ' + tradeDir;
+    const tail = _joinSurvivingClauses([
+      _formatSurvivingTemaPhrase(tradeDir, tfLabel),
+      _formatSetupMa200Phrase(tradeDir, tfLabel),
+    ]);
+    if (tail) out += '; ' + tail;
+    return out + '.';
+  }
+
+  // Setup-TF TEMA-turning-against REVIEW (UT still supports) — exact
+  // trigger + surviving UT + setup 200MA context, matching the "1H long"
+  // representative example's structure. Falls back to the existing
+  // buildHtfSupportPhrase() (unchanged) only if, unexpectedly, neither
+  // surviving fact is available — this branch's own trigger guarantees UT
+  // support, so that fallback should not normally be reached.
+  function _buildTemaCrossAgainstReviewDetail(tradeDir, tfLabel){
+    let out = tfLabel + ' TEMA is turning against the ' + tradeDir;
+    const tail = _joinSurvivingClauses([
+      _formatSurvivingUtPhrase(tradeDir, tfLabel),
+      _formatSetupMa200Phrase(tradeDir, tfLabel),
+    ]);
+    if (tail) {
+      out += '; ' + tail;
+    } else {
+      const htfPhrase = buildHtfSupportPhrase(d, openTrade, tradeDir);
+      out += '; ' + (htfPhrase || (tfLabel + ' UT still supports ' + tradeDir));
+    }
+    return out + '.';
+  }
+
+  // Adjacent-management-timeframe deterioration REVIEW — the existing
+  // getHtfDirectionState()==='conflict' branch (unchanged trigger,
+  // unchanged by the Phase D Fix's 1H calibration gate). Needs no
+  // d.evidence at all — setup/management timeframe labels alone produce
+  // the exact required sentence for both the 1H-setup/4H-management and
+  // 4H-setup/1D-management pairs.
+  function _buildAdjacentDeteriorationReviewDetail(tradeDir, managementTfLabel, setupTfLabel){
+    return managementTfLabel + ' structure is deteriorating against the ' + setupTfLabel + ' ' + tradeDir + ', but no primary exit trigger has fired.';
+  }
+
   let action, headline, detail;
 
   // ── Stop-loss breach override — highest priority risk control. Checked
@@ -5287,13 +5402,16 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // escalates to REVIEW; a stale one is HOLD context only (see
       // _buildHoldDetail).
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _adverseUtShort.tfLabel + ' UT flipped bullish against short. ' + _setupTf + ' short remains intact.';
+      detail = _buildFreshAdverseUtReviewDetail('short', _adverseUtShort, _adverseUtShort.tfLabel);
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H structure reclaimed against short.';
+      // TDAS V4.8 Phase D Follow-Up — names the surviving 1H UT reading
+      // where genuinely available, rather than a bare fact with no context.
+      const _survivingUt1h = (oneH && oneH.utDirection1h === -1) ? '1H UT remains bearish.' : null;
+      detail = '1H structure reclaimed against short.' + (_survivingUt1h ? ' ' + _survivingUt1h : '');
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       // TDAS V4.7.2 (Task Case C) — this branch now also fires on a genuine
@@ -5302,11 +5420,29 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // UT still bearish.") would be factually wrong when the UT itself is
       // what turned — foreground whichever 1H condition(s) actually
       // deteriorated instead of asserting a fixed claim.
+      //
+      // TDAS V4.8 Phase D Follow-Up — confirmed LINK-class gap: when 1H
+      // TEMA alone turned against the trade (oneH1hUtAgainst false,
+      // _1hTemaAgainstShort true), NEITHER of the two explicit branches
+      // below matched (the first requires BOTH UT and TEMA; the second
+      // requires UT alone) — execution fell through to the generic
+      // "1H reversal developing. {tf} UT still bearish." fallback even
+      // though the TEMA-alone fact was already known precisely. Added the
+      // missing explicit case, naming the surviving 1H UT support and
+      // setup 200MA context where genuinely available (see the shared
+      // helpers' own header comment for the 200MA data-limitation note).
       const _1hTemaAgainstShort = oneH && oneH.crossLong1h === true;
+      const _oneHUtSupportsShort = oneH && oneH.utDirection1h === -1;
       if (oneH1hUtAgainst && _1hTemaAgainstShort) {
         detail = '1H UT flipped bullish and 1H TEMA turned against short.';
       } else if (oneH1hUtAgainst) {
         detail = '1H UT flipped bullish against short.';
+      } else if (_1hTemaAgainstShort) {
+        const _tail = _joinSurvivingClauses([
+          _oneHUtSupportsShort ? '1H UT remains bearish' : null,
+          _formatOneH1hMa200Phrase('short'),
+        ]);
+        detail = '1H TEMA is turning against the short' + (_tail ? '; ' + _tail : '') + '.';
       } else {
         detail = '1H reversal developing. ' + _stateTfTag + ' UT still bearish.';
       }
@@ -5321,8 +5457,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // nothing) — this is always true here, since utDir === -1 is this
       // branch's own trigger condition, and it's carefully worded as UT,
       // never TEMA, so it can never contradict the TEMA-crossed clause.
-      const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'short');
-      detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports short.'));
+      detail = _buildTemaCrossAgainstReviewDetail('short', _stateTfTag);
     } else if (getHtfDirectionState(d, 'short') === 'conflict' && _shouldTriggerHtfConflictReview(d, openTrade, 'short')) {
       // TDAS V4.8.0 Phase A — was st.htfAlign === 'conflict' (signal-
       // relative, only meaningful on a fresh signal bar). Now assessed via
@@ -5341,11 +5476,15 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // on mere non-confirmation/opposition alone — see that helper's own
       // header comment for the full root-cause rationale. Unchanged for
       // non-1H setups (4H trades keep existing 1D-driven behaviour).
+      // TDAS V4.8 Phase D Follow-Up — detail now matches the exact required
+      // "adjacent-timeframe deterioration" sentence (management tf
+      // deteriorating against the setup tf's trade direction, with the
+      // explicit "no primary exit trigger has fired" qualifier). Needs no
+      // d.evidence at all — _htfTag/_setupTf are already-resolved labels.
+      // Replaces the earlier evidence-driven-phrase-or-"regime weakening"
+      // construction; the trigger condition above is completely unchanged.
       action = 'REVIEW'; headline = 'REVIEW';
-      const _evHtfShort = d && d.evidence && d.evidence.htfContext;
-      detail = (_evHtfShort && _evHtfShort !== 'unknown')
-        ? _formatHtfContextPhrase(_evHtfShort, 'short', _htfTag) + ' No primary exit trigger yet.'
-        : (_htfTag + ' regime weakening. No primary exit trigger yet.');
+      detail = _buildAdjacentDeteriorationReviewDetail('short', _htfTag, _setupTf);
     } else {
       // TDAS V4.7.2 — concise HOLD wording (Task §2/§6). Replaces the old
       // buildHtfSupportPhrase-based verbose message ("4H TEMA and UT still
@@ -5387,21 +5526,36 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // TDAS V4.7.2 — Advisory Hierarchy Refinement. See mirrored comment in
       // the short branch above for the full root-cause explanation.
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _adverseUtLong.tfLabel + ' UT flipped bearish against long. ' + _setupTf + ' long remains intact.';
+      detail = _buildFreshAdverseUtReviewDetail('long', _adverseUtLong, _adverseUtLong.tfLabel);
     } else if (inProfit && oneHStructureReclaimed === true) {
       action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
       detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = '1H structure lost against long.';
+      // TDAS V4.8 Phase D Follow-Up — mirrors the short branch's surviving-
+      // UT-context enrichment above.
+      const _survivingUt1h = (oneH && oneH.utDirection1h === 1) ? '1H UT remains bullish.' : null;
+      detail = '1H structure lost against long.' + (_survivingUt1h ? ' ' + _survivingUt1h : '');
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       // TDAS V4.7.2 (Task Case C) — mirrors the short branch fix above.
+      // TDAS V4.8 Phase D Follow-Up — confirmed LINK-class gap fixed here:
+      // the exact reported case ("1H TEMA is turning against the long;
+      // 1H UT remains bullish...") is the missing TEMA-alone branch below —
+      // see the short branch's own comment for the full root-cause
+      // explanation.
       const _1hTemaAgainstLong = oneH && oneH.crossLong1h === false;
+      const _oneHUtSupportsLong = oneH && oneH.utDirection1h === 1;
       if (oneH1hUtAgainst && _1hTemaAgainstLong) {
         detail = '1H UT flipped bearish and 1H TEMA turned against long.';
       } else if (oneH1hUtAgainst) {
         detail = '1H UT flipped bearish against long.';
+      } else if (_1hTemaAgainstLong) {
+        const _tail = _joinSurvivingClauses([
+          _oneHUtSupportsLong ? '1H UT remains bullish' : null,
+          _formatOneH1hMa200Phrase('long'),
+        ]);
+        detail = '1H TEMA is turning against the long' + (_tail ? '; ' + _tail : '') + '.';
       } else {
         detail = '1H reversal developing. ' + _stateTfTag + ' UT still bullish.';
       }
@@ -5411,8 +5565,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // available; otherwise falls back to the same-tf UT fact, which is
       // always true here (utDir === 1 is this branch's own trigger
       // condition) and never contradicts the TEMA-crossed clause.
-      const _htfPhrase = buildHtfSupportPhrase(d, openTrade, 'long');
-      detail = _stateTfTag + ' TEMA crossed against trade; ' + (_htfPhrase || (_stateTfTag + ' UT still supports long.'));
+      detail = _buildTemaCrossAgainstReviewDetail('long', _stateTfTag);
     } else if (getHtfDirectionState(d, 'long') === 'conflict' && _shouldTriggerHtfConflictReview(d, openTrade, 'long')) {
       // TDAS V4.8.0 Phase A — mirrors the short-branch fix above; see that
       // comment for full rationale. dir === 'long' here.
@@ -5420,11 +5573,10 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // phrase fix above.
       // TDAS V4.8 Phase D Fix — mirrors the short branch's 1H-trade
       // deterioration gate above.
+      // TDAS V4.8 Phase D Follow-Up — mirrors the short branch's exact
+      // adjacent-timeframe deterioration wording above.
       action = 'REVIEW'; headline = 'REVIEW';
-      const _evHtfLong = d && d.evidence && d.evidence.htfContext;
-      detail = (_evHtfLong && _evHtfLong !== 'unknown')
-        ? _formatHtfContextPhrase(_evHtfLong, 'long', _htfTag) + ' No primary exit trigger yet.'
-        : (_htfTag + ' regime weakening. No primary exit trigger yet.');
+      detail = _buildAdjacentDeteriorationReviewDetail('long', _htfTag, _setupTf);
     } else {
       // TDAS V4.7.2 — concise HOLD wording, mirrors the short branch above.
       // TDAS V4.8 Phase D — mirrors the short branch's evidence-driven
