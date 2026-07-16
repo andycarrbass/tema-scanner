@@ -12065,11 +12065,27 @@ function renderWatchCard(e){
   // codebase for mismatched-lens active-trade data — rather than silently
   // showing a fabricated 0/5.
   const _tfMatches = !!liveData && (liveData.tf||'').toLowerCase() === (e.tf||'').toLowerCase();
+  // (3) UT confirmation direction fix: utLongConfirm/utShortConfirm require
+  // not just utBot.direction matching e.signal, but ALSO
+  // utBot.recentSignal/utBot.signal still equalling 'long'/'short' — a
+  // freshness-adjacent gate tied to the flip bar itself (see
+  // utLongConfirm/utShortConfirm's own calcPair() definition). Once a
+  // watch has aged into 'Late Stage', that flip-bar signal is long gone
+  // even though utBot.direction still genuinely supports e.signal — so
+  // this checkpoint silently stayed unlit for mature/aged watches whose
+  // UT direction never actually turned. Freshness/aging is already this
+  // card's own Trade Stage badge and 1H Timing line's job, not this
+  // checkpoint's — so this now reads utBot.direction directly, with no
+  // freshness condition at all, matching the same direct-direction
+  // pattern used elsewhere in this codebase (e.g. `st.utBot.direction`).
+  const _utDirectionSupports = (ut, direction) =>
+    !!(ut && typeof ut.direction === 'number') &&
+    (direction === 'long' ? ut.direction === 1 : ut.direction === -1);
   const conds=_tfMatches?[
     liveData.temaWidening,
     liveData.adx>=25,
     getHtfDirectionState(liveData, e.signal)==='aligned',
-    (e.signal==='long'?liveData.utLongConfirm:liveData.utShortConfirm),
+    _utDirectionSupports(liveData.utBot, e.signal),
     (e.signal==='long'?liveData.aboveTrendSMA:!liveData.aboveTrendSMA)
   ]:[false,false,false,false,false];
   const condNames=['TEMA widening','ADX ≥ 25','HTF aligned','UT Bot confirming','SMA position'];
