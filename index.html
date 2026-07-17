@@ -1379,6 +1379,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div id="trade-desk-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0;"></div>
     <div id="tdLastSync" class="tdas-status-block" style="display:none;"></div>
   </div>
+  <!-- TF-0: setup-timeframe display filter — same pill row pattern as the Journal filter bar. Display-only: filters which watches/trades render; never triggers a scan or fetch. -->
+  <div class="journal-filter-bar" id="tradeDeskFilterBar">
+    <button class="jf-btn active" data-tdfilter="all" onclick="setTradeDeskSetupFilter('all')">All</button>
+    <button class="jf-btn" data-tdfilter="1h" onclick="setTradeDeskSetupFilter('1h')">1H Setups</button>
+    <button class="jf-btn" data-tdfilter="4h" onclick="setTradeDeskSetupFilter('4h')">4H Setups</button>
+  </div>
   <div class="trade-desk-grid" id="tradeDeskGrid">
     <!-- Watch cards column -->
     <div class="trade-col" id="watchCol">
@@ -11970,7 +11976,10 @@ async function resetJournal(){ openResetJournalModal(); }
 let currentJournalFilter='completed';
 function setJournalFilter(f){
   currentJournalFilter=f;
-  document.querySelectorAll('.jf-btn').forEach(b=>b.classList.toggle('active',b.dataset.filter===f));
+  // Scoped to the Journal's own bar — the Trade Desk setup filter (TF-0)
+  // reuses the same .jf-btn class for identical styling, so a global
+  // .jf-btn selector here would wrongly clear that bar's active pill.
+  document.querySelectorAll('#journalFilterBar .jf-btn').forEach(b=>b.classList.toggle('active',b.dataset.filter===f));
   renderJournal();
 }
 
@@ -11991,9 +12000,40 @@ function updateTradeCount(){
 // ── Trade Desk v2.0 ──────────────────────────────────────────────────────
 let watchCardTimers={};
 
+// TDAS V4.8 TF-0 — Trade Desk setup-timeframe display filter. Pure
+// display state: which stored setup timeframes render in the Watching and
+// Active Trades columns. Never triggers a scan or fetch; Closed Trades,
+// stats, Advisory, and all card logic are unaffected. In-memory only (no
+// persistence) — resets to 'all' on page load by design.
+let _tradeDeskSetupFilter = 'all'; // 'all' | '1h' | '4h'
+function _tdSetupFilterMatch(j){
+  if(_tradeDeskSetupFilter === 'all') return true;
+  return String(j.tf||'').toLowerCase() === _tradeDeskSetupFilter;
+}
+function setTradeDeskSetupFilter(f){
+  _tradeDeskSetupFilter = f;
+  document.querySelectorAll('#tradeDeskFilterBar .jf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tdfilter===f));
+  renderTradeDesk(); // re-render immediately from existing data — no scan, no fetch
+}
 function renderTradeDesk(){
-  const watches=journal.filter(j=>isActiveWatch(j));
-  const active=journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome);
+  const watchesAll=journal.filter(j=>isActiveWatch(j));
+  const activeAll=journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome);
+
+  // TF-0 pill counts — per-timeframe totals across BOTH columns, computed
+  // from the unfiltered arrays so each pill's count is stable regardless
+  // of which filter is currently selected.
+  const _tfCount = tf => watchesAll.filter(j=>String(j.tf||'').toLowerCase()===tf).length
+                       + activeAll.filter(j=>String(j.tf||'').toLowerCase()===tf).length;
+  const _pillCounts = { all: watchesAll.length + activeAll.length, '1h': _tfCount('1h'), '4h': _tfCount('4h') };
+  document.querySelectorAll('#tradeDeskFilterBar .jf-btn').forEach(b=>{
+    const key=b.dataset.tdfilter;
+    const label = key==='all' ? 'All' : key.toUpperCase()+' Setups';
+    const n = _pillCounts[key];
+    b.textContent = n ? label+' ('+n+')' : label;
+  });
+
+  const watches=watchesAll.filter(_tdSetupFilterMatch);
+  const active=activeAll.filter(_tdSetupFilterMatch);
 
   // Watch column
   const watchEl=document.getElementById('watchCards');
