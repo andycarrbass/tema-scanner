@@ -3697,6 +3697,86 @@ function _marketEvidenceNormalizeTradeDirection(openTrade) {
   return null;
 }
 
+// ── TDAS V4.8 — Evidence Transparency Fix ───────────────────────────────
+// TAO proved the aggregate MarketEvidence fields (Direction/Alignment/HTF
+// Context/Trend Quality/Extension) can compress a genuinely clear picture
+// (TEMA bearish on 1H+4H, UT bearish, HTF aligned, price below 200MA, ADX
+// weak/ranging) into something less legible than the old Advisory
+// wording. This section exposes the individual facts UNDERLYING those
+// aggregates — additive only. None of the frozen aggregate fields are
+// removed, renamed, or reweighted; every value below is read from fields
+// _marketEvidenceDirectionAlignment()/_marketEvidenceTrendQuality()/
+// _marketEvidenceExtension() already compute internally, just surfaced
+// individually instead of only feeding into the compressed aggregate.
+//
+// TEMA direction/structure and TEMA momentum are kept as two explicitly
+// separate fields per this task's instruction — momentum (widening/
+// converging) must never be conflated with or erase directional
+// confirmation, matching the identical separation just applied to the
+// Watch-card TEMA structure checkpoint.
+function _marketEvidenceMaRelation(above, distPct) {
+  // Reuses the existing, already-approved REGIME_MA_PRESSURE_PCT
+  // tolerance (unchanged — the same threshold classifyRegime()'s nearMA
+  // and the active-trade 200MA context helper already use) — no new
+  // threshold invented.
+  if (typeof above !== 'boolean') return 'unknown';
+  if (distPct != null && isFinite(distPct) && Math.abs(distPct) <= REGIME_MA_PRESSURE_PCT) return 'at';
+  return above ? 'above' : 'below';
+}
+function _marketEvidenceComponents(d) {
+  const st = (d && d.states) || {};
+
+  // TEMA structure: direction (crossLong/crossShort) kept strictly
+  // separate from momentum (temaWidening) — the same fields the Watch-
+  // card TEMA checkpoint now reuses for pure directional confirmation,
+  // and calcPair()'s own temaWidening magnitude comparison, respectively.
+  // Adjacent/HTF TEMA direction reuses htfTrendContext.key's existing
+  // bullish/bearish classification — the same mapping
+  // _marketEvidenceHtfContext() already applies, not reinvented.
+  const setupTemaDir = st.crossLong === true ? 'bullish' : st.crossShort === true ? 'bearish' : 'unknown';
+  const bullishHtfKeys = ['bullish', 'bullish-weak', 'mixed-bullish'];
+  const bearishHtfKeys = ['bearish', 'bearish-weak', 'mixed-bearish'];
+  const htfTc = d && d.htfTrendContext;
+  const adjacentTemaDir = (htfTc && htfTc.key)
+    ? (bullishHtfKeys.indexOf(htfTc.key) !== -1 ? 'bullish' : bearishHtfKeys.indexOf(htfTc.key) !== -1 ? 'bearish' : 'neutral')
+    : 'unknown';
+  const temaAlignment = (setupTemaDir === 'unknown' || adjacentTemaDir === 'unknown') ? 'unknown'
+    : (setupTemaDir === adjacentTemaDir ? 'aligned' : (adjacentTemaDir === 'neutral' ? 'neutral' : 'opposed'));
+  const temaMomentum = (st.temaWidening === true) ? 'widening' : (st.temaWidening === false) ? 'converging' : 'unknown';
+
+  // UT direction: setup-TF + adjacent/HTF-TF, direction only — freshness/
+  // bars-since-flip remains the existing freshness field's own job, not
+  // duplicated here.
+  const setupUtDir = (st.utBot && typeof st.utBot.direction === 'number')
+    ? (st.utBot.direction === 1 ? 'bullish' : st.utBot.direction === -1 ? 'bearish' : 'neutral') : 'unknown';
+  const adjacentUtDir = (d && d.htfUtBot && typeof d.htfUtBot.direction === 'number')
+    ? (d.htfUtBot.direction === 1 ? 'bullish' : d.htfUtBot.direction === -1 ? 'bearish' : 'neutral') : 'unknown';
+
+  // 200MA relation: setup + adjacent/management, reusing the same
+  // closed-candle convention (aboveMA_closed/maDist, htfAbove/htfMaDist)
+  // and pressure-tolerance threshold already established for active-trade
+  // 200MA context — no new fetch, no new indicator maths.
+  const setupMaRelation = _marketEvidenceMaRelation(st.aboveMA_closed, st.maDist);
+  const adjacentMaRelation = _marketEvidenceMaRelation(d && d.htfAbove, d && d.htfMaDist);
+
+  // ADX state: reuses the same adxTrending/adxStrong booleans
+  // _marketEvidenceTrendQuality() already reads — no new threshold.
+  const adxValue = (st.adx != null && isFinite(st.adx)) ? st.adx : (d && d.adx != null && isFinite(d.adx)) ? d.adx : null;
+  const adxState = adxValue == null ? 'unknown' : (st.adxStrong ? 'strong' : st.adxTrending ? 'trending' : 'weak');
+
+  // RSI/extension state: reuses _marketEvidenceExtension()'s own result
+  // and RSI field exactly — no duplicate logic, no new maths.
+  const rsiValue = (st.rsi != null && isFinite(st.rsi)) ? st.rsi : (d && d.rsi != null && isFinite(d.rsi)) ? d.rsi : null;
+
+  return {
+    temaStructure: { direction: setupTemaDir, adjacentDirection: adjacentTemaDir, alignment: temaAlignment, momentum: temaMomentum },
+    utDirection: { direction: setupUtDir, adjacentDirection: adjacentUtDir },
+    ma200Relation: { setup: setupMaRelation, adjacent: adjacentMaRelation },
+    adxState: { value: adxValue, state: adxState },
+    rsiExtension: { value: rsiValue, state: _marketEvidenceExtension(d) },
+  };
+}
+
 function buildEvidence(d, entry) {
   const SAFE_DEFAULT = {
     direction: 'neutral', alignment: 'none', alignmentDissent: null,
@@ -3708,6 +3788,17 @@ function buildEvidence(d, entry) {
       oneHUt:     { key: 'none', tf: null, barsAgo: null },
     },
     setupIntegrity: null, stage: 'entry', blockers: [], sourceTf: { view: null, setup: null, htf: null },
+    // TDAS V4.8 Evidence Transparency Fix — additive diagnostic component
+    // facts. Not part of the frozen aggregate contract (see ALLOWED_ENUMS
+    // in market_evidence_fixtures.js, which intentionally does not list
+    // this field) — a safe all-unknown default here.
+    components: {
+      temaStructure: { direction: 'unknown', adjacentDirection: 'unknown', alignment: 'unknown', momentum: 'unknown' },
+      utDirection: { direction: 'unknown', adjacentDirection: 'unknown' },
+      ma200Relation: { setup: 'unknown', adjacent: 'unknown' },
+      adxState: { value: null, state: 'unknown' },
+      rsiExtension: { value: null, state: 'unknown' },
+    },
   };
   try {
     const e = entry || {};
@@ -3746,6 +3837,10 @@ function buildEvidence(d, entry) {
       stage: _marketEvidenceStage(d, e),
       blockers: _marketEvidenceBlockers(d, openTrade),
       sourceTf: _marketEvidenceSourceTf(d, openTrade, openWatch),
+      // TDAS V4.8 Evidence Transparency Fix — additive only, see
+      // _marketEvidenceComponents()'s own header comment. None of the
+      // fields above are changed by this addition.
+      components: _marketEvidenceComponents(d),
     };
   } catch (err) {
     if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) {
@@ -10215,6 +10310,48 @@ function buildMarketEvidenceDiagnosticHtml(d){
     const marketLabel = ev.marketContext ? (ev.marketContext.charAt(0).toUpperCase() + ev.marketContext.slice(1)) : 'Unknown';
     const trendLabel = ev.trendQuality ? (ev.trendQuality.charAt(0).toUpperCase() + ev.trendQuality.slice(1)) : dash;
     const extLabel = ev.extension ? ev.extension.charAt(0).toUpperCase() + ev.extension.slice(1) : 'Unknown';
+    // TDAS V4.8 Evidence Transparency Fix — explicit component rows,
+    // additive only, placed after the existing aggregate rows. Reads the
+    // new ev.components field (see _marketEvidenceComponents()); degrades
+    // safely to dashes/"Unknown" if absent (e.g. an older cached evidence
+    // object from before this fix). TEMA Structure and TEMA Momentum are
+    // deliberately two separate rows — momentum never determines or
+    // erases the direction row's meaning.
+    function capWord(w){ return (w && w !== 'unknown') ? (w.charAt(0).toUpperCase() + w.slice(1)) : 'Unknown'; }
+    const comp = ev.components || {};
+    const tfLabel = (d && d.tf) ? String(d.tf).toUpperCase() : dash;
+    const htfLabelTf = (d && d.htf) ? String(d.htf).toUpperCase() : dash;
+    const temaStructureRow = (() => {
+      const t = comp.temaStructure || {};
+      const relWord = t.alignment === 'aligned' ? 'aligned' : t.alignment === 'opposed' ? 'opposed' : t.alignment === 'neutral' ? 'neutral' : null;
+      const tfPart = (relWord && tfLabel !== dash && htfLabelTf !== dash) ? (tfLabel + '/' + htfLabelTf + ' ' + relWord) : null;
+      return '<div class="ap-row"><span>TEMA Structure</span><span>' + capWord(t.direction) + (tfPart ? (' \u00b7 ' + tfPart) : '') + '</span></div>';
+    })();
+    const temaMomentumRow = '<div class="ap-row"><span>TEMA Momentum</span><span>' + capWord((comp.temaStructure || {}).momentum) + '</span></div>';
+    const utDirectionRow = (() => {
+      const u = comp.utDirection || {};
+      const relWord = (u.direction && u.direction !== 'unknown' && u.adjacentDirection && u.adjacentDirection !== 'unknown')
+        ? (u.direction === u.adjacentDirection ? 'aligned' : 'opposed') : null;
+      const tfPart = (relWord && tfLabel !== dash && htfLabelTf !== dash) ? (tfLabel + '/' + htfLabelTf + ' ' + relWord) : null;
+      return '<div class="ap-row"><span>UT Direction</span><span>' + capWord(u.direction) + (tfPart ? (' \u00b7 ' + tfPart) : '') + '</span></div>';
+    })();
+    const ma200Row = (() => {
+      const m = comp.ma200Relation || {};
+      const setupPart = (tfLabel !== dash && m.setup && m.setup !== 'unknown') ? (tfLabel + ': ' + capWord(m.setup)) : null;
+      const adjPart = (htfLabelTf !== dash && m.adjacent && m.adjacent !== 'unknown') ? (htfLabelTf + ': ' + capWord(m.adjacent)) : null;
+      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
+      return '<div class="ap-row"><span>200MA Relation</span><span>' + text + '</span></div>';
+    })();
+    const adxRow = (() => {
+      const a = comp.adxState || {};
+      const text = (a.value != null) ? (capWord(a.state) + ' (' + a.value.toFixed(1) + ')') : 'Unknown';
+      return '<div class="ap-row"><span>ADX State</span><span>' + text + '</span></div>';
+    })();
+    const rsiRow = (() => {
+      const r = comp.rsiExtension || {};
+      const text = (r.value != null) ? (capWord(r.state) + ' (' + r.value.toFixed(1) + ')') : capWord(r.state);
+      return '<div class="ap-row"><span>RSI / Extension</span><span>' + text + '</span></div>';
+    })();
     function freshRow(label, src, notApplicable){
       if (notApplicable) return '<div class="ap-row"><span>' + label + '</span><span>Not applicable</span></div>';
       if (!src) return '<div class="ap-row"><span>' + label + '</span><span>None</span></div>';
@@ -10244,6 +10381,12 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + '<div class="ap-row"><span>Market Context</span><span>' + marketLabel + '</span></div>'
       + '<div class="ap-row"><span>Trend Quality</span><span>' + trendLabel + '</span></div>'
       + '<div class="ap-row"><span>Extension</span><span>' + extLabel + '</span></div>'
+      + temaStructureRow
+      + temaMomentumRow
+      + utDirectionRow
+      + ma200Row
+      + adxRow
+      + rsiRow
       + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
       + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
       + freshRow('1H timing UT freshness', ev.freshness && ev.freshness.oneHUt, isOneHSetup)
@@ -12123,24 +12266,23 @@ function buildWatchEvidenceModel(liveData, watch) {
   if (!valid) {
     checkpoints = ['tema','ut','htf','adx','sma'].map(key => checkpoint(key, false, 'pending'));
   } else {
-    // 1. TEMA structure — TDAS V4.8 Watch Evidence Model Completion Fix.
-    // FIXED (previously an audit-flagged defect): temaWidening alone is a
-    // bare magnitude comparison with no direction (calcPair(): temaSep>
-    // prevSep) — it doesn't check which way the TEMA17/TEMA92 spread is
-    // pointing. Direction now comes from crossLong/crossShort (TEMA17 vs
-    // TEMA92), the same existing field this codebase already reuses
-    // elsewhere for "does TEMA structure support this direction" (e.g.
-    // temaStillSupports in the REVIEW-branch helpers) — no new indicator
-    // maths. A watch now passes only when TEMA structure itself supports
-    // its own stored direction AND the spread is genuinely widening;
-    // opposing structure fails even while widening, and an unresolved
-    // direction (crossLong/crossShort both false/undefined) reports
-    // unknown rather than a fabricated pass.
+    // 1. TEMA structure — TDAS V4.8 Evidence Transparency Fix.
+    // FIXED (supersedes the prior Completion Fix's widening-gated version):
+    // TEMA structure now means directional structure ONLY — crossLong/
+    // crossShort (TEMA17 vs TEMA92), the same existing field this codebase
+    // already reuses elsewhere for "does TEMA structure support this
+    // direction" (e.g. temaStillSupports in the REVIEW-branch helpers) —
+    // no new indicator maths. Momentum (temaWidening — a bare magnitude
+    // comparison, calcPair(): temaSep>prevSep) is a genuinely separate
+    // concept and must never decide this checkpoint's pass/fail: a
+    // bearish-and-converging TEMA structure still passes a short watch,
+    // exactly as the old Advisory always showed it. Opposing structure
+    // fails regardless of momentum; an unresolved direction (crossLong/
+    // crossShort both false/undefined) reports unknown, never a
+    // fabricated pass.
     const temaDirKnown = liveData.crossLong === true || liveData.crossShort === true;
-    const temaWidKnown = liveData.temaWidening === true || liveData.temaWidening === false;
-    const temaKnown   = temaDirKnown && temaWidKnown;
     const temaSupports = signal === 'long' ? liveData.crossLong === true : liveData.crossShort === true;
-    const temaPass    = temaKnown && temaSupports && liveData.temaWidening === true;
+    const temaPass    = temaDirKnown && temaSupports;
 
     // 2. UT confirmation — direction-aware (Watch UT Direction Fix), unchanged.
     const utKnown = !!(liveData.utBot && typeof liveData.utBot.direction === 'number');
@@ -12171,7 +12313,7 @@ function buildWatchEvidenceModel(liveData, watch) {
     const smaPass  = signal === 'long' ? liveData.aboveTrendSMA === true : liveData.aboveTrendSMA === false;
 
     checkpoints = [
-      checkpoint('tema', temaPass, temaKnown ? (temaPass ? 'pass' : 'fail') : 'unknown'),
+      checkpoint('tema', temaPass, temaDirKnown ? (temaPass ? 'pass' : 'fail') : 'unknown'),
       checkpoint('ut',   utPass,   utKnown   ? (utPass   ? 'pass' : 'fail') : 'unknown'),
       checkpoint('htf',  htfPass,  htfKnown  ? (htfPass  ? 'pass' : 'fail') : 'unknown'),
       checkpoint('adx',  adxPass,  adxKnown  ? (adxPass  ? 'pass' : 'fail') : 'unknown'),
