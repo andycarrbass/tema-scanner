@@ -1344,7 +1344,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div class="summary" id="summary" style="margin-bottom:0;"></div>
     <div id="scannerStatusBar" class="tdas-status-block" style="display:none;"></div>
   </div>
-  <div class="status-row"><span id="status"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
+  <div class="status-row" style="justify-content:flex-start;"><span id="status"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
   <div class="grid" id="grid"></div>
 </div>
 
@@ -1371,7 +1371,6 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">Watches developing · Active trades · Live P&amp;L</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-      <span id="activeTfTradeDesk" class="htf-note">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span>
       <button onclick="exportTrades()" style="font-size:12px;padding:6px 11px;">&#8595; Export</button>
     </div>
   </div>
@@ -1384,6 +1383,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <button class="jf-btn active" data-tdfilter="all" onclick="setTradeDeskSetupFilter('all')">All</button>
     <button class="jf-btn" data-tdfilter="1h" onclick="setTradeDeskSetupFilter('1h')">1H Setups</button>
     <button class="jf-btn" data-tdfilter="4h" onclick="setTradeDeskSetupFilter('4h')">4H Setups</button>
+    <span id="activeTfTradeDesk" class="htf-note" style="margin-left:4px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span>
   </div>
   <div class="trade-desk-grid" id="tradeDeskGrid">
     <!-- Watch cards column -->
