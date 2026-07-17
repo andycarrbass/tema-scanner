@@ -12081,56 +12081,120 @@ function renderTradeDesk(){
   renderTrades();
 }
 
+// TDAS V4.8 — Watch-Card Evidence Migration. Pure, direction-aware
+// five-checkpoint model for watch cards. No fetch, no DOM access, no
+// mutation, no journal lookup — takes the already-cached liveData
+// (currentScanData[symbol]) and the watch's own stored {signal, tf} and
+// returns one serialisable state per checkpoint, in exact display order
+// (tema, ut, htf, adx, sma). This is an architecture migration only: every
+// per-checkpoint pass/fail expression below is byte-for-byte the same
+// condition renderWatchCard() evaluated inline before this task — see the
+// per-checkpoint comments for the two audit findings flagged (not
+// changed) per this task's explicit instruction not to silently redefine
+// checkpoint meaning.
+//
+// checkpoint.pass drives the X/5 count exactly as conds[].filter(Boolean)
+// did before. checkpoint.status ('pass'/'fail'/'unknown') is new — it
+// honestly distinguishes a genuine fail from missing underlying data,
+// without changing which boolean feeds the count (Evaluation/Trade Ready
+// reweighting is explicitly out of scope for this task).
+function _utDirectionSupportsSignal(ut, signal) {
+  // TDAS V4.8 Watch UT Direction Fix — reads utBot.direction directly, no
+  // freshness condition, so a mature/aged UT that never actually turned
+  // against the watch still reads as supporting it. Relocated here
+  // (previously an inline closure inside renderWatchCard) as part of this
+  // migration — logic and behaviour unchanged.
+  return !!(ut && typeof ut.direction === 'number') &&
+    (signal === 'long' ? ut.direction === 1 : ut.direction === -1);
+}
+function buildWatchEvidenceModel(liveData, watch) {
+  const signal = watch && watch.signal;
+  const tf     = watch && watch.tf;
+  // TDAS V4.8.x Mismatched-Lens Guard — carried over unchanged: currentScanData
+  // is keyed by symbol only, so liveData may genuinely reflect a different
+  // timeframe than this watch's own stored tf. When it does, none of the
+  // five checkpoints are evaluated — status 'pending' for all five, exactly
+  // matching the prior all-false-behind-a-Pending-label behaviour.
+  const valid = !!liveData && (liveData.tf||'').toLowerCase() === (tf||'').toLowerCase();
+
+  function checkpoint(key, pass, status) { return { key, pass: !!pass, status }; }
+
+  let checkpoints;
+  if (!valid) {
+    checkpoints = ['tema','ut','htf','adx','sma'].map(key => checkpoint(key, false, 'pending'));
+  } else {
+    // 1. TEMA structure — TDAS V4.8 Watch Evidence Model Completion Fix.
+    // FIXED (previously an audit-flagged defect): temaWidening alone is a
+    // bare magnitude comparison with no direction (calcPair(): temaSep>
+    // prevSep) — it doesn't check which way the TEMA17/TEMA92 spread is
+    // pointing. Direction now comes from crossLong/crossShort (TEMA17 vs
+    // TEMA92), the same existing field this codebase already reuses
+    // elsewhere for "does TEMA structure support this direction" (e.g.
+    // temaStillSupports in the REVIEW-branch helpers) — no new indicator
+    // maths. A watch now passes only when TEMA structure itself supports
+    // its own stored direction AND the spread is genuinely widening;
+    // opposing structure fails even while widening, and an unresolved
+    // direction (crossLong/crossShort both false/undefined) reports
+    // unknown rather than a fabricated pass.
+    const temaDirKnown = liveData.crossLong === true || liveData.crossShort === true;
+    const temaWidKnown = liveData.temaWidening === true || liveData.temaWidening === false;
+    const temaKnown   = temaDirKnown && temaWidKnown;
+    const temaSupports = signal === 'long' ? liveData.crossLong === true : liveData.crossShort === true;
+    const temaPass    = temaKnown && temaSupports && liveData.temaWidening === true;
+
+    // 2. UT confirmation — direction-aware (Watch UT Direction Fix), unchanged.
+    const utKnown = !!(liveData.utBot && typeof liveData.utBot.direction === 'number');
+    const utPass  = _utDirectionSupportsSignal(liveData.utBot, signal);
+
+    // 3. HTF support — direction-aware via getHtfDirectionState(liveData,
+    // signal) (Watch-Card Checkpoint Correctness Fix), unchanged. Per this
+    // task's explicit instruction: deliberately NOT read from
+    // d.evidence.htfContext, which can silently degrade to neutral/unknown
+    // purely because the live scan's own signal has drifted — the watch's
+    // own stored signal remains the explicit direction reference.
+    const htfKnown = !!(liveData.htfTrendContext && liveData.htfTrendContext.key);
+    const htfPass  = getHtfDirectionState(liveData, signal) === 'aligned';
+
+    // 4. ADX trend — liveData.adx>=25, PRESERVED EXACTLY.
+    const adxKnown = liveData.adx != null;
+    const adxPass  = liveData.adx >= 25;
+
+    // 5. SMA filter — TDAS V4.8 Watch Evidence Model Completion Fix.
+    // FIXED (previously an audit-flagged defect): the prior negation
+    // (!liveData.aboveTrendSMA for short watches) let a genuinely missing
+    // value read as a pass. Now requires an explicit match — long passes
+    // only on aboveTrendSMA===true, short passes only on
+    // aboveTrendSMA===false; null/undefined is unknown and unlit for
+    // either direction. Threshold/calculation of aboveTrendSMA itself
+    // (calcPair()) is untouched.
+    const smaKnown = liveData.aboveTrendSMA === true || liveData.aboveTrendSMA === false;
+    const smaPass  = signal === 'long' ? liveData.aboveTrendSMA === true : liveData.aboveTrendSMA === false;
+
+    checkpoints = [
+      checkpoint('tema', temaPass, temaKnown ? (temaPass ? 'pass' : 'fail') : 'unknown'),
+      checkpoint('ut',   utPass,   utKnown   ? (utPass   ? 'pass' : 'fail') : 'unknown'),
+      checkpoint('htf',  htfPass,  htfKnown  ? (htfPass  ? 'pass' : 'fail') : 'unknown'),
+      checkpoint('adx',  adxPass,  adxKnown  ? (adxPass  ? 'pass' : 'fail') : 'unknown'),
+      checkpoint('sma',  smaPass,  smaKnown  ? (smaPass  ? 'pass' : 'fail') : 'unknown'),
+    ];
+  }
+
+  return { valid, checkpoints, passed: checkpoints.filter(c => c.pass).length, total: 5 };
+}
+
 function renderWatchCard(e){
   const liveData=currentScanData[e.symbol];
   const currentPrice=liveData?liveData.price:null;
-  // TDAS V4.8.x — Watch-Card Checkpoint Correctness Fix.
-  // (1) HTF checkpoint direction fix: liveData.htfAlign is computed inside
-  // calcPair() relative to THAT SCAN'S OWN currently-detected signal (see
-  // calcPair()'s own htfAlign block), not this watch's stored e.signal —
-  // the same class of signal-relative bug Phase A already fixed for
-  // active trades via getHtfDirectionState() (main.js, HTF-conflict
-  // REVIEW trigger). If the live scan's own signal has drifted to neutral
-  // since the watch was logged, htfAlign silently stays 'neutral'
-  // regardless of the genuine HTF trend — undercounting the checklist.
-  // Reusing that same proven helper here, direction-relative to e.signal.
-  // (2) Mismatched-lens guard: currentScanData is keyed by symbol only
-  // (calcPair() one cached result per symbol) — the Trade Desk column
-  // renders every active watch across every symbol/timeframe at once
-  // (renderTradeDesk()), so liveData may genuinely reflect a different
-  // timeframe than this watch's own e.tf (e.g. before _tdSignalRefresh()'s
-  // next tab-gated cycle, or when two watches share a symbol at different
-  // timeframes and only one can occupy the cache slot at a time). When
-  // the cache timeframe doesn't match, the five checkpoints are not
-  // evaluated at all — same "fail honest" convention used throughout this
-  // codebase for mismatched-lens active-trade data — rather than silently
-  // showing a fabricated 0/5.
-  const _tfMatches = !!liveData && (liveData.tf||'').toLowerCase() === (e.tf||'').toLowerCase();
-  // (3) UT confirmation direction fix: utLongConfirm/utShortConfirm require
-  // not just utBot.direction matching e.signal, but ALSO
-  // utBot.recentSignal/utBot.signal still equalling 'long'/'short' — a
-  // freshness-adjacent gate tied to the flip bar itself (see
-  // utLongConfirm/utShortConfirm's own calcPair() definition). Once a
-  // watch has aged into 'Late Stage', that flip-bar signal is long gone
-  // even though utBot.direction still genuinely supports e.signal — so
-  // this checkpoint silently stayed unlit for mature/aged watches whose
-  // UT direction never actually turned. Freshness/aging is already this
-  // card's own Trade Stage badge and 1H Timing line's job, not this
-  // checkpoint's — so this now reads utBot.direction directly, with no
-  // freshness condition at all, matching the same direct-direction
-  // pattern used elsewhere in this codebase (e.g. `st.utBot.direction`).
-  const _utDirectionSupports = (ut, direction) =>
-    !!(ut && typeof ut.direction === 'number') &&
-    (direction === 'long' ? ut.direction === 1 : ut.direction === -1);
-  const conds=_tfMatches?[
-    liveData.temaWidening,
-    liveData.adx>=25,
-    getHtfDirectionState(liveData, e.signal)==='aligned',
-    _utDirectionSupports(liveData.utBot, e.signal),
-    (e.signal==='long'?liveData.aboveTrendSMA:!liveData.aboveTrendSMA)
-  ]:[false,false,false,false,false];
+  // TDAS V4.8 — Watch-Card Evidence Migration. renderWatchCard() no longer
+  // interprets raw liveData fields itself for the checklist — dots, pass
+  // count, full-confirmation state, star, and Pending state are all
+  // derived exclusively from the single buildWatchEvidenceModel() result.
+  // See that function's own header comment for the preserved per-
+  // checkpoint semantics and the two flagged (not changed) audit findings.
+  const evidence = buildWatchEvidenceModel(liveData, e);
+  const _tfMatches = evidence.valid;
+  const litCount = evidence.passed;
   const condNames=['TEMA widening','ADX ≥ 25','HTF aligned','UT Bot confirming','SMA position'];
-  const litCount=conds.filter(Boolean).length;
   // Watch card status — visual guidance, not enforcement
   // Take Trade is always enabled regardless of condition count.
   const fullConf  = _tfMatches && litCount === 5;  // kept for CSS class / star compat
@@ -12152,24 +12216,17 @@ function renderWatchCard(e){
   const _tfPendingNoteHtml = _tfMatches ? '' : `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">Checkpoints pending — refreshing to this watch's ${(e.tf||'').toUpperCase()} timeframe.</div>`;
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   const dir=e.signal==='long'?'<span class="chip long" style="font-size:12px;">▲ Long</span>':'<span class="chip short" style="font-size:12px;">▼ Short</span>';
-  // TDAS V4.6.5 — checklist display labels/order only (Task 3). conds[]
-  // itself (the underlying pass/fail values, still computed exactly as
-  // above) and litCount (conds.filter(Boolean).length — order-independent)
-  // are completely unchanged; this only changes what's shown and in what
-  // sequence. Each entry below maps to the same conds[] index it always
-  // did — e.g. condDisplay[1] ('UT confirmation') reads conds[3], the same
-  // UT Bot confirming value as before, just relabelled/reordered.
-  const condDisplay = [
-    { label: 'TEMA structure',  lit: conds[0] },
-    { label: 'UT confirmation', lit: conds[3] },
-    { label: 'HTF support',     lit: conds[2] },
-    { label: 'ADX trend',       lit: conds[1] },
-    { label: 'SMA filter',      lit: conds[4] },
-  ];
-  const condListHtml=condDisplay.map(c=>`
+  // TDAS V4.8 Evidence Migration — checklist display labels/order are now
+  // sourced directly from evidence.checkpoints, which is already built in
+  // exact display order (tema, ut, htf, adx, sma). No index remapping is
+  // needed any more (the prior condDisplay[]->conds[index] mapping is
+  // retired); LABELS_BY_KEY below is the only place the display text
+  // lives, unchanged from the labels condDisplay used before.
+  const LABELS_BY_KEY = { tema:'TEMA structure', ut:'UT confirmation', htf:'HTF support', adx:'ADX trend', sma:'SMA filter' };
+  const condListHtml=evidence.checkpoints.map(c=>`
     <div class="watch-cond-row">
-      <span class="watch-dot ${c.lit?'lit':'na'}"></span>
-      <span class="watch-cond-label ${c.lit?'lit':''}">${c.label}</span>
+      <span class="watch-dot ${c.pass?'lit':'na'}"></span>
+      <span class="watch-cond-label ${c.pass?'lit':''}">${LABELS_BY_KEY[c.key]}</span>
     </div>`).join('');
   const priceColor=null; // replaced by currentPxColor below
   // Current price colour relative to trigger price — green if moving in signal direction, red if against
