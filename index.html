@@ -1598,7 +1598,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.8.0';
+const APP_BUILD = 'V4.9.1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2394,6 +2394,61 @@ function calcRSI(closes,p=14){
 }
 function calcATR(h,l,c,p=14){const trs=[];for(let i=1;i<c.length;i++)trs.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])));return sma(trs,p);}
 
+// TDAS V4.9.1 T2 — named constants for the shared ADX calculation and its
+// slope lookback. ADX_PERIOD preserves the existing Wilder period (14,
+// unchanged). ADX_SLOPE_LOOKBACK_BARS is the approved provisional
+// calibration value (compare current ADX against 3 closed bars earlier).
+const ADX_PERIOD = 14;
+const ADX_SLOPE_LOOKBACK_BARS = 3;
+
+// ── TDAS V4.9.1 T2 — shared Wilder ADX calculation (14), extended to also ──
+// retain the minimum recent history needed for slope calculation. This is
+// the SAME Wilder +DM/-DM/TR/DX/RMA logic calcPair() already used inline
+// for the setup-timeframe ADX — factored out here so calcPair() can call
+// it a second time for the adjacent/HTF timeframe without a second,
+// independently-written ADX implementation existing anywhere. Callers pass
+// already-fetched, already-closed candle series only (h/l/c) — this
+// function performs no fetch of its own. Returns { value, prevValue }:
+// `value` is the current ADX (rounded to 1dp, byte-identical to the prior
+// inline computation's own rounding), `prevValue` is the ADX exactly
+// `lookbackBars` closed bars earlier (same rounding), or null when there
+// are not yet enough closed bars to look back that far.
+function calcADXWithHistory(h, l, c, period, lookbackBars) {
+  const plusDM=[],minusDM=[],trArr=[];
+  for(let i=1;i<c.length;i++){
+    const upMove=h[i]-h[i-1];
+    const downMove=l[i-1]-l[i];
+    plusDM.push(upMove>downMove&&upMove>0?upMove:0);
+    minusDM.push(downMove>upMove&&downMove>0?downMove:0);
+    trArr.push(Math.max(h[i]-l[i],Math.abs(h[i]-c[i-1]),Math.abs(l[i]-c[i-1])));
+  }
+  function wilderSmooth(arr,p){
+    let s=arr.slice(0,p).reduce((a,b)=>a+b,0);
+    const out=[s];
+    for(let i=p;i<arr.length;i++){s=s-s/p+arr[i];out.push(s);}
+    return out;
+  }
+  const smoothTR=wilderSmooth(trArr,period);
+  const smoothPDM=wilderSmooth(plusDM,period);
+  const smoothMDM=wilderSmooth(minusDM,period);
+  const pDI=smoothPDM.map((v,i)=>smoothTR[i]?100*v/smoothTR[i]:0);
+  const mDI=smoothMDM.map((v,i)=>smoothTR[i]?100*v/smoothTR[i]:0);
+  const dx=pDI.map((v,i)=>pDI[i]+mDI[i]?100*Math.abs(pDI[i]-mDI[i])/(pDI[i]+mDI[i]):0);
+  if (dx.length < period) return { value: null, prevValue: null };
+  let adxVal=dx.slice(0,period).reduce((a,b)=>a+b,0)/period;
+  // Rolling window of only the last (lookbackBars+1) raw ADX values — the
+  // minimum history required for the slope comparison, not a full series.
+  const _recent=[adxVal];
+  for(let i=period;i<dx.length;i++){
+    adxVal=(adxVal*(period-1)+dx[i])/period;
+    _recent.push(adxVal);
+    if(_recent.length>lookbackBars+1) _recent.shift();
+  }
+  const value=Math.round(adxVal*10)/10;
+  const prevValue=(_recent.length===lookbackBars+1) ? Math.round(_recent[0]*10)/10 : null;
+  return { value, prevValue };
+}
+
 // UT Bot Alert — exact JS port of TradingView Pine Script v4 UT Bot Alerts
 // Source: QuantNomad "UT Bot Alerts" (Key Value 4, ATR Period 10, h=false)
 // Optional: pass (times, debugSymbol) to enable DEBUG_MODE per-bar logging.
@@ -2714,6 +2769,33 @@ function _tema92VsMa200FromValues(tema92, ma200Val) {
   return tema92 > ma200Val ? 'above' : 'below';
 }
 
+// TDAS V4.9.1 T2 — ADX slope calibration. Approved provisional constants:
+// flat tolerance of +/-1.0 ADX points over the ADX_SLOPE_LOOKBACK_BARS
+// (3-bar) window, and the existing ADX>=40 "strong" threshold reused
+// (not reinvented) as the highRollingOver floor. Named per doctrine so
+// these can be tuned later without touching call sites.
+const ADX_SLOPE_FLAT_TOLERANCE = 1.0;
+const ADX_HIGH_ROLLOVER_ADX_MIN = 40;
+
+// TDAS V4.9.1 T2 — measured ADX slope from a current/prior (3-bars-ago)
+// value pair. Mirrors the T1 ma200Slope pattern: current vs an already-
+// computed prior value, no new indicator maths. Insufficient/malformed
+// data returns 'unknown' with highRollingOver explicitly false — never
+// fabricated. highRollingOver is a timing/management signal only (ADX
+// still high but turning down); it does not itself denote a fresh
+// High-Conviction condition, per doctrine.
+function _adxSlopeFromValues(cur, prev) {
+  if (cur == null || !isFinite(cur) || prev == null || !isFinite(prev)) {
+    return { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false };
+  }
+  const delta = cur - prev;
+  const state = delta > ADX_SLOPE_FLAT_TOLERANCE ? 'rising'
+    : delta < -ADX_SLOPE_FLAT_TOLERANCE ? 'falling'
+    : 'flat';
+  const highRollingOver = (cur >= ADX_HIGH_ROLLOVER_ADX_MIN) && (state === 'falling');
+  return { state, delta, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver };
+}
+
 function computeStates(d) {
   if (!d || typeof d !== 'object') return null;
 
@@ -2758,6 +2840,20 @@ function computeStates(d) {
   const tema92VsMa200 = _tema92VsMa200FromValues(_t92Cur, d.ma200);
   const htfMa200Slope = _ma200SlopeFromValues(d.htfMa200, d.htfPrevMa200);
   const htfTema92VsMa200 = _tema92VsMa200FromValues(d.htfT92, d.htfMa200);
+
+  // ── TDAS V4.9.1 T2 — ADX slope, setup + adjacent/HTF ────────────────────
+  // Additive evaluation-grade evidence only. Reads d.adx/d.adxPrev3 (setup)
+  // and d.htfAdx/d.htfAdxPrev3 (adjacent), all already computed in
+  // calcPair() via the shared calcADXWithHistory() helper — no new fetch,
+  // no new indicator maths. Uses raw d.adx/d.htfAdx directly (not the
+  // guard-defaulted _adx above, which defaults missing data to 0 — that
+  // default is correct for existing regime/trend-quality consumers but
+  // would incorrectly imply a genuine ADX reading of 0 here). Does not
+  // feed classifyRegime(), evaluateSetup(), or any Advisory/Trade-Ready/
+  // High-Conviction logic — diagnostic evidence only, consumed later by
+  // MarketEvidence.components.
+  const adxSlope = _adxSlopeFromValues(d.adx, d.adxPrev3);
+  const htfAdxSlope = _adxSlopeFromValues(d.htfAdx, d.htfAdxPrev3);
 
   // ── UT Bot states ──────────────────────────────────────────────────────
   const utDirection  = _utBot.direction; // 1 | -1 | 0
@@ -2885,6 +2981,8 @@ function computeStates(d) {
     rsi: _rsi, rsiOk_long, rsiOk_short, rsiOverbought, rsiOversold,
     // ADX
     adx: _adx, adxTrending, adxStrong, adxState,
+    // TDAS V4.9.1 T2 — additive ADX slope inputs (setup + adjacent/HTF)
+    adxSlope, htfAdxSlope,
     // 200 MA
     aboveMA, aboveMA_closed, maDist,
     // TDAS V4.9 T1 — additive MA200 regime inputs (setup + adjacent/HTF)
@@ -3822,12 +3920,24 @@ function _marketEvidenceComponents(d) {
   // and RSI field exactly — no duplicate logic, no new maths.
   const rsiValue = (st.rsi != null && isFinite(st.rsi)) ? st.rsi : (d && d.rsi != null && isFinite(d.rsi)) ? d.rsi : null;
 
+  // TDAS V4.9.1 T2 — adjacent/HTF ADX value + state. Reads d.htfAdx
+  // directly (already computed in calcPair via the shared
+  // calcADXWithHistory() helper) — no re-derivation, no new fetch. Uses
+  // the SAME existing 25/40 thresholds already established for the
+  // setup-timeframe adxState above (not reinvented) since d.states has no
+  // separate adjacent adxTrending/adxStrong booleans of its own.
+  const adjacentAdxValue = (d && d.htfAdx != null && isFinite(d.htfAdx)) ? d.htfAdx : null;
+  const adjacentAdxState = adjacentAdxValue == null ? 'unknown'
+    : (adjacentAdxValue >= 40 ? 'strong' : adjacentAdxValue >= 25 ? 'trending' : 'weak');
+
   // TDAS V4.9 T1 — MA200 regime inputs (slope + TEMA92/MA200 relation),
   // setup + adjacent/HTF. Reads the already-computed d.states fields from
   // computeStates() — no re-derivation, no new fetch. Older cached
   // states objects without these fields (e.g. from before this task)
   // degrade safely to the same 'unknown'/null shape via the fallbacks.
   const _unknownSlope = { state: 'unknown', delta: null, deltaPct: null };
+  // TDAS V4.9.1 T2 — safe all-unknown default for adxState/adjacentAdxState.slope
+  const _unknownAdxSlope = { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false };
   const ma200RegimeInputs = {
     setup: {
       slope: st.ma200Slope || _unknownSlope,
@@ -3843,7 +3953,11 @@ function _marketEvidenceComponents(d) {
     temaStructure: { direction: setupTemaDir, adjacentDirection: adjacentTemaDir, alignment: temaAlignment, momentum: temaMomentum },
     utDirection: { direction: setupUtDir, adjacentDirection: adjacentUtDir },
     ma200Relation: { setup: setupMaRelation, adjacent: adjacentMaRelation },
-    adxState: { value: adxValue, state: adxState },
+    // TDAS V4.9.1 T2 — adds `slope` to the existing adxState field, and a
+    // new adjacentAdxState field (value/state/slope), additive only. The
+    // existing value/state pair for the setup timeframe is unchanged.
+    adxState: { value: adxValue, state: adxState, slope: st.adxSlope || _unknownAdxSlope },
+    adjacentAdxState: { value: adjacentAdxValue, state: adjacentAdxState, slope: st.htfAdxSlope || _unknownAdxSlope },
     rsiExtension: { value: rsiValue, state: _marketEvidenceExtension(d) },
     ma200RegimeInputs,
   };
@@ -3868,7 +3982,8 @@ function buildEvidence(d, entry) {
       temaStructure: { direction: 'unknown', adjacentDirection: 'unknown', alignment: 'unknown', momentum: 'unknown' },
       utDirection: { direction: 'unknown', adjacentDirection: 'unknown' },
       ma200Relation: { setup: 'unknown', adjacent: 'unknown' },
-      adxState: { value: null, state: 'unknown' },
+      adxState: { value: null, state: 'unknown', slope: { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false } },
+      adjacentAdxState: { value: null, state: 'unknown', slope: { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false } },
       rsiExtension: { value: null, state: 'unknown' },
       // TDAS V4.9 T1 — additive, safe all-unknown default.
       ma200RegimeInputs: {
@@ -7764,33 +7879,32 @@ async function calcPair(symbol,tf){
   const volOk=volRatio!==null?volRatio>=0.8:true;
 
   // ── ADX (14) ─────────────────────────────────────────────────────────
-  // +DM, -DM, TR using Wilder smoothing
-  const adxPeriod=14;
-  const plusDM=[],minusDM=[],trArr=[];
-  for(let i=1;i<closes.length;i++){
-    const upMove=highs[i]-highs[i-1];
-    const downMove=lows[i-1]-lows[i];
-    plusDM.push(upMove>downMove&&upMove>0?upMove:0);
-    minusDM.push(downMove>upMove&&downMove>0?downMove:0);
-    trArr.push(Math.max(highs[i]-lows[i],Math.abs(highs[i]-closes[i-1]),Math.abs(lows[i]-closes[i-1])));
-  }
-  function wilderSmooth(arr,p){
-    let s=arr.slice(0,p).reduce((a,b)=>a+b,0);
-    const out=[s];
-    for(let i=p;i<arr.length;i++){s=s-s/p+arr[i];out.push(s);}
-    return out;
-  }
-  const smoothTR=wilderSmooth(trArr,adxPeriod);
-  const smoothPDM=wilderSmooth(plusDM,adxPeriod);
-  const smoothMDM=wilderSmooth(minusDM,adxPeriod);
-  const pDI=smoothPDM.map((v,i)=>smoothTR[i]?100*v/smoothTR[i]:0);
-  const mDI=smoothMDM.map((v,i)=>smoothTR[i]?100*v/smoothTR[i]:0);
-  const dx=pDI.map((v,i)=>pDI[i]+mDI[i]?100*Math.abs(pDI[i]-mDI[i])/(pDI[i]+mDI[i]):0);
-  let adxVal=dx.slice(0,adxPeriod).reduce((a,b)=>a+b,0)/adxPeriod;
-  for(let i=adxPeriod;i<dx.length;i++) adxVal=(adxVal*(adxPeriod-1)+dx[i])/adxPeriod;
-  const adx=Math.round(adxVal*10)/10;
+  // TDAS V4.9.1 T2 — now calls the shared calcADXWithHistory() helper
+  // (see its own header comment near calcATR()) instead of an inline-only
+  // computation. Identical Wilder +DM/-DM/TR/DX/RMA maths and identical
+  // final rounding — the byte-for-byte same `adx` value as before this
+  // task. Factored out so the exact same function can also compute the
+  // adjacent/HTF-timeframe ADX below, with no second, independently-
+  // written ADX implementation anywhere in this codebase.
+  const _adxCalc=calcADXWithHistory(highs,lows,closes,ADX_PERIOD,ADX_SLOPE_LOOKBACK_BARS);
+  const adx=_adxCalc.value;
+  const adxPrev3=_adxCalc.prevValue;
   const adxTrending=adx>=25;
   const adxStrong=adx>=40;
+
+  // ── TDAS V4.9.1 T2 — adjacent/HTF ADX (additive) ───────────────────────
+  // Derived from htClosedCandlesNormal — the SAME already-fetched, already-
+  // closed HTF candle series already used above for htfTrendContext/
+  // htfUtBot/htfAbove (rawH.slice(0,-1)). No new network request. Uses
+  // normal OHLC (not the Heikin Ashi-transformed series UT Bot consumes
+  // for its own noise filtering) — same convention setup-tf ADX above
+  // uses (TEMA/RSI/ADX/SMA200/regime all read normal exchange OHLC; only
+  // UT Bot reads HA candles).
+  const htfAdxHighs=htClosedCandlesNormal.map(k=>k.high);
+  const htfAdxLows=htClosedCandlesNormal.map(k=>k.low);
+  const _htfAdxCalc=calcADXWithHistory(htfAdxHighs,htfAdxLows,hc,ADX_PERIOD,ADX_SLOPE_LOOKBACK_BARS);
+  const htfAdx=_htfAdxCalc.value;
+  const htfAdxPrev3=_htfAdxCalc.prevValue;
 
   // ── Structure-based stop (nearest swing point over last 30 bars) ──────
   const lookback=30;
@@ -8623,6 +8737,12 @@ async function calcPair(symbol,tf){
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
     adx,adxTrending,adxStrong,
+    // TDAS V4.9.1 T2 — additive ADX slope inputs (setup + adjacent/HTF).
+    // adxPrev3/htfAdxPrev3 are already-computed by calcADXWithHistory()
+    // above; exposed here so computeStates() can derive adxSlope/
+    // htfAdxSlope without recomputation. adx itself is byte-identical to
+    // before this task.
+    adxPrev3,htfAdx,htfAdxPrev3,
     structStop,structR,
     minsRemaining,secsRemaining,candleClosePct,
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
@@ -10442,8 +10562,23 @@ function buildMarketEvidenceDiagnosticHtml(d){
     })();
     const adxRow = (() => {
       const a = comp.adxState || {};
-      const text = (a.value != null) ? (capWord(a.state) + ' (' + a.value.toFixed(1) + ')') : 'Unknown';
+      const baseText = (a.value != null) ? (capWord(a.state) + ' (' + a.value.toFixed(1) + ')') : 'Unknown';
+      // TDAS V4.9.1 T2 — additive slope suffix, e.g. "Trending (28.4) · Rising".
+      // Omitted entirely when slope is absent/unknown (older cached evidence).
+      const slopeState = a.slope && a.slope.state;
+      const text = (slopeState && slopeState !== 'unknown') ? (baseText + ' \u00b7 ' + capWord(slopeState)) : baseText;
       return '<div class="ap-row"><span>ADX State</span><span>' + text + '</span></div>';
+    })();
+    // TDAS V4.9.1 T2 — adjacent/HTF ADX state + slope, additive-only row.
+    // Degrades to "Unknown" when comp.adjacentAdxState is absent (older
+    // cached evidence objects from before this task) or genuinely unknown.
+    const adjacentAdxRow = (() => {
+      const a = comp.adjacentAdxState || {};
+      const baseText = (a.value != null) ? (capWord(a.state) + ' (' + a.value.toFixed(1) + ')') : 'Unknown';
+      const slopeState = a.slope && a.slope.state;
+      const text = (slopeState && slopeState !== 'unknown') ? (baseText + ' \u00b7 ' + capWord(slopeState)) : baseText;
+      const label = (htfLabelTf !== dash) ? (htfLabelTf + ' ADX State') : 'Adjacent ADX State';
+      return '<div class="ap-row"><span>' + label + '</span><span>' + text + '</span></div>';
     })();
     const rsiRow = (() => {
       const r = comp.rsiExtension || {};
@@ -10507,6 +10642,7 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + utDirectionRow
       + ma200Row
       + adxRow
+      + adjacentAdxRow
       + rsiRow
       + ma200SlopeRow
       + tema92Ma200Row
