@@ -1598,7 +1598,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.3';
+const APP_BUILD = 'V4.9.4';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2986,6 +2986,183 @@ function _oneHTriggerStateFromInputs(direction, rsiEvidence, adxEvidence, temaSt
   return { state: 'early', reasons: earlyReasons };
 }
 
+// TDAS V4.9.4 T5 — canonical UT opposition. Pure, direction-aware helper.
+// Reuses the EXACT existing "recent UT label" convention already
+// established by calcUTBot()'s own recentSignal field and the production
+// utLongConfirm/utShortConfirm formula (`utBot.recentSignal==='long'`) —
+// no new label concept invented. Reuses the existing classifyUtFreshness()
+// shape directly (passed through unmodified). smaConfirmed/
+// isControllingFourH reuse the existing tf-dependent trend-SMA concept
+// (80SMA on 4H/1D, 135SMA on 1H) already established by calcPair()'s own
+// trendSMA/trendSMALabel — the 80SMA hard-block rule is, per doctrine,
+// only ever meaningful "on the controlling 4H timeframe"; callers must
+// only pass isControllingFourH=true when the reading genuinely is the 4H
+// setup's own UT (never the 1H execution-layer reading).
+function _utOppositionFromValues(direction, utDirState, recentLabel, freshnessObj, smaConfirmed, isControllingFourH) {
+  const freshness = freshnessObj || { key: 'none', label: 'None', rank: 99 };
+  const label = recentLabel || 'unknown';
+  const sma = (smaConfirmed === true || smaConfirmed === false) ? smaConfirmed : null;
+
+  if (direction !== 'long' && direction !== 'short') {
+    return { state: 'unknown', direction: 'unknown', recentLabel: label, freshness, smaConfirmed: sma, reasons: ['intended trade direction unavailable'] };
+  }
+  if (utDirState !== 'bullish' && utDirState !== 'bearish' && utDirState !== 'neutral') {
+    return { state: 'unknown', direction: 'unknown', recentLabel: label, freshness, smaConfirmed: sma, reasons: ['UT evidence unavailable'] };
+  }
+  if (utDirState === 'neutral') {
+    return { state: 'neutral', direction: 'neutral', recentLabel: label, freshness, smaConfirmed: sma, reasons: ['UT direction neutral'] };
+  }
+
+  const intendedUtDir = direction === 'long' ? 'bullish' : 'bearish';
+  if (utDirState === intendedUtDir) {
+    // Aligned regardless of freshness — a stale but aligned UT state
+    // remains aligned; freshness is separate, additive evidence only.
+    return { state: 'aligned', direction: utDirState, recentLabel: label, freshness, smaConfirmed: sma, reasons: ['UT direction aligned'] };
+  }
+
+  // Opposing — determine hard vs transitional.
+  const opposingLabel = direction === 'long' ? 'sell' : 'buy';
+  const hasRecentOpposingLabel = label === opposingLabel;
+  const fourHSmaConfirms = (isControllingFourH === true) && (sma === true);
+  const reasons = [];
+  if (hasRecentOpposingLabel) reasons.push('Recent opposing UT label');
+  if (fourHSmaConfirms) reasons.push('4H opposing UT confirmed by 80SMA');
+  if (hasRecentOpposingLabel || fourHSmaConfirms) {
+    return { state: 'opposing_hard', direction: utDirState, recentLabel: label, freshness, smaConfirmed: sma, reasons };
+  }
+  return { state: 'opposing_transitional', direction: utDirState, recentLabel: label, freshness, smaConfirmed: sma, reasons: ['UT direction opposing'] };
+}
+
+// TDAS V4.9.4 T5 — canonical RSI context. Direction-aware; reuses T4's
+// own _oneHRsiTimingFromValue() for the direction-neutral value/
+// relationTo50/extreme computation (same MARKET_EVIDENCE_RSI_OVERBOUGHT/
+// OVERSOLD constants, same ONE_H_RSI_NEAR_50_BAND) — no competing
+// threshold system, no re-derivation of the raw RSI facts. This function
+// only layers directional interpretation ('supportive'/'wrong_side'/
+// 'extreme_with_trade'/'extreme_against_trade') on top.
+function _rsiContextFromValues(direction, rsi) {
+  if (direction !== 'long' && direction !== 'short') {
+    const base = _oneHRsiTimingFromValue(rsi);
+    return { value: base.value, state: 'unknown', relationTo50: 'unknown', extreme: 'unknown', reasons: ['intended trade direction unavailable'] };
+  }
+  const base = _oneHRsiTimingFromValue(rsi);
+  if (base.state === 'unknown') {
+    return { value: null, state: 'unknown', relationTo50: 'unknown', extreme: 'unknown', reasons: ['RSI evidence unavailable'] };
+  }
+  const supportiveRelation = direction === 'long' ? 'above' : 'below';
+  const extremeWithTrade = direction === 'long' ? 'high' : 'low';
+  const extremeAgainstTrade = direction === 'long' ? 'low' : 'high';
+
+  let state, reasons;
+  if (base.extreme === extremeWithTrade) {
+    state = 'extreme_with_trade';
+    reasons = ['RSI extreme with the trade direction'];
+  } else if (base.extreme === extremeAgainstTrade) {
+    state = 'extreme_against_trade';
+    reasons = ['RSI extreme against the trade direction'];
+  } else if (base.relationTo50 === 'near') {
+    state = 'neutral';
+    reasons = ['RSI near 50'];
+  } else if (base.relationTo50 === supportiveRelation) {
+    state = 'supportive';
+    reasons = ['RSI supportive of the ' + direction];
+  } else {
+    state = 'wrong_side';
+    reasons = ['RSI on the wrong side of 50 for the ' + direction];
+  }
+  return { value: base.value, state, relationTo50: base.relationTo50, extreme: base.extreme, reasons };
+}
+
+// TDAS V4.9.4 T5 — canonical setup path. Pure helper using only existing
+// setup identity (d.tf) and T4's already-resolved oneHTimingEvidence — no
+// fabricated 1H evidence, no relabeling of adjacent-timeframe data as 1H.
+// "Genuine dedicated 1H timing evidence available as the execution layer"
+// is read as: T4's oneHTimingEvidence genuinely has a source AND its
+// trigger actually resolved (not 'unknown') — sourceAvailable alone is not
+// enough, since a resolved trigger is what "actionable" means in T4's own
+// terms.
+function _setupPathFromValues(setupTf, oneHTimingEvidence) {
+  if (setupTf === '1h') {
+    return { state: 'standalone_one_h', reasons: ['setup timeframe is 1H'] };
+  }
+  if (setupTf === '4h') {
+    const oh = oneHTimingEvidence || {};
+    const hasGenuineOneH = !!(oh.sourceAvailable && oh.trigger && oh.trigger.state !== 'unknown');
+    if (hasGenuineOneH) {
+      return { state: 'four_h_led', reasons: ['4H setup with genuine, actionable dedicated 1H timing evidence available'] };
+    }
+    return { state: 'direct_four_h', reasons: ['4H setup — dedicated 1H timing evidence unavailable or not yet actionable'] };
+  }
+  return { state: 'unknown', reasons: ['unsupported or missing setup timeframe'] };
+}
+
+// TDAS V4.9.4 T5 — canonical global timing state. Pure helper combining
+// only already-canonical T1-T4 + T5 evidence. Diagnostic only — never
+// consumed by evaluateSetup()/Advisory/Trade Ready/High Conviction.
+// Precedence, per doctrine: unknown > setup_valid_entry_not_optimal >
+// weak > awaiting_one_h_trigger > ready > early_trigger.
+function _timingStateFromInputs(setupPath, oneHTrigger, oneHAdx, setupRsiContext, utOppositionSetup, utOppositionOneH, setupExtension, direction) {
+  const sp = setupPath || { state: 'unknown' };
+
+  // 1. unknown
+  if (sp.state === 'unknown') return { state: 'unknown', reasons: ['setup path unavailable'] };
+  if (direction !== 'long' && direction !== 'short') return { state: 'unknown', reasons: ['intended trade direction unavailable'] };
+
+  const extensionActive = (setupExtension === 'stretched' || setupExtension === 'climactic');
+  const rsiExtremeWithTrade = !!(setupRsiContext && setupRsiContext.state === 'extreme_with_trade');
+  const hardOppositionAnywhere = !!((utOppositionSetup && utOppositionSetup.state === 'opposing_hard') || (utOppositionOneH && utOppositionOneH.state === 'opposing_hard'));
+
+  if (sp.state === 'four_h_led' || sp.state === 'standalone_one_h') {
+    const oh = oneHTrigger || { state: 'unknown' };
+    if (oh.state === 'unknown') return { state: 'unknown', reasons: ['1H timing evidence unavailable'] };
+
+    // 2. setup_valid_entry_not_optimal
+    const svenoReasons = [];
+    if (oh.state === 'late') svenoReasons.push('1H trigger evidence indicates lateness');
+    if (oneHAdx && oneHAdx.state === 'strong_rolling_over') svenoReasons.push('1H ADX strong but rolling over');
+    if (extensionActive) svenoReasons.push('Genuine extension/chasing evidence active');
+    if (rsiExtremeWithTrade && extensionActive) svenoReasons.push('RSI extreme with the trade combined with extension evidence');
+    if (svenoReasons.length) return { state: 'setup_valid_entry_not_optimal', reasons: svenoReasons };
+
+    // 3. weak
+    if (oh.state === 'weak') return { state: 'weak', reasons: ['1H execution timing weak'] };
+
+    // 4. awaiting_one_h_trigger — four_h_led only, never standalone 1H
+    if (sp.state === 'four_h_led' && oh.state === 'early') {
+      return { state: 'awaiting_one_h_trigger', reasons: ['4H setup confirmed — 1H execution trigger not yet ready'] };
+    }
+
+    // 5. ready
+    if (oh.state === 'ready' && !hardOppositionAnywhere && !extensionActive) {
+      return { state: 'ready', reasons: ['1H execution timing aligned and ready'] };
+    }
+
+    // 6. early_trigger — standalone 1H's own 'early', or any remaining case
+    return { state: 'early_trigger', reasons: ['Execution timing still developing'] };
+  }
+
+  if (sp.state === 'direct_four_h') {
+    // 2. setup_valid_entry_not_optimal (setup-timeframe evidence only — no
+    // genuine 1H data exists for this path by definition).
+    if (rsiExtremeWithTrade && extensionActive) {
+      return { state: 'setup_valid_entry_not_optimal', reasons: ['RSI extreme with the trade combined with extension evidence (setup timeframe)'] };
+    }
+    if (extensionActive) {
+      return { state: 'setup_valid_entry_not_optimal', reasons: ['Genuine extension/chasing evidence active (setup timeframe)'] };
+    }
+    // 5. ready — only when the setup's own UT timing evidence is
+    // genuinely aligned and clean. A direct 4H path never becomes ready
+    // automatically.
+    if (utOppositionSetup && utOppositionSetup.state === 'aligned' && !hardOppositionAnywhere) {
+      return { state: 'ready', reasons: ['Direct 4H setup timing evidence aligned, no entry-quality warning'] };
+    }
+    // 6. early_trigger — conservative default.
+    return { state: 'early_trigger', reasons: ['Direct 4H setup — timing evidence not yet fully aligned'] };
+  }
+
+  return { state: 'unknown', reasons: ['unsupported setup path'] };
+}
+
 function computeStates(d) {
   if (!d || typeof d !== 'object') return null;
 
@@ -4240,6 +4417,78 @@ function _marketEvidenceComponents(d, openTrade) {
     },
   };
 
+  // TDAS V4.9.4 T5 — canonical UT opposition, RSI context, setup path, and
+  // global timing state. All additive/diagnostic — see the individual
+  // helper functions' own header comments for the reused sources
+  // (setupUtDir/adjacentUtDir above, classifyUtFreshness(), the tf-
+  // dependent trendSMA/aboveTrendSMA concept, and T4's already-resolved
+  // oneHTimingEvidence). No fabricated 1H evidence, no relabeling of
+  // adjacent-timeframe data as 1H.
+  const oneHTimingEvidence = _oneHTimingEvidenceFromD(d, openTrade);
+  const direction = oneHTimingEvidence.direction; // same intended-direction resolution T4 already performs
+
+  function _utLabelFromSignal(sig) {
+    return sig === 'long' ? 'buy' : sig === 'short' ? 'sell' : sig === 'none' ? 'none' : 'unknown';
+  }
+
+  const isSetupOneH = !!(d && d.tf === '1h');
+  const oneHTimingRaw = (d && d._1hTiming) || null;
+
+  // Setup-timeframe UT opposition inputs.
+  const setupRecentLabel = _utLabelFromSignal(st.utBot && st.utBot.recentSignal);
+  const setupFreshness = classifyUtFreshness(st.utBot && st.utBot.barsAgoFlip);
+  const setupSmaConfirmed = (typeof st.aboveTrendSMA === 'boolean' && (setupUtDir === 'bullish' || setupUtDir === 'bearish'))
+    ? (setupUtDir === 'bearish' ? st.aboveTrendSMA === false : st.aboveTrendSMA === true)
+    : null;
+  const isSetupControllingFourH = !!(d && d.tf === '4h');
+  const utOppositionSetup = _utOppositionFromValues(direction, setupUtDir, setupRecentLabel, setupFreshness, setupSmaConfirmed, isSetupControllingFourH);
+
+  // 1H-timeframe UT opposition inputs — genuinely 1H only (setup-tf's own
+  // data when the setup itself IS 1H; the dedicated d._1hTiming side-
+  // channel otherwise). Never treats adjacent/HTF data as 1H, and never
+  // falls back between the two. The 80SMA hard-block rule never applies
+  // here (it is, per doctrine, only ever meaningful "on the controlling
+  // 4H timeframe").
+  let oneHUtDir = 'unknown', oneHRecentLabel = 'unknown', oneHFreshness = { key: 'none', label: 'None', rank: 99 };
+  let oneHSmaConfirmed = null; // 80SMA hard-block rule never applies to a genuine 1H reading
+  if (isSetupOneH) {
+    oneHUtDir = setupUtDir;
+    oneHRecentLabel = setupRecentLabel;
+    oneHFreshness = setupFreshness;
+    // Same underlying data source as "setup" in this branch — must be
+    // identical, not independently re-nulled, per doctrine ("1H setup
+    // card: reuse the same canonical 1H values where appropriate").
+    oneHSmaConfirmed = setupSmaConfirmed;
+  } else if (oneHTimingRaw) {
+    oneHUtDir = (typeof oneHTimingRaw.utDirection1h === 'number')
+      ? (oneHTimingRaw.utDirection1h === 1 ? 'bullish' : oneHTimingRaw.utDirection1h === -1 ? 'bearish' : 'neutral')
+      : 'unknown';
+    oneHRecentLabel = _utLabelFromSignal(oneHTimingRaw.recentSignal1h);
+    oneHFreshness = classifyUtFreshness(oneHTimingRaw.utBarsAgoFlip1h);
+  }
+  const utOppositionOneH = _utOppositionFromValues(direction, oneHUtDir, oneHRecentLabel, oneHFreshness, oneHSmaConfirmed, false);
+
+  // Canonical RSI context — setup timeframe and dedicated 1H timeframe.
+  // Setup reuses the SAME rsiValue already resolved above for the
+  // existing rsiExtension field; 1H reuses T4's already-resolved
+  // oneHTimingEvidence.rsi.value (never adjacent/HTF RSI).
+  const rsiContextSetup = _rsiContextFromValues(direction, rsiValue);
+  const rsiContextOneH = _rsiContextFromValues(direction, oneHTimingEvidence.rsi.value);
+
+  // Canonical setup path and global timing state.
+  const setupPath = _setupPathFromValues(d && d.tf, oneHTimingEvidence);
+  const setupExtensionState = _marketEvidenceExtension(d);
+  const timingState = _timingStateFromInputs(
+    setupPath,
+    oneHTimingEvidence.trigger,
+    oneHTimingEvidence.adx,
+    rsiContextSetup,
+    utOppositionSetup,
+    utOppositionOneH,
+    setupExtensionState,
+    direction
+  );
+
   return {
     temaStructure: { direction: setupTemaDir, adjacentDirection: adjacentTemaDir, alignment: temaAlignment, momentum: temaMomentum },
     utDirection: { direction: setupUtDir, adjacentDirection: adjacentUtDir },
@@ -4253,7 +4502,13 @@ function _marketEvidenceComponents(d, openTrade) {
     ma200RegimeInputs,
     // TDAS V4.9.3 T4 — canonical 1H timing evidence, additive/diagnostic
     // only (see _oneHTimingEvidenceFromD()'s own header comment).
-    oneHTimingEvidence: _oneHTimingEvidenceFromD(d, openTrade),
+    oneHTimingEvidence,
+    // TDAS V4.9.4 T5 — canonical UT opposition, RSI context, setup path,
+    // and global timing state. Additive/diagnostic only.
+    utOpposition: { setup: utOppositionSetup, oneH: utOppositionOneH },
+    rsiContext: { setup: rsiContextSetup, oneH: rsiContextOneH },
+    setupPath,
+    timingState,
   };
 }
 
@@ -4302,6 +4557,17 @@ function buildEvidence(d, entry) {
         tema: { state: 'unknown', aligned: null },
         trigger: { state: 'unknown', reasons: [] },
       },
+      // TDAS V4.9.4 T5 — additive, safe all-unknown default.
+      utOpposition: {
+        setup: { state: 'unknown', direction: 'unknown', recentLabel: 'unknown', freshness: { key: 'none', label: 'None', rank: 99 }, smaConfirmed: null, reasons: [] },
+        oneH: { state: 'unknown', direction: 'unknown', recentLabel: 'unknown', freshness: { key: 'none', label: 'None', rank: 99 }, smaConfirmed: null, reasons: [] },
+      },
+      rsiContext: {
+        setup: { value: null, state: 'unknown', relationTo50: 'unknown', extreme: 'unknown', reasons: [] },
+        oneH: { value: null, state: 'unknown', relationTo50: 'unknown', extreme: 'unknown', reasons: [] },
+      },
+      setupPath: { state: 'unknown', reasons: [] },
+      timingState: { state: 'unknown', reasons: [] },
     },
   };
   try {
@@ -11005,6 +11271,56 @@ function buildMarketEvidenceDiagnosticHtml(d){
       if (!t.state || t.state === 'unknown' || t.state === 'ready' || !t.reasons || !t.reasons.length) return '';
       return '<div class="ap-row"><span>1H Trigger Reason</span><span>' + t.reasons.join('; ') + '</span></div>';
     })();
+    // TDAS V4.9.4 T5 — additive, diagnostic-only rows. Reads
+    // ev.components.{utOpposition,rsiContext,setupPath,timingState} (see
+    // the individual T5 helpers' own header comments). Always explicitly
+    // labeled per timeframe; never used to classify, cap, gate, or
+    // promote anything — current card-front presentation and Advisory
+    // wording are completely unaffected.
+    const utOppositionRow = (() => {
+      const uo = (comp.utOpposition && comp.utOpposition.setup) || {};
+      const stateLabel = (uo.state && uo.state !== 'unknown') ? capWord(uo.state.replace(/_/g, ' ')) : 'Unknown';
+      return '<div class="ap-row"><span>UT Opposition</span><span>' + stateLabel + '</span></div>';
+    })();
+    const oneHUtOppositionRow = (() => {
+      const uo = (comp.utOpposition && comp.utOpposition.oneH) || {};
+      const stateLabel = (uo.state && uo.state !== 'unknown') ? capWord(uo.state.replace(/_/g, ' ')) : 'Unknown';
+      return '<div class="ap-row"><span>1H UT Opposition</span><span>' + stateLabel + '</span></div>';
+    })();
+    const rsiContextRow = (() => {
+      const r = (comp.rsiContext && comp.rsiContext.setup) || {};
+      if (r.value == null || !r.state || r.state === 'unknown') {
+        return '<div class="ap-row"><span>RSI Context</span><span>Unknown</span></div>';
+      }
+      return '<div class="ap-row"><span>RSI Context</span><span>' + capWord(r.state.replace(/_/g, ' ')) + ' (' + r.value.toFixed(1) + ')</span></div>';
+    })();
+    const oneHRsiContextRow = (() => {
+      const r = (comp.rsiContext && comp.rsiContext.oneH) || {};
+      if (r.value == null || !r.state || r.state === 'unknown') {
+        return '<div class="ap-row"><span>1H RSI Context</span><span>Unknown</span></div>';
+      }
+      return '<div class="ap-row"><span>1H RSI Context</span><span>' + capWord(r.state.replace(/_/g, ' ')) + ' (' + r.value.toFixed(1) + ')</span></div>';
+    })();
+    const setupPathRow = (() => {
+      const sp = comp.setupPath || {};
+      const labelMap = { four_h_led: '4H-led', direct_four_h: 'Direct 4H', standalone_one_h: 'Standalone 1H' };
+      const text = (sp.state && labelMap[sp.state]) ? labelMap[sp.state] : 'Unknown';
+      return '<div class="ap-row"><span>Setup Path</span><span>' + text + '</span></div>';
+    })();
+    const timingStateRow = (() => {
+      const ts = comp.timingState || {};
+      const labelMap = {
+        awaiting_one_h_trigger: 'Awaiting 1H trigger', early_trigger: 'Early trigger', ready: 'Ready',
+        setup_valid_entry_not_optimal: 'Setup valid — entry not optimal', weak: 'Weak',
+      };
+      const text = (ts.state && labelMap[ts.state]) ? labelMap[ts.state] : 'Unknown';
+      return '<div class="ap-row"><span>Timing State</span><span>' + text + '</span></div>';
+    })();
+    const timingStateReasonRow = (() => {
+      const ts = comp.timingState || {};
+      if (!ts.state || ts.state === 'unknown' || ts.state === 'ready' || !ts.reasons || !ts.reasons.length) return '';
+      return '<div class="ap-row"><span>Timing State Reason</span><span>' + ts.reasons.join('; ') + '</span></div>';
+    })();
     function freshRow(label, src, notApplicable){
       if (notApplicable) return '<div class="ap-row"><span>' + label + '</span><span>Not applicable</span></div>';
       if (!src) return '<div class="ap-row"><span>' + label + '</span><span>None</span></div>';
@@ -11049,6 +11365,13 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + oneHAdxRow
       + oneHTriggerRow
       + oneHTriggerReasonRow
+      + utOppositionRow
+      + oneHUtOppositionRow
+      + rsiContextRow
+      + oneHRsiContextRow
+      + setupPathRow
+      + timingStateRow
+      + timingStateReasonRow
       + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
       + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
       + freshRow('1H timing UT freshness', ev.freshness && ev.freshness.oneHUt, isOneHSetup)
@@ -13597,6 +13920,13 @@ async function _calc1HTiming(symbol) {
       maDist1h,
       sma135_1h, aboveSma135_1h, sma135Slope_1h, sma135SlopeDelta_1h,
       utDirection1h: utBot1h.direction,
+      // TDAS V4.9.4 T5 — additive. utBot1h.recentSignal is already computed
+      // by calcUTBot() above (same call already used for utDirection1h) —
+      // exposing it here is the same "already-computed but discarded"
+      // pattern as utDirection1h/utBarsAgoFlip1h itself (see the TDAS
+      // V4.7.2 comment just below). No new fetch, no new UT Bot call, no
+      // change to calcUTBot() or its parameters.
+      recentSignal1h: utBot1h.recentSignal,
       utBarsAgoFlip1h: utBot1h.barsAgoFlip != null ? utBot1h.barsAgoFlip : null,
       // TDAS V4.9.3 T4 — additive 1H RSI/ADX(+slope) evidence inputs.
       rsi1h, adx1h, adxPrev3_1h, adxSlope1h,
