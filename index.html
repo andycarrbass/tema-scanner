@@ -1598,7 +1598,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.1';
+const APP_BUILD = 'V4.9.2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2447,6 +2447,91 @@ function calcADXWithHistory(h, l, c, period, lookbackBars) {
   const value=Math.round(adxVal*10)/10;
   const prevValue=(_recent.length===lookbackBars+1) ? Math.round(_recent[0]*10)/10 : null;
   return { value, prevValue };
+}
+
+// TDAS V4.9.2 T3 — 200MA chop-detection calibration. Approved provisional
+// constants: inspect the last 20 closed bars, 3+ side changes across the
+// rolling SMA200 = chop, fewer = clear. Named per doctrine so these can
+// be tuned later without touching call sites.
+const MA200_CHOP_WINDOW_BARS = 20;
+const MA200_CHOP_CROSSING_THRESHOLD = 3;
+
+// TDAS V4.9.2 T3 — 200MA chop detection. Pure function over an already-
+// retrieved closed-candle close-price series (setup-tf `closes`, or the
+// adjacent/HTF `hc` — same series ma200/prevMa200 and htfMa200/
+// htfPrevMa200 already use). No new network request, no new indicator maths.
+//
+// For each of the last MA200_CHOP_WINDOW_BARS closed bars, an HONEST
+// rolling SMA200 is recomputed from scratch using only the 200 candles
+// ending at that bar (not a single static SMA200 applied across the
+// whole window) — this is what makes "side changes" genuine rather than
+// an artifact of a stale average. Each inspected bar is classified
+// above/at/below using the SAME REGIME_MA_PRESSURE_PCT tolerance already
+// established for ma200Relation/tema92VsMa200 (no new threshold). Bars
+// classified 'at' (inside the pressure band) are treated neutrally — they
+// neither count as a crossing nor reset the pending side — so testing/
+// pressure-band noise cannot manufacture artificial flip-flopping, and a
+// single clean reclaim or breakdown produces exactly one crossing, not
+// chop. Insufficient closed history (not enough bars to compute a
+// genuine rolling SMA200 across the whole window) or any non-finite
+// price/average returns 'unknown' with crossings: null — never fabricated.
+function _ma200ChopFromCloses(closes) {
+  const windowBars = MA200_CHOP_WINDOW_BARS;
+  const threshold = MA200_CHOP_CROSSING_THRESHOLD;
+  if (!Array.isArray(closes) || closes.length < 200 + windowBars) {
+    return { state: 'unknown', crossings: null, windowBars, threshold };
+  }
+  const relations = [];
+  for (let i = closes.length - windowBars; i < closes.length; i++) {
+    const windowSma = sma(closes.slice(0, i + 1), 200); // rolling SMA200 as of bar i, recomputed fresh
+    const price = closes[i];
+    if (windowSma == null || !isFinite(windowSma) || price == null || !isFinite(price) || windowSma === 0) {
+      return { state: 'unknown', crossings: null, windowBars, threshold };
+    }
+    const distPct = (price - windowSma) / windowSma * 100;
+    const rel = (isFinite(distPct) && Math.abs(distPct) <= REGIME_MA_PRESSURE_PCT) ? 'at'
+      : (price > windowSma ? 'above' : 'below');
+    relations.push(rel);
+  }
+  let crossings = 0;
+  let lastSide = null;
+  for (const rel of relations) {
+    if (rel === 'at') continue; // neutral — never counts, never resets
+    if (lastSide !== null && rel !== lastSide) crossings++;
+    lastSide = rel;
+  }
+  const state = crossings >= threshold ? 'chop' : 'clear';
+  return { state, crossings, windowBars, threshold };
+}
+
+// TDAS V4.9.2 T3 — canonical 200MA regime composition. Pure function
+// combining the closed-price/200MA relation, the TEMA92/200MA relation,
+// the MA200 slope state, and the chop state into ONE canonical regime
+// enum. Chop is checked FIRST and unconditionally overrides directional
+// interpretation, per doctrine. A regime is never called "confirmed"
+// while the slope still opposes or is flat — those cases resolve to
+// "*_transitional" instead. Missing/unresolvable direction-critical
+// inputs return 'unknown' — never promoted to transitional support.
+function _ma200RegimeFromInputs(maRelation, temaRelation, slopeState, chopState) {
+  if (chopState === 'chop') return 'unresolved_chop';
+  if (maRelation == null || temaRelation == null || slopeState == null || chopState == null ||
+      maRelation === 'unknown' || temaRelation === 'unknown' || slopeState === 'unknown' || chopState === 'unknown') {
+    return 'unknown';
+  }
+  const priceAbove = maRelation === 'above';
+  const priceBelow = maRelation === 'below';
+  const temaAbove = temaRelation === 'above';
+  const temaBelow = temaRelation === 'below';
+
+  if (priceAbove && temaAbove && slopeState === 'rising') return 'confirmed_bullish';
+  if (priceBelow && temaBelow && slopeState === 'falling') return 'confirmed_bearish';
+
+  if (priceAbove) return 'bullish_transitional';
+  if (priceBelow) return 'bearish_transitional';
+
+  // Closed price itself is 'at' the 200MA — direction cannot be honestly
+  // established from available data; do not fabricate a transitional lean.
+  return 'unknown';
 }
 
 // UT Bot Alert — exact JS port of TradingView Pine Script v4 UT Bot Alerts
@@ -3938,14 +4023,43 @@ function _marketEvidenceComponents(d) {
   const _unknownSlope = { state: 'unknown', delta: null, deltaPct: null };
   // TDAS V4.9.1 T2 — safe all-unknown default for adxState/adjacentAdxState.slope
   const _unknownAdxSlope = { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false };
+  // TDAS V4.9.2 T3 — chop state + canonical regime composition, setup +
+  // adjacent/HTF. ma200ChopState/htfMa200ChopState are read directly from
+  // d (already computed in calcPair via _ma200ChopFromCloses(), the same
+  // pattern already established for other raw calcPair objects like
+  // d.htfTrendContext/d.htfAdx — bypassing d.states, no re-derivation, no
+  // new fetch). _ma200RegimeFromInputs() combines the already-resolved
+  // maRelation/tema92Relation/slope/chop into ONE canonical enum — chop
+  // is checked first and unconditionally overrides direction, per
+  // doctrine. Older cached objects without ma200ChopState at all degrade
+  // safely to the same all-unknown chop shape via the fallback.
+  const _unknownChop = { state: 'unknown', crossings: null, windowBars: MA200_CHOP_WINDOW_BARS, threshold: MA200_CHOP_CROSSING_THRESHOLD };
+  const setupChop = (d && d.ma200ChopState) || _unknownChop;
+  const adjacentChop = (d && d.htfMa200ChopState) || _unknownChop;
+  const setupRegimeState = _ma200RegimeFromInputs(
+    setupMaRelation,
+    st.tema92VsMa200 || 'unknown',
+    (st.ma200Slope && st.ma200Slope.state) || 'unknown',
+    setupChop.state
+  );
+  const adjacentRegimeState = _ma200RegimeFromInputs(
+    adjacentMaRelation,
+    st.htfTema92VsMa200 || 'unknown',
+    (st.htfMa200Slope && st.htfMa200Slope.state) || 'unknown',
+    adjacentChop.state
+  );
   const ma200RegimeInputs = {
     setup: {
       slope: st.ma200Slope || _unknownSlope,
       tema92Relation: st.tema92VsMa200 || 'unknown',
+      chop: setupChop,
+      regime: setupRegimeState,
     },
     adjacent: {
       slope: st.htfMa200Slope || _unknownSlope,
       tema92Relation: st.htfTema92VsMa200 || 'unknown',
+      chop: adjacentChop,
+      regime: adjacentRegimeState,
     },
   };
 
@@ -3985,10 +4099,18 @@ function buildEvidence(d, entry) {
       adxState: { value: null, state: 'unknown', slope: { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false } },
       adjacentAdxState: { value: null, state: 'unknown', slope: { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false } },
       rsiExtension: { value: null, state: 'unknown' },
-      // TDAS V4.9 T1 — additive, safe all-unknown default.
+      // TDAS V4.9 T1 / V4.9.2 T3 — additive, safe all-unknown default.
       ma200RegimeInputs: {
-        setup: { slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown' },
-        adjacent: { slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown' },
+        setup: {
+          slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown',
+          chop: { state: 'unknown', crossings: null, windowBars: MA200_CHOP_WINDOW_BARS, threshold: MA200_CHOP_CROSSING_THRESHOLD },
+          regime: 'unknown',
+        },
+        adjacent: {
+          slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown',
+          chop: { state: 'unknown', crossings: null, windowBars: MA200_CHOP_WINDOW_BARS, threshold: MA200_CHOP_CROSSING_THRESHOLD },
+          regime: 'unknown',
+        },
       },
     },
   };
@@ -7732,6 +7854,10 @@ async function calcPair(symbol,tf){
   // bar and recompute). null whenever there are not yet 201 closed bars
   // (sma() itself returns null for insufficient data).
   const prevMa200=sma(closes.slice(0,-1),200);
+  // TDAS V4.9.2 T3 — 200MA chop detection (setup timeframe). Reuses the
+  // SAME already-closed candle series (closes[]) ma200/prevMa200 already
+  // use. No new fetch, no new indicator calculation.
+  const ma200ChopState=_ma200ChopFromCloses(closes);
   // Use live ticker price for display and P&L — Bitunix only returns closed candles
   // so closes[last] is always one candle behind the current live price.
   // All indicator calculations still use the closed candle series (closes array).
@@ -7822,6 +7948,10 @@ async function calcPair(symbol,tf){
   // reusing the SAME already-fetched/closed HTF candle series (hc[])
   // _htfSma200 itself uses. No new fetch, no new indicator calculation.
   const _htfPrevSma200=sma(hc.slice(0,-1),200);
+  // TDAS V4.9.2 T3 — 200MA chop detection (adjacent/HTF timeframe). Reuses
+  // the SAME already-fetched/closed HTF candle series (hc[]) _htfSma200/
+  // _htfPrevSma200 already use. No new fetch, no new indicator calculation.
+  const htfMa200ChopState=_ma200ChopFromCloses(hc);
   const htfAbove=_htfSma200!==null?hc[hc.length-1]>_htfSma200:null;
   // TDAS V4.8 — Adjacent Management 200MA Context. htfAbove itself already
   // existed (used internally to classify htfTrendContext below) but was
@@ -8747,6 +8877,10 @@ async function calcPair(symbol,tf){
     minsRemaining,secsRemaining,candleClosePct,
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
     tradeStage,tradeAgeHours,
+    // TDAS V4.9.2 T3 — additive 200MA chop-detection state (setup).
+    // Already computed above via _ma200ChopFromCloses(closes) — no
+    // re-derivation here.
+    ma200ChopState,
     // TDAS V4.9 T1 — additive HTF 200MA-regime inputs (htfT92 exposes the
     // already-computed adjacent-timeframe TEMA92; htfMa200/htfPrevMa200
     // expose the already-computed adjacent-timeframe SMA200 pair). No new
@@ -8757,6 +8891,10 @@ async function calcPair(symbol,tf){
     // verbatim by test_ma200_adjacent_context.js's own regex regression
     // check — remains byte-identical and unbroken.
     htfT92:ht92,htfMa200:_htfSma200,htfPrevMa200:_htfPrevSma200,
+    // TDAS V4.9.2 T3 — additive 200MA chop-detection state (adjacent/HTF).
+    // Already computed above via _ma200ChopFromCloses(hc) — no
+    // re-derivation here.
+    htfMa200ChopState,
     htfTrendContext,htfWidening,htfUtBot,htfAbove,htfMaDist};
   // TDAS Phase 0: attach compute-once state object — all builders read from d.states
   _result.states = computeStates(_result);
@@ -10608,6 +10746,36 @@ function buildMarketEvidenceDiagnosticHtml(d){
       const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
       return '<div class="ap-row"><span>TEMA 92 vs 200MA</span><span>' + text + '</span></div>';
     })();
+    // TDAS V4.9.2 T3 — additive, diagnostic-only rows. Reads
+    // ev.components.ma200RegimeInputs.{setup,adjacent}.{chop,regime} (see
+    // _marketEvidenceComponents()); degrades safely to "Unknown" when
+    // absent (older cached evidence objects from before this task). Not
+    // used to classify, cap, block or promote anything yet — display only.
+    function formatChopText(chop) {
+      if (!chop || chop.state === 'unknown' || chop.crossings == null) return 'Unknown';
+      const label = chop.state === 'chop' ? 'Chop' : 'Clear';
+      const n = chop.crossings;
+      const noun = n === 1 ? 'crossing' : 'crossings';
+      return label + ' \u00b7 ' + n + ' ' + noun + ' / ' + chop.windowBars + ' bars';
+    }
+    const ma200RegimeRow = (() => {
+      const r = comp.ma200RegimeInputs || {};
+      const setupRegime = (r.setup && r.setup.regime) || 'unknown';
+      const adjRegime = (r.adjacent && r.adjacent.regime) || 'unknown';
+      const setupPart = (tfLabel !== dash && setupRegime !== 'unknown') ? (tfLabel + ': ' + capWord(setupRegime.replace(/_/g, ' '))) : null;
+      const adjPart = (htfLabelTf !== dash && adjRegime !== 'unknown') ? (htfLabelTf + ': ' + capWord(adjRegime.replace(/_/g, ' '))) : null;
+      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
+      return '<div class="ap-row"><span>200MA Regime</span><span>' + text + '</span></div>';
+    })();
+    const ma200ChopRow = (() => {
+      const r = comp.ma200RegimeInputs || {};
+      const setupChop = (r.setup && r.setup.chop) || {};
+      const adjChop = (r.adjacent && r.adjacent.chop) || {};
+      const setupPart = (tfLabel !== dash && setupChop.state && setupChop.state !== 'unknown') ? (tfLabel + ': ' + formatChopText(setupChop)) : null;
+      const adjPart = (htfLabelTf !== dash && adjChop.state && adjChop.state !== 'unknown') ? (htfLabelTf + ': ' + formatChopText(adjChop)) : null;
+      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
+      return '<div class="ap-row"><span>200MA Chop</span><span>' + text + '</span></div>';
+    })();
     function freshRow(label, src, notApplicable){
       if (notApplicable) return '<div class="ap-row"><span>' + label + '</span><span>Not applicable</span></div>';
       if (!src) return '<div class="ap-row"><span>' + label + '</span><span>None</span></div>';
@@ -10646,6 +10814,8 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + rsiRow
       + ma200SlopeRow
       + tema92Ma200Row
+      + ma200RegimeRow
+      + ma200ChopRow
       + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
       + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
       + freshRow('1H timing UT freshness', ev.freshness && ev.freshness.oneHUt, isOneHSetup)
