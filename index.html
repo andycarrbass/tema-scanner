@@ -1598,7 +1598,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.2';
+const APP_BUILD = 'V4.9.3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2881,6 +2881,111 @@ function _adxSlopeFromValues(cur, prev) {
   return { state, delta, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver };
 }
 
+// TDAS V4.9.3 T4 — canonical 1H RSI timing. Reuses the existing, already-
+// approved MARKET_EVIDENCE_RSI_OVERBOUGHT/OVERSOLD (70/30) extreme
+// thresholds — no competing threshold system. ONE_H_RSI_NEAR_50_BAND is a
+// genuinely new named constant: audited and confirmed no "near 50" band
+// concept exists anywhere in this codebase before this task (existing RSI
+// checks are strict rsi>50/rsi<50 with no neutral zone). Direction-neutral
+// raw evidence only — directional interpretation belongs to the trigger
+// helper below.
+const ONE_H_RSI_NEAR_50_BAND = 5;
+function _oneHRsiTimingFromValue(rsi) {
+  if (rsi == null || !isFinite(rsi)) {
+    return { value: null, state: 'unknown', relationTo50: 'unknown', extreme: 'unknown' };
+  }
+  let extreme = 'none';
+  if (rsi >= MARKET_EVIDENCE_RSI_OVERBOUGHT) extreme = 'high';
+  else if (rsi <= MARKET_EVIDENCE_RSI_OVERSOLD) extreme = 'low';
+
+  const relationTo50 = (Math.abs(rsi - 50) <= ONE_H_RSI_NEAR_50_BAND) ? 'near' : (rsi > 50 ? 'above' : 'below');
+
+  let state;
+  if (extreme === 'low') state = 'extreme_low';
+  else if (extreme === 'high') state = 'extreme_high';
+  else if (relationTo50 === 'near') state = 'near_50';
+  else state = relationTo50 === 'above' ? 'above_50' : 'below_50';
+
+  return { value: rsi, state, relationTo50, extreme };
+}
+
+// TDAS V4.9.3 T4 — canonical 1H ADX trigger quality. 20 is a genuinely new
+// named threshold (audited — no literal ADX-20 threshold exists anywhere
+// in this codebase before this task); 25/40 mirror the EXISTING adxTrending/
+// adxStrong values (not renamed or altered — those two booleans and their
+// call sites remain completely untouched; these are new, separate,
+// trigger-quality-specific constants with the same numeric values).
+// `slope` is expected to already be a T2-shaped { state, delta,
+// lookbackBars, highRollingOver } object (reused directly, not
+// recomputed) — strong_rolling_over is read straight off its own
+// highRollingOver flag rather than reimplementing the >=40-and-falling
+// check a second time.
+const ONE_H_ADX_TRIGGER_DEVELOPING_MIN = 20;
+const ONE_H_ADX_TRIGGER_READY_MIN = 25;
+const ONE_H_ADX_TRIGGER_STRONG_MIN = 40;
+function _oneHAdxTriggerFromValues(adxValue, slopeObj) {
+  const slope = slopeObj || { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false };
+  if (adxValue == null || !isFinite(adxValue)) {
+    return { value: null, state: 'unknown', slope };
+  }
+  let state;
+  if (adxValue < ONE_H_ADX_TRIGGER_DEVELOPING_MIN) state = 'weak';
+  else if (adxValue < ONE_H_ADX_TRIGGER_READY_MIN) state = 'developing';
+  else if (adxValue < ONE_H_ADX_TRIGGER_STRONG_MIN) state = 'ready';
+  else state = slope.highRollingOver ? 'strong_rolling_over' : 'strong';
+  return { value: adxValue, state, slope };
+}
+
+// TDAS V4.9.3 T4 — additive 1H trigger interpretation. Pure, direction-
+// aware composition of already-resolved canonical 1H evidence (RSI timing,
+// ADX trigger quality, TEMA alignment) — no UT opposition (deferred to
+// T5), no extension/lateness signal beyond what genuinely exists (audited:
+// none currently does — see the delivery note; extensionActive is always
+// false today, wired for forward compatibility only, never fabricated).
+// Precedence, per doctrine: unknown > weak > late > ready > early.
+function _oneHTriggerStateFromInputs(direction, rsiEvidence, adxEvidence, temaState, temaAligned, extensionActive) {
+  const rsi = rsiEvidence || { state: 'unknown', relationTo50: 'unknown', extreme: 'unknown' };
+  const adx = adxEvidence || { state: 'unknown' };
+
+  // 1. unknown — missing intended direction or essential 1H evidence.
+  if (direction !== 'long' && direction !== 'short') {
+    return { state: 'unknown', reasons: ['intended trade direction unavailable'] };
+  }
+  if (rsi.state === 'unknown' || adx.state === 'unknown' || temaState === 'unknown' || temaAligned === null) {
+    return { state: 'unknown', reasons: ['1H timing evidence unavailable'] };
+  }
+
+  // 2. weak
+  const weakReasons = [];
+  if (adx.state === 'weak') weakReasons.push('1H ADX weak (below ' + ONE_H_ADX_TRIGGER_DEVELOPING_MIN + ')');
+  if (temaAligned === false) weakReasons.push('1H TEMA structure opposes the ' + direction);
+  if (weakReasons.length) return { state: 'weak', reasons: weakReasons };
+
+  // 3. late — only from genuine timing-lateness evidence, never RSI extreme alone.
+  const rsiExtremeInDirection = (direction === 'long' && rsi.extreme === 'high') || (direction === 'short' && rsi.extreme === 'low');
+  const lateReasons = [];
+  if (adx.state === 'strong_rolling_over') lateReasons.push('1H ADX strong but rolling over');
+  if (rsiExtremeInDirection && extensionActive === true) lateReasons.push('1H RSI extreme in the trade direction with extension evidence active');
+  if (lateReasons.length) return { state: 'late', reasons: lateReasons };
+
+  // 4. ready
+  const adxReady = (adx.state === 'ready' || adx.state === 'strong');
+  const rsiDirectionalOk = direction === 'long'
+    ? (rsi.relationTo50 === 'above' || rsi.relationTo50 === 'near')
+    : (rsi.relationTo50 === 'below' || rsi.relationTo50 === 'near');
+  if (temaAligned === true && adxReady && rsiDirectionalOk && !rsiExtremeInDirection && extensionActive !== true) {
+    return { state: 'ready', reasons: ['1H TEMA aligned with the ' + direction, '1H ADX ' + adx.state, '1H RSI ' + rsi.relationTo50 + ' 50'] };
+  }
+
+  // 5. early — directional setup developing, execution confirmation incomplete.
+  const earlyReasons = [];
+  if (adx.state === 'developing') earlyReasons.push('1H ADX developing');
+  if (!rsiDirectionalOk) earlyReasons.push('1H RSI on the wrong side of 50 for the ' + direction);
+  if (temaAligned !== true) earlyReasons.push('1H TEMA/timing not yet fully aligned with the ' + direction);
+  if (earlyReasons.length === 0) earlyReasons.push('1H execution timing still developing');
+  return { state: 'early', reasons: earlyReasons };
+}
+
 function computeStates(d) {
   if (!d || typeof d !== 'object') return null;
 
@@ -3960,7 +4065,79 @@ function _marketEvidenceMaRelation(above, distPct) {
   if (distPct != null && isFinite(distPct) && Math.abs(distPct) <= REGIME_MA_PRESSURE_PCT) return 'at';
   return above ? 'above' : 'below';
 }
-function _marketEvidenceComponents(d) {
+// TDAS V4.9.3 T4 — canonical 1H timing evidence composition.
+//
+// Audit finding (see delivery note): the existing 1H timing pipeline
+// (_calc1HTiming(), attached at d._1hTiming) only ever populates for
+// 4H-setup cards — _tdSignalRefresh()'s own eligibility guard reads
+// `d.tf === '4h'` before ever calling _ensure1HTimingFor(). For a genuine
+// 1H-setup card, d._1hTiming is never populated by that pipeline at all —
+// but the setup timeframe already IS 1H, so its own d.states fields
+// (rsi, adx, adxSlope — the last one added by T2) already contain
+// genuine 1H values.
+//
+// This function branches on that distinction explicitly:
+//   - 1H setup (d.tf === '1h'): reads the setup-tf's OWN d.states fields
+//     as the 1H source — genuinely 1H data, not a fallback.
+//   - Any other setup tf (4H, 1D, ...): reads d._1hTiming (the adjacent
+//     1H timing side-channel) — also genuinely 1H data, when present.
+// Neither branch ever mislabels non-1H data as 1H, and neither branch
+// falls back to the other when its own genuine source is missing.
+function _oneHTimingEvidenceFromD(d, openTrade) {
+  const isSetupOneH = !!(d && d.tf === '1h');
+  const oneHTiming = (d && d._1hTiming) || null;
+  const sourceAvailable = isSetupOneH || !!oneHTiming;
+
+  const _unknownAdxSlopeT4 = { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false };
+
+  // Intended trade direction: a genuine active open trade's own direction
+  // takes priority; otherwise the scanner card's own resolved signal
+  // (d.signal, already 'long'/'short'/'neutral'). Never inferred from
+  // adjacent-timeframe data.
+  const direction = (openTrade && (openTrade.signal === 'long' || openTrade.signal === 'short'))
+    ? openTrade.signal
+    : ((d && (d.signal === 'long' || d.signal === 'short')) ? d.signal : 'unknown');
+
+  let rsiValue = null, adxValue = null, adxSlopeObj = _unknownAdxSlopeT4, temaState = 'unknown';
+  if (isSetupOneH) {
+    const st = (d && d.states) || {};
+    rsiValue = (st.rsi != null && isFinite(st.rsi)) ? st.rsi : null;
+    adxValue = (st.adx != null && isFinite(st.adx)) ? st.adx : null;
+    adxSlopeObj = st.adxSlope || _unknownAdxSlopeT4;
+    temaState = st.crossLong === true ? 'bullish' : st.crossShort === true ? 'bearish' : 'unknown';
+  } else if (oneHTiming) {
+    rsiValue = (oneHTiming.rsi1h != null && isFinite(oneHTiming.rsi1h)) ? oneHTiming.rsi1h : null;
+    adxValue = (oneHTiming.adx1h != null && isFinite(oneHTiming.adx1h)) ? oneHTiming.adx1h : null;
+    adxSlopeObj = oneHTiming.adxSlope1h || _unknownAdxSlopeT4;
+    temaState = (typeof oneHTiming.crossLong1h === 'boolean') ? (oneHTiming.crossLong1h ? 'bullish' : 'bearish') : 'unknown';
+  }
+
+  const rsi = _oneHRsiTimingFromValue(rsiValue);
+  const adx = _oneHAdxTriggerFromValues(adxValue, adxSlopeObj);
+
+  const temaDirLabel = temaState === 'bullish' ? 'long' : temaState === 'bearish' ? 'short' : 'unknown';
+  const aligned = (direction !== 'unknown' && temaDirLabel !== 'unknown') ? (temaDirLabel === direction) : null;
+
+  // No genuine 1H-specific extension/chasing signal currently exists in
+  // this codebase (audited — see delivery note). Always false, never
+  // fabricated; wired as an explicit parameter so a future task can
+  // supply a genuine signal without changing this function's own shape.
+  const extensionActive = false;
+
+  const trigger = _oneHTriggerStateFromInputs(direction, rsi, adx, temaState, aligned, extensionActive);
+
+  return {
+    timeframe: '1H',
+    sourceAvailable,
+    direction,
+    rsi,
+    adx,
+    tema: { state: temaState, aligned },
+    trigger,
+  };
+}
+
+function _marketEvidenceComponents(d, openTrade) {
   const st = (d && d.states) || {};
 
   // TEMA structure: direction (crossLong/crossShort) kept strictly
@@ -4074,6 +4251,9 @@ function _marketEvidenceComponents(d) {
     adjacentAdxState: { value: adjacentAdxValue, state: adjacentAdxState, slope: st.htfAdxSlope || _unknownAdxSlope },
     rsiExtension: { value: rsiValue, state: _marketEvidenceExtension(d) },
     ma200RegimeInputs,
+    // TDAS V4.9.3 T4 — canonical 1H timing evidence, additive/diagnostic
+    // only (see _oneHTimingEvidenceFromD()'s own header comment).
+    oneHTimingEvidence: _oneHTimingEvidenceFromD(d, openTrade),
   };
 }
 
@@ -4111,6 +4291,16 @@ function buildEvidence(d, entry) {
           chop: { state: 'unknown', crossings: null, windowBars: MA200_CHOP_WINDOW_BARS, threshold: MA200_CHOP_CROSSING_THRESHOLD },
           regime: 'unknown',
         },
+      },
+      // TDAS V4.9.3 T4 — additive, safe all-unknown default.
+      oneHTimingEvidence: {
+        timeframe: '1H',
+        sourceAvailable: false,
+        direction: 'unknown',
+        rsi: { value: null, state: 'unknown', relationTo50: 'unknown', extreme: 'unknown' },
+        adx: { value: null, state: 'unknown', slope: { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false } },
+        tema: { state: 'unknown', aligned: null },
+        trigger: { state: 'unknown', reasons: [] },
       },
     },
   };
@@ -4154,7 +4344,7 @@ function buildEvidence(d, entry) {
       // TDAS V4.8 Evidence Transparency Fix — additive only, see
       // _marketEvidenceComponents()'s own header comment. None of the
       // fields above are changed by this addition.
-      components: _marketEvidenceComponents(d),
+      components: _marketEvidenceComponents(d, openTrade),
     };
   } catch (err) {
     if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) {
@@ -10776,6 +10966,45 @@ function buildMarketEvidenceDiagnosticHtml(d){
       const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
       return '<div class="ap-row"><span>200MA Chop</span><span>' + text + '</span></div>';
     })();
+    // TDAS V4.9.3 T4 — additive, diagnostic-only rows. Reads
+    // ev.components.oneHTimingEvidence (see _oneHTimingEvidenceFromD());
+    // always explicitly labeled "1H" per doctrine (never adjacent/setup
+    // data mislabeled as 1H). Degrades safely to "Unknown" when absent
+    // (older cached evidence objects from before this task). Not used to
+    // classify, cap, block, or promote anything — display only; current
+    // Advisory wording is completely unaffected.
+    const oneHRsiRow = (() => {
+      const oh = comp.oneHTimingEvidence || {};
+      const r = oh.rsi || {};
+      if (r.value == null || !r.state || r.state === 'unknown') {
+        return '<div class="ap-row"><span>1H RSI Timing</span><span>Unknown</span></div>';
+      }
+      const stateLabel = capWord(r.state.replace(/_/g, ' '));
+      return '<div class="ap-row"><span>1H RSI Timing</span><span>' + stateLabel + ' (' + r.value.toFixed(1) + ')</span></div>';
+    })();
+    const oneHAdxRow = (() => {
+      const oh = comp.oneHTimingEvidence || {};
+      const a = oh.adx || {};
+      if (a.value == null || !a.state || a.state === 'unknown') {
+        return '<div class="ap-row"><span>1H ADX Trigger</span><span>Unknown</span></div>';
+      }
+      const stateLabel = capWord(a.state.replace(/_/g, ' '));
+      const slopeState = a.slope && a.slope.state;
+      const slopePart = (slopeState && slopeState !== 'unknown') ? (' \u00b7 ' + capWord(slopeState)) : '';
+      return '<div class="ap-row"><span>1H ADX Trigger</span><span>' + stateLabel + ' (' + a.value.toFixed(1) + ')' + slopePart + '</span></div>';
+    })();
+    const oneHTriggerRow = (() => {
+      const oh = comp.oneHTimingEvidence || {};
+      const t = oh.trigger || {};
+      const stateLabel = (t.state && t.state !== 'unknown') ? capWord(t.state) : 'Unknown';
+      return '<div class="ap-row"><span>1H Trigger State</span><span>' + stateLabel + '</span></div>';
+    })();
+    const oneHTriggerReasonRow = (() => {
+      const oh = comp.oneHTimingEvidence || {};
+      const t = oh.trigger || {};
+      if (!t.state || t.state === 'unknown' || t.state === 'ready' || !t.reasons || !t.reasons.length) return '';
+      return '<div class="ap-row"><span>1H Trigger Reason</span><span>' + t.reasons.join('; ') + '</span></div>';
+    })();
     function freshRow(label, src, notApplicable){
       if (notApplicable) return '<div class="ap-row"><span>' + label + '</span><span>Not applicable</span></div>';
       if (!src) return '<div class="ap-row"><span>' + label + '</span><span>None</span></div>';
@@ -10816,6 +11045,10 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + tema92Ma200Row
       + ma200RegimeRow
       + ma200ChopRow
+      + oneHRsiRow
+      + oneHAdxRow
+      + oneHTriggerRow
+      + oneHTriggerReasonRow
       + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
       + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
       + freshRow('1H timing UT freshness', ev.freshness && ev.freshness.oneHUt, isOneHSetup)
@@ -13326,6 +13559,20 @@ async function _calc1HTiming(symbol) {
       sma135Slope_1h = negligible ? 'flat' : (sma135SlopeDelta_1h > 0 ? 'rising' : 'falling');
     }
 
+    // TDAS V4.9.3 T4 — 1H RSI and 1H ADX(+slope), additive. Reuses the
+    // SAME already-fetched closed 1H candles (closedH/closedL/closedC)
+    // this function already uses for UT Bot/TEMA/SMA200/SMA135 above — no
+    // new fetch. Reuses the existing calcRSI() (period 14, same as setup-
+    // tf) and T2's shared calcADXWithHistory() helper (no second,
+    // independent RSI or ADX implementation). This is the FIRST time 1H
+    // RSI/ADX have existed anywhere in this codebase — audited and
+    // confirmed genuinely absent before this task.
+    const rsi1h = calcRSI(closedC, 14);
+    const _adxCalc1h = calcADXWithHistory(closedH, closedL, closedC, ADX_PERIOD, ADX_SLOPE_LOOKBACK_BARS);
+    const adx1h = _adxCalc1h.value;
+    const adxPrev3_1h = _adxCalc1h.prevValue;
+    const adxSlope1h = _adxSlopeFromValues(adx1h, adxPrev3_1h);
+
     // Get 4H context from currentScanData (must already exist from last scan)
     const d4h = currentScanData[symbol];
     if (!d4h) return null;
@@ -13351,6 +13598,8 @@ async function _calc1HTiming(symbol) {
       sma135_1h, aboveSma135_1h, sma135Slope_1h, sma135SlopeDelta_1h,
       utDirection1h: utBot1h.direction,
       utBarsAgoFlip1h: utBot1h.barsAgoFlip != null ? utBot1h.barsAgoFlip : null,
+      // TDAS V4.9.3 T4 — additive 1H RSI/ADX(+slope) evidence inputs.
+      rsi1h, adx1h, adxPrev3_1h, adxSlope1h,
       updatedAt: new Date().toISOString(),
     };
   } catch(e) {
