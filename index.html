@@ -2676,6 +2676,44 @@ function getTradeAgeHours(d, tf) {
 // ║  All builders then read from d.states instead of re-deriving.           ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
+// TDAS V4.9 T1 — 200MA slope flat-tolerance. Approved provisional shadow-
+// calibration constant (~0.02% per bar), named per doctrine so it can be
+// tuned later without touching call sites. Deliberately distinct from the
+// existing tema92Slope 0.01%-of-prior-value negligible threshold above —
+// that threshold is TEMA-specific and untouched by this addition.
+const MA200_SLOPE_FLAT_TOLERANCE_PCT = 0.02;
+
+// TDAS V4.9 T1 — measured SMA200 slope from a current/prior value pair.
+// Mirrors the existing tema92Slope pattern (compare current vs one-bar-
+// prior value already computed in calcPair, no new indicator maths).
+// Insufficient/malformed data returns 'unknown' — never fabricated
+// support, per doctrine ("unknown must never imply support").
+function _ma200SlopeFromValues(cur, prev) {
+  if (cur == null || !isFinite(cur) || prev == null || !isFinite(prev) || prev === 0) {
+    return { state: 'unknown', delta: null, deltaPct: null };
+  }
+  const delta = cur - prev;
+  const deltaPct = (delta / prev) * 100;
+  const state = Math.abs(deltaPct) <= MA200_SLOPE_FLAT_TOLERANCE_PCT
+    ? 'flat'
+    : (delta > 0 ? 'rising' : 'falling');
+  return { state, delta, deltaPct };
+}
+
+// TDAS V4.9 T1 — TEMA 92 vs SMA200 relation. Reuses the existing,
+// already-approved REGIME_MA_PRESSURE_PCT tolerance (the same threshold
+// classifyRegime()'s nearMA and _marketEvidenceMaRelation() already use)
+// — no new threshold invented. 'at' means meaningfully near/testing the
+// MA, not strict equality. Missing/non-finite values return 'unknown'.
+function _tema92VsMa200FromValues(tema92, ma200Val) {
+  if (tema92 == null || !isFinite(tema92) || ma200Val == null || !isFinite(ma200Val) || ma200Val === 0) {
+    return 'unknown';
+  }
+  const distPct = (tema92 - ma200Val) / ma200Val * 100;
+  if (isFinite(distPct) && Math.abs(distPct) <= REGIME_MA_PRESSURE_PCT) return 'at';
+  return tema92 > ma200Val ? 'above' : 'below';
+}
+
 function computeStates(d) {
   if (!d || typeof d !== 'object') return null;
 
@@ -2706,6 +2744,20 @@ function computeStates(d) {
     const negligible = Math.abs(tema92SlopeDelta) < Math.abs(tema92Prev) * 0.0001;
     tema92Slope = negligible ? 'flat' : (tema92SlopeDelta > 0 ? 'rising' : 'falling');
   }
+
+  // ── TDAS V4.9 T1 — MA200 slope + TEMA92/MA200 regime relation ──────────
+  // Additive evaluation-grade evidence only. Setup timeframe reads
+  // d.ma200/d.prevMa200 (same already-closed candle series ma200 itself
+  // uses) and d.t92 (already computed above). Adjacent/HTF timeframe reads
+  // d.htfMa200/d.htfPrevMa200/d.htfT92, all already computed in calcPair
+  // from the already-fetched HTF candle series — no new fetch, no new
+  // indicator maths. Does not feed classifyRegime(), evaluateSetup(), or
+  // any Advisory/Trade-Ready/High-Conviction logic — diagnostic evidence
+  // only, consumed later by MarketEvidence.components.
+  const ma200Slope = _ma200SlopeFromValues(d.ma200, d.prevMa200);
+  const tema92VsMa200 = _tema92VsMa200FromValues(_t92Cur, d.ma200);
+  const htfMa200Slope = _ma200SlopeFromValues(d.htfMa200, d.htfPrevMa200);
+  const htfTema92VsMa200 = _tema92VsMa200FromValues(d.htfT92, d.htfMa200);
 
   // ── UT Bot states ──────────────────────────────────────────────────────
   const utDirection  = _utBot.direction; // 1 | -1 | 0
@@ -2835,6 +2887,8 @@ function computeStates(d) {
     adx: _adx, adxTrending, adxStrong, adxState,
     // 200 MA
     aboveMA, aboveMA_closed, maDist,
+    // TDAS V4.9 T1 — additive MA200 regime inputs (setup + adjacent/HTF)
+    ma200Slope, tema92VsMa200, htfMa200Slope, htfTema92VsMa200,
     // Trend SMA
     aboveTrendSMA,
     // EMA 50
@@ -3768,12 +3822,30 @@ function _marketEvidenceComponents(d) {
   // and RSI field exactly — no duplicate logic, no new maths.
   const rsiValue = (st.rsi != null && isFinite(st.rsi)) ? st.rsi : (d && d.rsi != null && isFinite(d.rsi)) ? d.rsi : null;
 
+  // TDAS V4.9 T1 — MA200 regime inputs (slope + TEMA92/MA200 relation),
+  // setup + adjacent/HTF. Reads the already-computed d.states fields from
+  // computeStates() — no re-derivation, no new fetch. Older cached
+  // states objects without these fields (e.g. from before this task)
+  // degrade safely to the same 'unknown'/null shape via the fallbacks.
+  const _unknownSlope = { state: 'unknown', delta: null, deltaPct: null };
+  const ma200RegimeInputs = {
+    setup: {
+      slope: st.ma200Slope || _unknownSlope,
+      tema92Relation: st.tema92VsMa200 || 'unknown',
+    },
+    adjacent: {
+      slope: st.htfMa200Slope || _unknownSlope,
+      tema92Relation: st.htfTema92VsMa200 || 'unknown',
+    },
+  };
+
   return {
     temaStructure: { direction: setupTemaDir, adjacentDirection: adjacentTemaDir, alignment: temaAlignment, momentum: temaMomentum },
     utDirection: { direction: setupUtDir, adjacentDirection: adjacentUtDir },
     ma200Relation: { setup: setupMaRelation, adjacent: adjacentMaRelation },
     adxState: { value: adxValue, state: adxState },
     rsiExtension: { value: rsiValue, state: _marketEvidenceExtension(d) },
+    ma200RegimeInputs,
   };
 }
 
@@ -3798,6 +3870,11 @@ function buildEvidence(d, entry) {
       ma200Relation: { setup: 'unknown', adjacent: 'unknown' },
       adxState: { value: null, state: 'unknown' },
       rsiExtension: { value: null, state: 'unknown' },
+      // TDAS V4.9 T1 — additive, safe all-unknown default.
+      ma200RegimeInputs: {
+        setup: { slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown' },
+        adjacent: { slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown' },
+      },
     },
   };
   try {
@@ -7533,6 +7610,13 @@ async function calcPair(symbol,tf){
   const volRatio=avVol!==null&&avVol>0?lastVol/avVol:null;
   const t17a=tema(closes,17),t92a=tema(closes,92);
   const ma200=sma(closes,200);
+  // TDAS V4.9 T1 — prior closed-candle SMA200 (one bar earlier), reusing
+  // the SAME already-closed candle series (closes[]) ma200 itself uses.
+  // No new fetch, no new indicator calculation — same technique already
+  // established by prevT17/prevT92 below (shift the same series by one
+  // bar and recompute). null whenever there are not yet 201 closed bars
+  // (sma() itself returns null for insufficient data).
+  const prevMa200=sma(closes.slice(0,-1),200);
   // Use live ticker price for display and P&L — Bitunix only returns closed candles
   // so closes[last] is always one candle behind the current live price.
   // All indicator calculations still use the closed candle series (closes array).
@@ -7619,6 +7703,10 @@ async function calcPair(symbol,tf){
   const ht17a=tema(hc,17),ht92a=tema(hc,92);
   const ht17=ht17a[ht17a.length-1],ht92=ht92a[ht92a.length-1];
   const _htfSma200=sma(hc,200);
+  // TDAS V4.9 T1 — prior closed-candle HTF SMA200 (one bar earlier),
+  // reusing the SAME already-fetched/closed HTF candle series (hc[])
+  // _htfSma200 itself uses. No new fetch, no new indicator calculation.
+  const _htfPrevSma200=sma(hc.slice(0,-1),200);
   const htfAbove=_htfSma200!==null?hc[hc.length-1]>_htfSma200:null;
   // TDAS V4.8 — Adjacent Management 200MA Context. htfAbove itself already
   // existed (used internally to classify htfTrendContext below) but was
@@ -8531,7 +8619,7 @@ async function calcPair(symbol,tf){
     }
 
   }
-  const _result={price,t17,t92,prevT92,ma200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,tf,score,
+  const _result={price,t17,t92,prevT92,ma200,prevMa200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,tf,score,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
     adx,adxTrending,adxStrong,
@@ -8539,6 +8627,16 @@ async function calcPair(symbol,tf){
     minsRemaining,secsRemaining,candleClosePct,
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
     tradeStage,tradeAgeHours,
+    // TDAS V4.9 T1 — additive HTF 200MA-regime inputs (htfT92 exposes the
+    // already-computed adjacent-timeframe TEMA92; htfMa200/htfPrevMa200
+    // expose the already-computed adjacent-timeframe SMA200 pair). No new
+    // fetch, no new indicator calculation — same hc[]/rawH data already
+    // used for htfTrendContext/htfAbove/htfMaDist below. Placed BEFORE
+    // htfTrendContext so the pre-existing trailing literal
+    // "htfTrendContext,htfWidening,htfUtBot,htfAbove,htfMaDist}" — asserted
+    // verbatim by test_ma200_adjacent_context.js's own regex regression
+    // check — remains byte-identical and unbroken.
+    htfT92:ht92,htfMa200:_htfSma200,htfPrevMa200:_htfPrevSma200,
     htfTrendContext,htfWidening,htfUtBot,htfAbove,htfMaDist};
   // TDAS Phase 0: attach compute-once state object — all builders read from d.states
   _result.states = computeStates(_result);
@@ -10352,6 +10450,29 @@ function buildMarketEvidenceDiagnosticHtml(d){
       const text = (r.value != null) ? (capWord(r.state) + ' (' + r.value.toFixed(1) + ')') : capWord(r.state);
       return '<div class="ap-row"><span>RSI / Extension</span><span>' + text + '</span></div>';
     })();
+    // TDAS V4.9 T1 — additive diagnostic-only rows. Reads
+    // ev.components.ma200RegimeInputs (see _marketEvidenceComponents());
+    // degrades safely to "Unknown" when absent (older cached evidence
+    // objects from before this task). Not used to classify, cap, block or
+    // promote anything yet — display only.
+    const ma200SlopeRow = (() => {
+      const r = comp.ma200RegimeInputs || {};
+      const setupSlope = (r.setup && r.setup.slope) || {};
+      const adjSlope = (r.adjacent && r.adjacent.slope) || {};
+      const setupPart = (tfLabel !== dash && setupSlope.state && setupSlope.state !== 'unknown') ? (tfLabel + ': ' + capWord(setupSlope.state)) : null;
+      const adjPart = (htfLabelTf !== dash && adjSlope.state && adjSlope.state !== 'unknown') ? (htfLabelTf + ': ' + capWord(adjSlope.state)) : null;
+      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
+      return '<div class="ap-row"><span>200MA Slope</span><span>' + text + '</span></div>';
+    })();
+    const tema92Ma200Row = (() => {
+      const r = comp.ma200RegimeInputs || {};
+      const setupRel = (r.setup && r.setup.tema92Relation) || 'unknown';
+      const adjRel = (r.adjacent && r.adjacent.tema92Relation) || 'unknown';
+      const setupPart = (tfLabel !== dash && setupRel !== 'unknown') ? (tfLabel + ': ' + capWord(setupRel)) : null;
+      const adjPart = (htfLabelTf !== dash && adjRel !== 'unknown') ? (htfLabelTf + ': ' + capWord(adjRel)) : null;
+      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
+      return '<div class="ap-row"><span>TEMA 92 vs 200MA</span><span>' + text + '</span></div>';
+    })();
     function freshRow(label, src, notApplicable){
       if (notApplicable) return '<div class="ap-row"><span>' + label + '</span><span>Not applicable</span></div>';
       if (!src) return '<div class="ap-row"><span>' + label + '</span><span>None</span></div>';
@@ -10387,6 +10508,8 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + ma200Row
       + adxRow
       + rsiRow
+      + ma200SlopeRow
+      + tema92Ma200Row
       + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
       + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
       + freshRow('1H timing UT freshness', ev.freshness && ev.freshness.oneHUt, isOneHSetup)
