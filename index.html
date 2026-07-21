@@ -1598,7 +1598,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.4';
+const APP_BUILD = 'V4.9.5';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -4620,10 +4620,329 @@ function buildEvidence(d, entry) {
   }
 }
 
-// ── Diagnostic-only shadow label (§10) — normalizes MarketEvidence into ────
-// the same coarse vocabulary as the existing Technical Summary label, for
-// shadow-mode disagreement comparison only. Never used by any production
-// classification, card class, or action.
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.9.5 T6 — Shadow Evaluation Classifier                            ║
+// ║                                                                          ║
+// ║  Pure, deterministic, diagnostic-only. Consumes ONLY the canonical T1-T5 ║
+// ║  MarketEvidence object (ev, i.e. buildEvidence()'s own output) — no raw  ║
+// ║  indicator reconstruction, no DOM/storage/network access, no mutation of ║
+// ║  the passed-in evidence. Completely non-authoritative: nothing in the    ║
+// ║  live TDAS system (evaluateSetup, Trade Ready, High Conviction, Watch,   ║
+// ║  Advisory, sorting, alerts, persistence) reads this output.              ║
+// ║                                                                          ║
+// ║  Audit (see delivery note for full detail): live Trade Ready is the      ║
+// ║  `tradeReady` boolean computed in _buildScannerAdvisory(); live High     ║
+// ║  Conviction is the existing `d.highConviction` boolean (calcPair());     ║
+// ║  live Watch/action classification is `d.evaluation.actionBias`           ║
+// ║  (evaluateSetup()); legacy score/confirms are `d.evaluation.score` /     ║
+// ║  `d.evaluation.confirmCount` — all reused as comparison metadata only,   ║
+// ║  never as shadow-classifier inputs.                                     ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+const SHADOW_MODEL_VERSION = 'V4.9.5-shadow-1';
+
+// TDAS V4.9.5 T6 — canonical Stage 0-10 shadow classifier. See the module
+// header above and the delivery note for the full precedence rationale.
+// Controlling ADX/UT/RSI is always ev.components.adxState / .utOpposition.setup
+// / .rsiContext.setup — this single field genuinely IS "4H ADX" for a
+// four_h_led/direct_four_h path and "1H ADX" for a standalone_one_h path,
+// because the setup timeframe itself is 4H or 1H respectively by
+// construction of T5's own setupPath resolution; no separate lookup or
+// re-derivation is needed or performed.
+function _shadowEvaluate(ev) {
+  const comp = (ev && ev.components) || {};
+  const direction = (comp.oneHTimingEvidence && comp.oneHTimingEvidence.direction) || 'unknown';
+  const setupPathState = (comp.setupPath && comp.setupPath.state) || 'unknown';
+  const timingState = (comp.timingState && comp.timingState.state) || 'unknown';
+  const setupRegimeObj = (comp.ma200RegimeInputs && comp.ma200RegimeInputs.setup) || {};
+  const adjacentRegimeObj = (comp.ma200RegimeInputs && comp.ma200RegimeInputs.adjacent) || {};
+  const setupRegime = setupRegimeObj.regime || 'unknown';
+  const adjacentRegime = adjacentRegimeObj.regime || 'unknown';
+  const setupChopState = (setupRegimeObj.chop && setupRegimeObj.chop.state) || 'unknown';
+  const setupMa200Slope = (setupRegimeObj.slope && setupRegimeObj.slope.state) || 'unknown';
+  const setupTema92Relation = setupRegimeObj.tema92Relation || 'unknown';
+  const setupAdxValue = (comp.adxState && comp.adxState.value != null && isFinite(comp.adxState.value)) ? comp.adxState.value : null;
+  const setupAdxSlope = (comp.adxState && comp.adxState.slope) || { state: 'unknown', highRollingOver: false };
+  const setupUtOpp = (comp.utOpposition && comp.utOpposition.setup) || { state: 'unknown', reasons: [] };
+  const setupRsiCtx = (comp.rsiContext && comp.rsiContext.setup) || { state: 'unknown' };
+  const oneHRsiCtx = (comp.rsiContext && comp.rsiContext.oneH) || { state: 'unknown' };
+  const oneHTrigger = (comp.oneHTimingEvidence && comp.oneHTimingEvidence.trigger) || { state: 'unknown' };
+  const oneHAdx = (comp.oneHTimingEvidence && comp.oneHTimingEvidence.adx) || { state: 'unknown' };
+  const setupTemaDir = (comp.temaStructure && comp.temaStructure.direction) || 'unknown';
+  const setupMaRelation = (comp.ma200Relation && comp.ma200Relation.setup) || 'unknown';
+
+  const blockers = [], cautions = [], supports = [], reasons = [];
+
+  // TDAS V4.9.5 T6 — counterStructure/counterHtf. 'unresolved_chop' is its
+  // own distinct signal (handled at Stage 2 directly) — never folded into
+  // counterStructure/counterHtf, which stay null (not established) rather
+  // than fabricating true/false out of a genuinely unresolved regime.
+  let counterStructure = null;
+  if ((direction === 'long' || direction === 'short') && setupRegime !== 'unknown' && setupRegime !== 'unresolved_chop') {
+    counterStructure = (direction === 'long' && (setupRegime === 'confirmed_bearish' || setupRegime === 'bearish_transitional'))
+      || (direction === 'short' && (setupRegime === 'confirmed_bullish' || setupRegime === 'bullish_transitional'));
+  }
+  let counterHtf = null;
+  if ((direction === 'long' || direction === 'short') && adjacentRegime !== 'unknown' && adjacentRegime !== 'unresolved_chop') {
+    counterHtf = (direction === 'long' && (adjacentRegime === 'confirmed_bearish' || adjacentRegime === 'bearish_transitional'))
+      || (direction === 'short' && (adjacentRegime === 'confirmed_bullish' || adjacentRegime === 'bullish_transitional'));
+  }
+
+  function finalize(stage, stageKey, classification, executable, highConvictionEligible) {
+    return {
+      modelVersion: SHADOW_MODEL_VERSION,
+      stage, stageKey, classification, executable, highConvictionEligible,
+      blockers: blockers.slice(), cautions: cautions.slice(), supports: supports.slice(), reasons: reasons.slice(),
+      evidenceSnapshot: {
+        setupPath: setupPathState, timingState,
+        setupMa200Regime: setupRegime, adjacentMa200Regime: adjacentRegime,
+        setupAdx: setupAdxValue, setupAdxSlope: setupAdxSlope.state,
+        oneHAdx: oneHAdx.state, oneHTrigger: oneHTrigger.state,
+        setupUtOpposition: setupUtOpp.state, oneHUtOpposition: ((comp.utOpposition && comp.utOpposition.oneH) || {}).state || 'unknown',
+        setupRsiContext: setupRsiCtx.state, oneHRsiContext: oneHRsiCtx.state,
+        counterStructure, counterHtf, direction,
+      },
+    };
+  }
+
+  // ── Stage 0 — Unknown ────────────────────────────────────────────────────
+  if (direction !== 'long' && direction !== 'short') {
+    reasons.push('Intended trade direction unavailable');
+    return finalize(0, 'unknown', 'unknown', null, null);
+  }
+  if (setupPathState === 'unknown') {
+    reasons.push('Setup path unavailable');
+    return finalize(0, 'unknown', 'unknown', null, null);
+  }
+  if (!ev || !ev.components) {
+    reasons.push('Core MarketEvidence missing');
+    return finalize(0, 'unknown', 'unknown', null, null);
+  }
+  if (setupAdxValue == null) {
+    reasons.push('Controlling ADX evidence unavailable');
+    return finalize(0, 'unknown', 'unknown', null, null);
+  }
+
+  // ── Stage 1 — Hard blocked ───────────────────────────────────────────────
+  if (setupUtOpp.state === 'opposing_hard') {
+    (setupUtOpp.reasons || []).forEach(function(r) { blockers.push(r); });
+    if (blockers.length === 0) blockers.push('UT direction opposing');
+    return finalize(1, 'hard_blocked', 'blocked', false, false);
+  }
+  if (setupAdxValue < 20) {
+    blockers.push('Controlling ADX below 20');
+    return finalize(1, 'hard_blocked', 'blocked', false, false);
+  }
+
+  // ── Stage 2 — Structural conflict ───────────────────────────────────────
+  if (setupChopState === 'chop' || setupRegime === 'unresolved_chop') {
+    cautions.push('Setup 200MA regime unresolved chop');
+    return finalize(2, 'structural_conflict', 'counter_structure', false, false);
+  }
+  if (counterStructure === true) {
+    cautions.push('Setup structure opposes the ' + direction + ' direction');
+    return finalize(2, 'structural_conflict', 'counter_structure', false, false);
+  }
+
+  // ── Stage 3 — Developing / weak trend ───────────────────────────────────
+  if (setupAdxValue < 25) {
+    cautions.push('Controlling ADX developing (20 to below 25)');
+    return finalize(3, 'developing', 'developing', false, false);
+  }
+  const setupRegimeConfirmed = (direction === 'long' && setupRegime === 'confirmed_bullish') || (direction === 'short' && setupRegime === 'confirmed_bearish');
+  const setupRegimeTransitional = (direction === 'long' && setupRegime === 'bullish_transitional') || (direction === 'short' && setupRegime === 'bearish_transitional');
+  if (!setupRegimeConfirmed && !setupRegimeTransitional) {
+    cautions.push('Setup 200MA regime not yet confirmed');
+    return finalize(3, 'developing', 'developing', false, false);
+  }
+
+  // ── Stages 4-10 — branch by canonical setup path ────────────────────────
+  if (setupPathState === 'four_h_led') {
+    if (timingState === 'setup_valid_entry_not_optimal') {
+      supports.push('4H structure valid');
+      (((comp.timingState && comp.timingState.reasons) || [])).forEach(function(r) { cautions.push(r); });
+      return finalize(6, 'entry_not_optimal', 'setup_valid_entry_not_optimal', false, true);
+    }
+    if (timingState === 'awaiting_one_h_trigger' || (oneHTrigger.state !== 'ready' && oneHTrigger.state !== 'early')) {
+      supports.push('4H structure valid');
+      supports.push('4H ADX executable');
+      reasons.push('4H setup confirmed — awaiting 1H trigger');
+      return finalize(4, 'awaiting_execution_layer', 'awaiting_trigger', false, true);
+    }
+    if (timingState === 'early_trigger' || oneHTrigger.state === 'early') {
+      supports.push('4H structure valid');
+      reasons.push('Early trigger — wait for TEMA/200MA confirmation');
+      return finalize(5, 'early_trigger', 'early_trigger', false, true);
+    }
+    if (timingState === 'ready') {
+      supports.push('4H structure valid');
+      supports.push('4H ADX executable');
+      supports.push('1H trigger ready');
+      if (setupUtOpp.state === 'aligned') supports.push('UT integrity acceptable');
+      if (setupUtOpp.state === 'opposing_transitional') cautions.push('UT direction transitional opposition');
+      const stage10Eligible = (
+        setupRegimeConfirmed &&
+        ((direction === 'long' && setupMa200Slope === 'rising') || (direction === 'short' && setupMa200Slope === 'falling')) &&
+        ((direction === 'long' && setupTema92Relation === 'above') || (direction === 'short' && setupTema92Relation === 'below')) &&
+        setupAdxValue >= 25 && !setupAdxSlope.highRollingOver &&
+        setupUtOpp.state === 'aligned' &&
+        oneHTrigger.state === 'ready' &&
+        setupChopState !== 'chop' &&
+        counterHtf !== true
+      );
+      if (stage10Eligible) {
+        supports.push('Textbook 4H-led alignment');
+        return finalize(10, 'high_conviction', 'high_conviction_candidate', true, true);
+      }
+      if (counterHtf === true) cautions.push('Valid setup against adjacent regime');
+      return finalize(9, 'four_h_led_ready', 'trade_ready', true, true);
+    }
+    // Residual/weak timingState within an otherwise structurally valid
+    // four_h_led setup — conservative fallback, never fabricated as ready.
+    cautions.push('4H-led execution evidence inconclusive');
+    return finalize(3, 'developing', 'developing', false, true);
+  }
+
+  if (setupPathState === 'standalone_one_h') {
+    if (timingState === 'setup_valid_entry_not_optimal') {
+      supports.push('1H structure valid');
+      (((comp.timingState && comp.timingState.reasons) || [])).forEach(function(r) { cautions.push(r); });
+      return finalize(6, 'entry_not_optimal', 'setup_valid_entry_not_optimal', false, false);
+    }
+    if (timingState === 'ready' && setupAdxValue >= 25 && setupUtOpp.state !== 'opposing_hard' && setupUtOpp.state !== 'opposing_transitional' && setupChopState !== 'chop') {
+      supports.push('1H structure valid');
+      supports.push('1H ADX executable');
+      supports.push('1H trigger ready');
+      return finalize(7, 'standalone_one_h_ready', 'trade_ready', true, false);
+    }
+    if (timingState === 'early_trigger') {
+      reasons.push('Early trigger — wait for TEMA/200MA confirmation');
+      return finalize(5, 'early_trigger', 'early_trigger', false, false);
+    }
+    cautions.push('Standalone 1H execution evidence inconclusive');
+    return finalize(3, 'developing', 'developing', false, false);
+  }
+
+  if (setupPathState === 'direct_four_h') {
+    if (timingState === 'setup_valid_entry_not_optimal') {
+      supports.push('4H structure valid');
+      (((comp.timingState && comp.timingState.reasons) || [])).forEach(function(r) { cautions.push(r); });
+      return finalize(6, 'entry_not_optimal', 'setup_valid_entry_not_optimal', false, false);
+    }
+    // Deliberately stricter than an ordinary 4H-led setup — missing 1H
+    // evidence is never treated as positive evidence, per doctrine.
+    const stage8Eligible = (
+      setupAdxValue >= 25 &&
+      ((direction === 'long' && setupTemaDir === 'bullish') || (direction === 'short' && setupTemaDir === 'bearish')) &&
+      ((direction === 'long' && setupMaRelation === 'above') || (direction === 'short' && setupMaRelation === 'below')) &&
+      ((direction === 'long' && setupTema92Relation === 'above') || (direction === 'short' && setupTema92Relation === 'below')) &&
+      (setupMa200Slope === 'flat' || (direction === 'long' && setupMa200Slope === 'rising') || (direction === 'short' && setupMa200Slope === 'falling')) &&
+      setupChopState !== 'chop' &&
+      setupUtOpp.state === 'aligned'
+    );
+    if (stage8Eligible) {
+      supports.push('4H structure exceptionally clean');
+      reasons.push('Direct 4H execution candidate');
+      return finalize(8, 'direct_four_h_ready', 'trade_ready', true, false);
+    }
+    reasons.push('Direct 4H setup — timing evidence not yet fully aligned');
+    return finalize(5, 'early_trigger', 'early_trigger', false, false);
+  }
+
+  reasons.push('Unsupported setup path');
+  return finalize(0, 'unknown', 'unknown', null, null);
+}
+
+// TDAS V4.9.5 T6 — canonical live classification, for comparison metadata
+// only (never a shadow-classifier input). Reuses the existing production
+// _buildScannerAdvisory(d).tradeReady boolean, d.highConviction boolean
+// (calcPair()), and d.evaluation.actionBias/score/confirmCount
+// (evaluateSetup()) — no new classification logic, no re-derivation.
+function _liveClassificationFromD(d) {
+  const ev = (d && d.evaluation) || {};
+  let classification = 'no_setup';
+  if (ev.actionBias === ACTION_BIAS.AVOID) classification = 'avoid';
+  else if (ev.actionBias === ACTION_BIAS.WATCH_LONG || ev.actionBias === ACTION_BIAS.WATCH_SHORT) classification = 'watch';
+  else if (ev.actionBias === ACTION_BIAS.CONSIDER_LONG || ev.actionBias === ACTION_BIAS.CONSIDER_SHORT) classification = 'consider';
+  else if (ev.actionBias === ACTION_BIAS.STRONG_LONG || ev.actionBias === ACTION_BIAS.STRONG_SHORT) classification = 'strong';
+  let tradeReady = false;
+  try { tradeReady = !!(_buildScannerAdvisory(d) || {}).tradeReady; } catch (e) { tradeReady = false; }
+  return {
+    classification,
+    tradeReady,
+    highConviction: !!(d && d.highConviction),
+    score: (ev.score != null) ? ev.score : null,
+    confirms: (ev.confirmCount != null) ? ev.confirmCount : null,
+  };
+}
+
+// TDAS V4.9.5 T6 — non-authoritative shadow-vs-live comparison. Pure;
+// mutates nothing; never consumed by rendering, sorting, Advisory, alerts,
+// or persistence.
+function _shadowCompare(shadow, live) {
+  const shadowReady = !!(shadow && shadow.executable);
+  const shadowHigh = !!(shadow && shadow.highConvictionEligible && shadow.stage === 10);
+  const liveReady = !!(live && live.tradeReady);
+  const liveHigh = !!(live && live.highConviction);
+  let disagreementType = 'none';
+  if (liveReady && !shadowReady) disagreementType = 'live_ready_shadow_not_ready';
+  else if (!liveReady && shadowReady) disagreementType = 'shadow_ready_live_not_ready';
+  else if (liveHigh && !shadowHigh) disagreementType = 'live_high_shadow_not_high';
+  else if (!liveHigh && shadowHigh) disagreementType = 'shadow_high_live_not_high';
+  else if (live && shadow && live.classification !== shadow.classification) disagreementType = 'classification_difference';
+  return { live, shadow, agreement: disagreementType === 'none', disagreementType };
+}
+
+// TDAS V4.9.5 T6 — current-completed-scan census only (no cross-scan
+// accumulation, no persistence, no network). Pure aggregation over an
+// array of { symbol, tf, comparison }.
+function _buildShadowCensus(entries) {
+  const list = entries || [];
+  const byStage = {}, byClassification = {}, bySetupPath = {}, byTimeframe = {}, disagreementTypes = {};
+  let agreementCount = 0, disagreementCount = 0;
+  let liveReadyCount = 0, shadowReadyCount = 0, liveHighConvictionCount = 0, shadowHighConvictionCount = 0;
+  const cases = { liveReadyShadowNotReady: [], shadowReadyLiveNotReady: [], liveHighShadowNotHigh: [], shadowHighLiveNotHigh: [] };
+
+  list.forEach(function(e) {
+    const symbol = e.symbol, tf = e.tf, comparison = e.comparison;
+    const shadow = comparison.shadow, live = comparison.live;
+    byStage[shadow.stage] = (byStage[shadow.stage] || 0) + 1;
+    byClassification[shadow.classification] = (byClassification[shadow.classification] || 0) + 1;
+    const sp = (shadow.evidenceSnapshot && shadow.evidenceSnapshot.setupPath) || 'unknown';
+    bySetupPath[sp] = (bySetupPath[sp] || 0) + 1;
+    byTimeframe[tf] = (byTimeframe[tf] || 0) + 1;
+    if (comparison.agreement) agreementCount++; else disagreementCount++;
+    disagreementTypes[comparison.disagreementType] = (disagreementTypes[comparison.disagreementType] || 0) + 1;
+    if (live.tradeReady) liveReadyCount++;
+    if (shadow.executable) shadowReadyCount++;
+    if (live.highConviction) liveHighConvictionCount++;
+    if (shadow.highConvictionEligible && shadow.stage === 10) shadowHighConvictionCount++;
+
+    const compactCase = {
+      symbol: symbol, timeframe: tf,
+      direction: (shadow.evidenceSnapshot && shadow.evidenceSnapshot.direction) || 'unknown',
+      liveClassification: live.classification, shadowStage: shadow.stage, shadowClassification: shadow.classification,
+      setupPath: sp, blockers: shadow.blockers, cautions: shadow.cautions, topReasons: (shadow.reasons || []).slice(0, 3),
+    };
+    if (comparison.disagreementType === 'live_ready_shadow_not_ready') cases.liveReadyShadowNotReady.push(compactCase);
+    if (comparison.disagreementType === 'shadow_ready_live_not_ready') cases.shadowReadyLiveNotReady.push(compactCase);
+    if (comparison.disagreementType === 'live_high_shadow_not_high') cases.liveHighShadowNotHigh.push(compactCase);
+    if (comparison.disagreementType === 'shadow_high_live_not_high') cases.shadowHighLiveNotHigh.push(compactCase);
+  });
+
+  return {
+    modelVersion: SHADOW_MODEL_VERSION,
+    generatedAt: new Date().toISOString(),
+    total: list.length,
+    byStage: byStage, byClassification: byClassification, bySetupPath: bySetupPath, byTimeframe: byTimeframe,
+    agreementCount: agreementCount, disagreementCount: disagreementCount,
+    agreementRate: list.length > 0 ? (agreementCount / list.length) : null,
+    disagreementTypes: disagreementTypes,
+    liveReadyCount: liveReadyCount, shadowReadyCount: shadowReadyCount,
+    liveHighConvictionCount: liveHighConvictionCount, shadowHighConvictionCount: shadowHighConvictionCount,
+    cases: cases,
+  };
+}// classification, card class, or action.
 function getMarketEvidenceShadowLabel(evidence) {
   if (!evidence) return 'INSUFFICIENT';
   const { direction, alignment } = evidence;
@@ -11102,6 +11421,109 @@ function toggleDetail(symbol){
 // styles — no new CSS. Must degrade safely: any failure here returns a
 // small inline error note rather than throwing (which would blank the
 // whole Full Analysis panel) or silently omitting the section.
+// TDAS V4.9.5 T6 — per-card Shadow Evaluation diagnostic section. Reads
+// d.shadowEvaluation/d.shadowComparison (attached additively in runScan(),
+// see that function's own T6 comment) — never recomputes them, never
+// alters card-front presentation or Advisory wording. Degrades safely to
+// "Unavailable" for any card that hasn't been through a T6-aware scan yet
+// (e.g. older in-memory state, or a card with no genuine evidence).
+function buildShadowEvaluationDiagnosticHtml(d) {
+  try {
+    const se = d && d.shadowEvaluation;
+    if (!se) {
+      return '<div class="ap-section">'
+        + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.5</div>'
+        + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>'
+        + '</div>';
+    }
+    const sc = d.shadowComparison || null;
+    const dash = '\u2014';
+    const cap = function(w) { return (w && w !== 'unknown') ? (String(w).charAt(0).toUpperCase() + String(w).slice(1).replace(/_/g, ' ')) : 'Unknown'; };
+    const yn = function(v) { return v === true ? 'Yes' : v === false ? 'No' : 'Unknown'; };
+    const snap = se.evidenceSnapshot || {};
+    const setupPathLabelMap = { four_h_led: '4H-led', direct_four_h: 'Direct 4H', standalone_one_h: 'Standalone 1H' };
+    const setupPathLabel = setupPathLabelMap[snap.setupPath] || 'Unknown';
+    const disagreementLabelMap = {
+      none: 'None', live_ready_shadow_not_ready: 'Live ready, shadow not ready',
+      shadow_ready_live_not_ready: 'Shadow ready, live not ready',
+      live_high_shadow_not_high: 'Live High Conviction, shadow not',
+      shadow_high_live_not_high: 'Shadow High Conviction, live not',
+      classification_difference: 'Classification difference',
+    };
+    const disagreementLabel = sc ? (disagreementLabelMap[sc.disagreementType] || 'Unknown') : dash;
+
+    return '<div class="ap-section">'
+      + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.5</div>'
+      + '<div class="ap-row"><span>Stage</span><span>' + se.stage + ' \u00b7 ' + cap(se.stageKey) + '</span></div>'
+      + '<div class="ap-row"><span>Classification</span><span>' + cap(se.classification) + '</span></div>'
+      + '<div class="ap-row"><span>Executable</span><span>' + yn(se.executable) + '</span></div>'
+      + '<div class="ap-row"><span>Setup Path</span><span>' + setupPathLabel + '</span></div>'
+      + '<div class="ap-row"><span>Counter-Structure</span><span>' + yn(snap.counterStructure) + '</span></div>'
+      + '<div class="ap-row"><span>Counter-HTF</span><span>' + yn(snap.counterHtf) + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Blockers</span><span style="font-size:11px;text-align:right;">' + ((se.blockers && se.blockers.length) ? se.blockers.join(', ') : 'None') + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Cautions</span><span style="font-size:11px;text-align:right;">' + ((se.cautions && se.cautions.length) ? se.cautions.join(', ') : 'None') + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Supports</span><span style="font-size:11px;text-align:right;">' + ((se.supports && se.supports.length) ? se.supports.slice(0, 4).join(', ') : 'None') + '</span></div>'
+      + '<div class="ap-row"><span>Live vs Shadow</span><span>' + disagreementLabel + '</span></div>'
+      + '</div>'
+      + buildShadowCensusDiagnosticHtml();
+  } catch (e) {
+    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildShadowEvaluationDiagnosticHtml] render failure', e);
+    return '<div class="ap-section"><div class="ap-section-title">Shadow Evaluation \u2014 V4.9.5</div>'
+      + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div></div>';
+  }
+}
+
+// TDAS V4.9.5 T6 — compact scan-level shadow census diagnostic view.
+// Reads the module-level _shadowCensus (rebuilt from scratch every
+// runScan(), see that function's own T6 comment) — current completed
+// scan only, no cross-scan accumulation, no persistence, no network.
+// Appended into the SAME existing per-card diagnostic panel location
+// (smallest coherent diagnostic surface) rather than introducing any new
+// UI element.
+function buildShadowCensusDiagnosticHtml() {
+  try {
+    const c = (typeof _shadowCensus !== 'undefined') ? _shadowCensus : null;
+    if (!c) {
+      return '<div class="ap-section"><div class="ap-section-title">Shadow Census \u2014 Current Scan</div>'
+        + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable (no completed scan yet)</span></div></div>';
+    }
+    const pct = (c.agreementRate != null) ? (Math.round(c.agreementRate * 1000) / 10) + '%' : dashChar();
+    const stageStr = Object.keys(c.byStage).sort(function(a, b) { return Number(a) - Number(b); })
+      .map(function(k) { return 'S' + k + ':' + c.byStage[k]; }).join(', ') || 'None';
+    const disagreementStr = Object.keys(c.disagreementTypes)
+      .filter(function(k) { return k !== 'none'; })
+      .map(function(k) { return k + ':' + c.disagreementTypes[k]; }).join(', ') || 'None';
+    return '<div class="ap-section">'
+      + '<div class="ap-section-title">Shadow Census \u2014 Current Scan (' + c.modelVersion + ')</div>'
+      + '<div class="ap-row"><span>Total Evaluated</span><span>' + c.total + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Stage Distribution</span><span style="font-size:11px;text-align:right;">' + stageStr + '</span></div>'
+      + '<div class="ap-row"><span>Live vs Shadow Ready</span><span>' + c.liveReadyCount + ' vs ' + c.shadowReadyCount + '</span></div>'
+      + '<div class="ap-row"><span>Live vs Shadow High Conviction</span><span>' + c.liveHighConvictionCount + ' vs ' + c.shadowHighConvictionCount + '</span></div>'
+      + '<div class="ap-row"><span>Agreement Rate</span><span>' + pct + ' (' + c.agreementCount + '/' + c.total + ')</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Disagreement Types</span><span style="font-size:11px;text-align:right;">' + disagreementStr + '</span></div>'
+      + '<div class="ap-row"><span></span><span><button type="button" onclick="copyShadowCensusJson()" style="font-size:11px;padding:3px 8px;">Copy shadow census JSON</button></span></div>'
+      + '</div>';
+  } catch (e) {
+    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildShadowCensusDiagnosticHtml] render failure', e);
+    return '<div class="ap-section"><div class="ap-section-title">Shadow Census \u2014 Current Scan</div>'
+      + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div></div>';
+  }
+}
+function dashChar() { return '\u2014'; }
+
+// TDAS V4.9.5 T6 — copies only the in-memory current-scan census to the
+// clipboard. Does not write to storage, does not change scan behaviour.
+function copyShadowCensusJson() {
+  try {
+    const json = JSON.stringify((typeof _shadowCensus !== 'undefined') ? _shadowCensus : null, null, 2);
+    if (navigator && navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json);
+    }
+  } catch (e) {
+    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[copyShadowCensusJson] failed', e);
+  }
+}
+
 function buildMarketEvidenceDiagnosticHtml(d){
   try {
     const ev = d && d.evidence;
@@ -11109,7 +11531,8 @@ function buildMarketEvidenceDiagnosticHtml(d){
       return '<div class="ap-section">'
         + '<div class="ap-section-title">Market Evidence (diagnostic)</div>'
         + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>'
-        + '</div>';
+        + '</div>'
+        + buildShadowEvaluationDiagnosticHtml(d);
     }
     const dash = '\u2014';
     const dirLabel = ev.direction === 'bullish' ? 'Bullish' : ev.direction === 'bearish' ? 'Bearish' : 'Neutral';
@@ -11381,7 +11804,8 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + '<div class="ap-row"><span>Source TF \u00b7 View</span><span>' + (src.view ? src.view.toUpperCase() : dash) + '</span></div>'
       + '<div class="ap-row"><span>Source TF \u00b7 Setup</span><span>' + (src.setup ? src.setup.toUpperCase() : dash) + '</span></div>'
       + '<div class="ap-row"><span>Source TF \u00b7 HTF</span><span>' + (src.htf ? src.htf.toUpperCase() : dash) + '</span></div>'
-      + '</div>';
+      + '</div>'
+      + buildShadowEvaluationDiagnosticHtml(d);
   } catch(e){
     if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildMarketEvidenceDiagnosticHtml] render failure', e);
     return '<div class="ap-section"><div class="ap-section-title">Market Evidence (diagnostic)</div>'
@@ -15137,6 +15561,10 @@ function showTab(name){
 // ── Main scan ────────────────────────────────────────────────────────────
 let _scanRunning   = false;
 let _scanGeneration = 0;  // incremented on every runScan() call; used to discard stale renders
+// TDAS V4.9.5 T6 — current-completed-scan shadow census only. Rebuilt from
+// scratch on every runScan() call (see below); never persisted, never sent
+// over the network, never accumulated across scans.
+let _shadowCensus = null;
 
 // TDAS V4.5 Task 2 re-fix — root cause of "Failed to load" cards appearing
 // from auto-refresh (both the original mobile report and the desktop
@@ -15199,6 +15627,32 @@ async function runScan(auto){
     return;
   }
   // Sort: active trades (5) → watching (4) → high conviction (3) → signals (2) → neutral (1) → errors (0)
+  // TDAS V4.9.5 T6 — shadow evaluation + current-scan census. Purely
+  // additive: attaches new `shadowEvaluation`/`shadowComparison` fields to
+  // each fulfilled scan result (never overwriting any existing field) and
+  // rebuilds the module-level `_shadowCensus` from scratch for this scan
+  // only (no cross-scan accumulation, no persistence, no network). Runs
+  // BEFORE the sort below but never influences it — `indexed.sort()` reads
+  // only its own existing sortScore()/highConviction/signal logic, none of
+  // which this block touches.
+  try {
+    const _shadowEntries = [];
+    results.forEach(function(r, i) {
+      if (r.status !== 'fulfilled' || !r.value) return;
+      const v = r.value;
+      if (!v.evidence) return; // no genuine MarketEvidence to shadow-classify
+      const shadowEvaluation = _shadowEvaluate(v.evidence);
+      const live = _liveClassificationFromD(v);
+      const shadowComparison = _shadowCompare(shadowEvaluation, live);
+      v.shadowEvaluation = shadowEvaluation;
+      v.shadowComparison = shadowComparison;
+      _shadowEntries.push({ symbol: PAIRS[i], tf: v.tf, comparison: shadowComparison });
+    });
+    _shadowCensus = _buildShadowCensus(_shadowEntries);
+  } catch (e) {
+    if (DEBUG_MODE) console.warn('[T6 Shadow] census build failed (non-fatal, diagnostic only)', e);
+    _shadowCensus = null;
+  }
   const indexed = results.map((r,i) => ({r, sym: PAIRS[i]}));
   indexed.sort((a, b) => {
     const av = a.r.status==='fulfilled' ? a.r.value : null;
