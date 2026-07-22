@@ -934,6 +934,27 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .ap-census-pills{display:flex;flex-wrap:wrap;gap:6px;}
 .ap-census-pill{background:var(--bg2);border:1px solid var(--border);border-radius:99px;padding:2px 8px;font-size:11px;font-family:var(--mono);color:var(--text2);white-space:nowrap;}
 
+/* TDAS V4.9.11 — Structure and Regime timeframe-comparison grid. Purely
+   presentational: same canonical values, no recalculation. display:contents
+   on the header/row wrappers lets each one's own <span> children
+   participate directly in the outer grid's column tracks, so semantic
+   per-row markup can still be used instead of one flat span list. */
+.ap-tf-grid{display:grid;grid-template-columns:1fr auto auto;gap:5px 14px;font-size:13px;color:var(--text2);margin:2px 0 8px 0;max-width:100%;}
+.ap-tf-grid-header{display:contents;}
+.ap-tf-grid-header span{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.3px;text-align:right;}
+.ap-tf-grid-header span:first-child{text-align:left;visibility:hidden;}
+.ap-tf-grid-row{display:contents;}
+.ap-tf-grid-row span:first-child{color:var(--text2);}
+.ap-tf-grid-row span:not(:first-child){font-family:var(--mono);color:var(--text);text-align:right;white-space:nowrap;}
+@media (max-width:480px){
+  .ap-tf-grid{display:block;}
+  .ap-tf-grid-header{display:none;}
+  .ap-tf-grid-row{display:flex;flex-direction:column;padding:5px 0;border-bottom:1px solid var(--border);}
+  .ap-tf-grid-row:last-child{border-bottom:none;}
+  .ap-tf-grid-row span:first-child{color:var(--text3);font-size:11px;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:2px;}
+  .ap-tf-grid-row span:not(:first-child){text-align:left;display:inline-block;margin-right:12px;}
+}
+
 /* ── Decision Log ── */
 .log-section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;}
 .log-section-header h2{font-size:17px;font-weight:500;}
@@ -1643,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.10';
+const APP_BUILD = 'V4.9.11';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -12033,6 +12054,25 @@ function _apSubgroupHeading(title) {
   return '<div class="ap-subgroup-heading">' + title + '</div>';
 }
 
+// TDAS V4.9.11 — Market Evidence Structure and Regime timeframe-comparison
+// grid. Pure string builder: takes already-resolved display values only
+// (never recalculates anything, never touches raw evidence fields
+// itself — callers resolve each cell's text exactly as the old individual
+// rows did). `rows` is an array of { label, setupValue, htfValue }.
+// Real timeframe labels are used when available (e.g. "4H"/"1D"); falls
+// back to "Setup TF"/"HTF" generically when a real label is unavailable
+// (never fabricates a timeframe that wasn't actually provided).
+function _apTfComparisonGrid(rows, setupTfLabel, htfTfLabel) {
+  const dash = '\u2014';
+  const setupHeader = (setupTfLabel && setupTfLabel !== dash) ? setupTfLabel : 'Setup TF';
+  const htfHeader = (htfTfLabel && htfTfLabel !== dash) ? htfTfLabel : 'HTF';
+  const headerHtml = '<div class="ap-tf-grid-header"><span></span><span>' + setupHeader + '</span><span>' + htfHeader + '</span></div>';
+  const rowsHtml = (rows || []).map(function(r) {
+    return '<div class="ap-tf-grid-row"><span>' + r.label + '</span><span>' + r.setupValue + '</span><span>' + r.htfValue + '</span></div>';
+  }).join('');
+  return '<div class="ap-tf-grid">' + headerHtml + rowsHtml + '</div>';
+}
+
 // TDAS V4.9.10 — toggle a single section open/closed. Pure DOM
 // interaction; never touches any data field. Keeps aria-expanded and the
 // chevron/body visibility (via the `ap-collapsed` class) in sync.
@@ -12502,27 +12542,37 @@ function buildMarketEvidenceDiagnosticHtml(d){
     const comp = ev.components || {};
     const tfLabel = (d && d.tf) ? String(d.tf).toUpperCase() : dash;
     const htfLabelTf = (d && d.htf) ? String(d.htf).toUpperCase() : dash;
-    const temaStructureRow = (() => {
-      const t = comp.temaStructure || {};
-      const relWord = t.alignment === 'aligned' ? 'aligned' : t.alignment === 'opposed' ? 'opposed' : t.alignment === 'neutral' ? 'neutral' : null;
-      const tfPart = (relWord && tfLabel !== dash && htfLabelTf !== dash) ? (tfLabel + '/' + htfLabelTf + ' ' + relWord) : null;
-      return '<div class="ap-row"><span>TEMA Structure</span><span>' + capWord(t.direction) + (tfPart ? (' \u00b7 ' + tfPart) : '') + '</span></div>';
-    })();
-    const temaMomentumRow = '<div class="ap-row"><span>TEMA Momentum</span><span>' + capWord((comp.temaStructure || {}).momentum) + '</span></div>';
-    const utDirectionRow = (() => {
-      const u = comp.utDirection || {};
-      const relWord = (u.direction && u.direction !== 'unknown' && u.adjacentDirection && u.adjacentDirection !== 'unknown')
-        ? (u.direction === u.adjacentDirection ? 'aligned' : 'opposed') : null;
-      const tfPart = (relWord && tfLabel !== dash && htfLabelTf !== dash) ? (tfLabel + '/' + htfLabelTf + ' ' + relWord) : null;
-      return '<div class="ap-row"><span>UT Direction</span><span>' + capWord(u.direction) + (tfPart ? (' \u00b7 ' + tfPart) : '') + '</span></div>';
-    })();
-    const ma200Row = (() => {
-      const m = comp.ma200Relation || {};
-      const setupPart = (tfLabel !== dash && m.setup && m.setup !== 'unknown') ? (tfLabel + ': ' + capWord(m.setup)) : null;
-      const adjPart = (htfLabelTf !== dash && m.adjacent && m.adjacent !== 'unknown') ? (htfLabelTf + ': ' + capWord(m.adjacent)) : null;
-      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
-      return '<div class="ap-row"><span>200MA Relation</span><span>' + text + '</span></div>';
-    })();
+    // TDAS V4.9.11 — Structure and Regime timeframe-comparison grid.
+    // Replaces five individual cramped two-column rows (TEMA Structure, UT
+    // Direction, 200MA Relation, 200MA Slope, TEMA 92 vs 200MA) with one
+    // compact grid — same canonical values, same underlying fields, no
+    // recalculation. Alignment (previously an inline "· 4H/1D aligned"
+    // suffix baked into each cell) now shows once per concept, beneath the
+    // grid, using the existing canonical alignment value(s) — never a new
+    // interpretation.
+    const _tScomp = comp.temaStructure || {};
+    const _uDcomp = comp.utDirection || {};
+    const _m200 = comp.ma200Relation || {};
+    const _regimeInputs = comp.ma200RegimeInputs || {};
+    const _setupSlopeState = ((_regimeInputs.setup || {}).slope || {}).state;
+    const _adjSlopeState = ((_regimeInputs.adjacent || {}).slope || {}).state;
+    const _setupTema92Rel = (_regimeInputs.setup || {}).tema92Relation;
+    const _adjTema92Rel = (_regimeInputs.adjacent || {}).tema92Relation;
+    const _structureGrid = _apTfComparisonGrid([
+      { label: 'TEMA Structure', setupValue: capWord(_tScomp.direction), htfValue: capWord(_tScomp.adjacentDirection) },
+      { label: 'UT Direction', setupValue: capWord(_uDcomp.direction), htfValue: capWord(_uDcomp.adjacentDirection) },
+      { label: '200MA Relation', setupValue: capWord(_m200.setup), htfValue: capWord(_m200.adjacent) },
+      { label: '200MA Slope', setupValue: capWord(_setupSlopeState), htfValue: capWord(_adjSlopeState) },
+      { label: 'TEMA 92 vs 200MA', setupValue: capWord(_setupTema92Rel), htfValue: capWord(_adjTema92Rel) },
+    ], tfLabel, htfLabelTf);
+    const _temaAlignmentLabel = (_tScomp.alignment === 'aligned') ? 'Aligned' : (_tScomp.alignment === 'opposed') ? 'Opposed' : (_tScomp.alignment === 'neutral') ? 'Neutral' : 'Unknown';
+    const _utAlignmentLabel = (_uDcomp.direction && _uDcomp.direction !== 'unknown' && _uDcomp.adjacentDirection && _uDcomp.adjacentDirection !== 'unknown')
+      ? (_uDcomp.direction === _uDcomp.adjacentDirection ? 'Aligned' : 'Opposed') : 'Unknown';
+    const _structureAlignmentRows = '<div class="ap-row"><span>TEMA structure alignment</span><span>' + _temaAlignmentLabel + '</span></div>'
+      + '<div class="ap-row"><span>UT direction alignment</span><span>' + _utAlignmentLabel + '</span></div>';
+    // TDAS V4.9.11 — unchanged, kept compact per doctrine (not part of the
+    // comparison grid — momentum is a single-timeframe concept).
+    const temaMomentumRow = '<div class="ap-row"><span>TEMA Momentum</span><span>' + capWord(_tScomp.momentum) + '</span></div>';
     const adxRow = (() => {
       const a = comp.adxState || {};
       const baseText = (a.value != null) ? (capWord(a.state) + ' (' + a.value.toFixed(1) + ')') : 'Unknown';
@@ -12573,29 +12623,10 @@ function buildMarketEvidenceDiagnosticHtml(d){
       if (!ee.closedCandleConfirmed) return '';
       return '<div class="ap-row"><span>Stage 6 eligible</span><span>' + (ee.stageSixEligible ? 'Yes' : 'No') + '</span></div>';
     })();
-    // TDAS V4.9 T1 — additive diagnostic-only rows. Reads
-    // ev.components.ma200RegimeInputs (see _marketEvidenceComponents());
-    // degrades safely to "Unknown" when absent (older cached evidence
-    // objects from before this task). Not used to classify, cap, block or
-    // promote anything yet — display only.
-    const ma200SlopeRow = (() => {
-      const r = comp.ma200RegimeInputs || {};
-      const setupSlope = (r.setup && r.setup.slope) || {};
-      const adjSlope = (r.adjacent && r.adjacent.slope) || {};
-      const setupPart = (tfLabel !== dash && setupSlope.state && setupSlope.state !== 'unknown') ? (tfLabel + ': ' + capWord(setupSlope.state)) : null;
-      const adjPart = (htfLabelTf !== dash && adjSlope.state && adjSlope.state !== 'unknown') ? (htfLabelTf + ': ' + capWord(adjSlope.state)) : null;
-      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
-      return '<div class="ap-row"><span>200MA Slope</span><span>' + text + '</span></div>';
-    })();
-    const tema92Ma200Row = (() => {
-      const r = comp.ma200RegimeInputs || {};
-      const setupRel = (r.setup && r.setup.tema92Relation) || 'unknown';
-      const adjRel = (r.adjacent && r.adjacent.tema92Relation) || 'unknown';
-      const setupPart = (tfLabel !== dash && setupRel !== 'unknown') ? (tfLabel + ': ' + capWord(setupRel)) : null;
-      const adjPart = (htfLabelTf !== dash && adjRel !== 'unknown') ? (htfLabelTf + ': ' + capWord(adjRel)) : null;
-      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
-      return '<div class="ap-row"><span>TEMA 92 vs 200MA</span><span>' + text + '</span></div>';
-    })();
+    // TDAS V4.9.11 — ma200SlopeRow/tema92Ma200Row removed: both are now
+    // columns in _structureGrid above (same canonical
+    // ma200RegimeInputs.{setup,adjacent}.slope/tema92Relation fields, same
+    // values — only the presentation changed).
     // TDAS V4.9.2 T3 — additive, diagnostic-only rows. Reads
     // ev.components.ma200RegimeInputs.{setup,adjacent}.{chop,regime} (see
     // _marketEvidenceComponents()); degrades safely to "Unknown" when
@@ -12608,14 +12639,24 @@ function buildMarketEvidenceDiagnosticHtml(d){
       const noun = n === 1 ? 'crossing' : 'crossings';
       return label + ' \u00b7 ' + n + ' ' + noun + ' / ' + chop.windowBars + ' bars';
     }
+    // TDAS V4.9.11 — converted from a single cramped comma-joined
+    // right-aligned line into a full-width stacked block, one timeframe
+    // per line, via the shared _apStackedRow() helper (same one used
+    // elsewhere in Market Evidence/Shadow Evaluation since V4.9.10). Same
+    // exact data, same exact wording per timeframe — only the layout
+    // changed. Falls back to a single "Unknown" bullet when neither
+    // timeframe has a resolvable value (matching _apStackedRow's own
+    // empty-array behaviour).
     const ma200RegimeRow = (() => {
       const r = comp.ma200RegimeInputs || {};
       const setupRegime = (r.setup && r.setup.regime) || 'unknown';
       const adjRegime = (r.adjacent && r.adjacent.regime) || 'unknown';
       const setupPart = (tfLabel !== dash && setupRegime !== 'unknown') ? (tfLabel + ': ' + capWord(setupRegime.replace(/_/g, ' '))) : null;
       const adjPart = (htfLabelTf !== dash && adjRegime !== 'unknown') ? (htfLabelTf + ': ' + capWord(adjRegime.replace(/_/g, ' '))) : null;
-      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
-      return '<div class="ap-row"><span>200MA Regime</span><span>' + text + '</span></div>';
+      const parts = [setupPart, adjPart].filter(Boolean);
+      // Unknown (data unavailable) is a distinct concept from an empty
+      // list — never rendered as _apStackedRow's generic "None" fallback.
+      return _apStackedRow('200MA Regime', parts.length ? parts : ['Unknown']);
     })();
     const ma200ChopRow = (() => {
       const r = comp.ma200RegimeInputs || {};
@@ -12623,8 +12664,8 @@ function buildMarketEvidenceDiagnosticHtml(d){
       const adjChop = (r.adjacent && r.adjacent.chop) || {};
       const setupPart = (tfLabel !== dash && setupChop.state && setupChop.state !== 'unknown') ? (tfLabel + ': ' + formatChopText(setupChop)) : null;
       const adjPart = (htfLabelTf !== dash && adjChop.state && adjChop.state !== 'unknown') ? (htfLabelTf + ': ' + formatChopText(adjChop)) : null;
-      const text = [setupPart, adjPart].filter(Boolean).join(' \u00b7 ') || 'Unknown';
-      return '<div class="ap-row"><span>200MA Chop</span><span>' + text + '</span></div>';
+      const parts = [setupPart, adjPart].filter(Boolean);
+      return _apStackedRow('200MA Chop', parts.length ? parts : ['Unknown']);
     })();
     // TDAS V4.9.3 T4 — additive, diagnostic-only rows. Reads
     // ev.components.oneHTimingEvidence (see _oneHTimingEvidenceFromD());
@@ -12745,15 +12786,12 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + '<div class="ap-row"><span>Trend Quality</span><span>' + trendLabel + '</span></div>'
       + '<div class="ap-row"><span>Extension</span><span>' + extLabel + '</span></div>'
       + _apSubgroupHeading('Structure and regime')
-      + temaStructureRow
+      + _structureGrid
+      + _structureAlignmentRows
       + temaMomentumRow
-      + utDirectionRow
-      + ma200Row
       + adxRow
       + adjacentAdxRow
       + rsiRow
-      + ma200SlopeRow
-      + tema92Ma200Row
       + ma200RegimeRow
       + ma200ChopRow
       + _apSubgroupHeading('Execution')
