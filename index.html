@@ -1607,7 +1607,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.8';
+const APP_BUILD = 'V4.9.9';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2727,6 +2727,27 @@ function avgVol(v,p=20){if(!v||v.length<p)return null;const s=v.slice(-p);return
 // ── Safe accessor helpers — prevent crashes on undefined/null data ────────
 // Use these everywhere instead of direct property access on potentially-null objects.
 function safeNum(v, fallback=0){ return (v!=null&&isFinite(v))?+v:fallback; }
+
+// TDAS V4.9.9 — canonical DISPLAY-specific R-multiple helper. Fixes the
+// confirmed audit defect: the Trade Ready card showed `stop15` as the
+// visible stop, but the displayed R multiple (`structR`) was calculated
+// from `structStop` (a different, swing-based stop never shown to the
+// user) — producing a visible arithmetic contradiction. This helper
+// computes the R multiple from the SAME price/stop/target values actually
+// displayed alongside it — never structStop. Pure: no DOM access, no
+// mutation, deterministic. Returns null (never NaN/Infinity/negative) for
+// any invalid geometry — a long stop at/above entry, a long target at/
+// below entry, and their short mirrors, all return null, as does any
+// missing/non-finite input.
+function _calculateDisplayedR(direction, price, stop, target) {
+  if (direction !== 'long' && direction !== 'short') return null;
+  if (price == null || !isFinite(price) || stop == null || !isFinite(stop) || target == null || !isFinite(target)) return null;
+  const riskDistance = (direction === 'long') ? (price - stop) : (stop - price);
+  const rewardDistance = (direction === 'long') ? (target - price) : (price - target);
+  if (!(riskDistance > 0) || !(rewardDistance > 0)) return null;
+  const r = rewardDistance / riskDistance;
+  return isFinite(r) ? r : null;
+}
 function safeStr(v, fallback='—'){ return (v!=null&&v!=='')?String(v):fallback; }
 function safeFmt(v){ return (v!=null&&isFinite(v))?fmt(v):'—'; }
 function safeUtBot(u){ return u&&typeof u==='object'?u:{direction:0,barsAgoFlip:99,recentSignal:'none',signal:'none',trailLevel:0}; }
@@ -7345,14 +7366,20 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
     + '</div>'
     : '';
 
-  // Risk plan — existing values only, no new calculation. stop15/target2 are
-  // the same ATR-based levels already shown in the card's own levels box;
-  // structR is already computed in calcPair (structStop/structR), reused
-  // as-is rather than recomputed here.
+  // Risk plan — existing values only, no new calculation beyond the new
+  // V4.9.9 display-specific helper. stop15/target2 are the same ATR-based
+  // levels already shown in the card's own levels box. TDAS V4.9.9 —
+  // FIXED: this row previously showed structR (calculated from
+  // structStop, a DIFFERENT, never-displayed swing-based stop) alongside
+  // the visibly different stopVal (stop15) below — a confirmed display
+  // contradiction. Now uses d.displayR, calculated from the SAME
+  // price/stop15/target2 values shown here (see
+  // _calculateDisplayedR()'s own header comment). structStop/structR
+  // remain unchanged and available for any other internal consumer.
   const entryVal  = d.price   != null ? fmt(d.price)   : '\u2014';
   const stopVal   = d.stop15  != null ? fmt(d.stop15)  : '\u2014';
   const targetVal = d.target2 != null ? fmt(d.target2) : '\u2014';
-  const rVal      = d.structR != null && d.structR !== '\u2014' ? d.structR + 'R' : null;
+  const rVal      = d.displayR != null ? d.displayR + 'R' : null;
 
   return '<div class="trade-ready-checklist">'
     + '<div class="trade-ready-exec-header">'
@@ -9964,6 +9991,14 @@ async function calcPair(symbol,tf){
   const structR=signal==='long'
     ? (_longRisk>0 ? ((target2-price)/_longRisk).toFixed(2) : '—')
     : (_shortRisk>0 ? ((price-target2)/_shortRisk).toFixed(2) : '—');
+  // TDAS V4.9.9 — canonical DISPLAY-specific R multiple. Computed from the
+  // SAME price/stop15/target2 values actually shown alongside it on the
+  // Trade Ready card (never structStop — see _calculateDisplayedR()'s own
+  // header comment for the full rationale). structStop/structR themselves
+  // are UNCHANGED above — kept for any existing internal/diagnostic
+  // consumer, never overwritten with a new meaning.
+  const _displayRNum = (signal === 'long' || signal === 'short') ? _calculateDisplayedR(signal, price, stop15, target2) : null;
+  const displayR = (_displayRNum != null) ? _displayRNum.toFixed(2) : null;
   // Compute tradeStage and tradeAgeHours before returning
   const tradeStage    = getTradeStage({signal,utBot}, tf);
   const tradeAgeHours = getTradeAgeHours({utBot}, tf);
@@ -9993,6 +10028,9 @@ async function calcPair(symbol,tf){
     // before this task.
     adxPrev3,htfAdx,htfAdxPrev3,
     structStop,structR,
+    // TDAS V4.9.9 — canonical display-specific R multiple (see
+    // _calculateDisplayedR()'s own header comment). Additive only.
+    displayR,
     minsRemaining,secsRemaining,candleClosePct,
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
     tradeStage,tradeAgeHours,
@@ -12194,12 +12232,14 @@ function _buildFullAnalysisCopyText(d, symbol) {
   row('Entry (price)', (d.price != null && isFinite(d.price)) ? d.price : 'Unknown');
   row('Stop (1.5x ATR)', (d.stop15 != null && isFinite(d.stop15)) ? d.stop15 : 'Unknown');
   row('Target (2.5x ATR / Fib)', (d.target2 != null && isFinite(d.target2)) ? d.target2 : 'Unknown');
-  // TDAS V4.9.8 — deliberately NOT recalculated; copies the SAME displayed
-  // value shown on the Trade Ready back card (d.structR), including its
-  // known pre-existing inconsistency (see the V4.9.5 audit's separate,
-  // still-open R-multiple finding). Correcting it is explicitly out of
-  // scope for this task.
-  row('Displayed R multiple', (d.structR != null) ? (d.structR + 'R') : 'Unknown');
+  // TDAS V4.9.9 — FIXED: previously copied d.structR verbatim, which was
+  // calculated from structStop (a different, never-displayed stop) rather
+  // than the stop15/target2 values shown two rows above — the confirmed
+  // V4.9.5 audit finding. Now copies the SAME canonical d.displayR field
+  // the Full Analysis popout and Trade Ready card both use — never
+  // recomputed independently here, so the copied text always matches the
+  // visible value exactly.
+  row('Displayed R multiple', (d.displayR != null) ? (d.displayR + 'R') : 'Not available');
 
   return lines.join('\n');
 }
@@ -13131,6 +13171,7 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span>${signal==='long'?'Stop (1.5× ATR)':'Target (2× ATR)'}</span><span style="color:${signal==='long'?'var(--red-text)':'var(--green-text)'};">${fmt(signal==='long'?stop15:target2)}</span></div>
       <div class="ap-row"><span>Entry (signal)</span><span>${fmt(price)}</span></div>
       <div class="ap-row"><span>${signal==='long'?'Target (2× ATR)':'Stop (1.5× ATR)'}</span><span style="color:${signal==='long'?'var(--green-text)':'var(--red-text)'};">${fmt(signal==='long'?target2:stop15)}</span></div>
+      <div class="ap-row"><span>Displayed R multiple</span><span>${d.displayR!=null?d.displayR+'R':'Not available'}</span></div>
     </div>`:''}
   `;
 
