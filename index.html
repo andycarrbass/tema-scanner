@@ -881,6 +881,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   padding:14px 16px;display:flex;justify-content:space-between;align-items:center;
 }
 .ap-title{font-size:14px;font-weight:600;color:var(--text);}
+.ap-header-actions{display:flex;align-items:center;gap:6px;flex-shrink:0;}
+.ap-copy{font-size:12px;color:var(--text2);background:var(--bg3,var(--bg));border:1px solid var(--border);border-radius:var(--radius-sm,4px);cursor:pointer;line-height:1;padding:5px 9px;display:flex;align-items:center;gap:4px;white-space:nowrap;min-height:28px;transition:color 0.15s,border-color 0.15s;}
+.ap-copy:hover{color:var(--text);border-color:var(--text3);}
+.ap-copy:focus-visible,.ap-close:focus-visible{outline:2px solid var(--blue-text,#4a9eff);outline-offset:1px;}
+.ap-copy.ap-copy-success{color:var(--green-text);border-color:var(--green-text);}
+.ap-copy.ap-copy-error{color:var(--red-text);border-color:var(--red-text);}
 .ap-close{font-size:20px;color:var(--text3);background:none;border:none;cursor:pointer;line-height:1;padding:2px 6px;}
 .ap-close:hover{color:var(--text);}
 .ap-body{padding:16px;display:flex;flex-direction:column;gap:12px;}
@@ -1472,7 +1478,10 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 <div class="analysis-panel" id="analysisPanel">
   <div class="ap-header">
     <span class="ap-title" id="apTitle">Analysis</span>
-    <button class="ap-close" onclick="closeAnalysisPanel()">✕</button>
+    <div class="ap-header-actions">
+      <button class="ap-copy" id="apCopyBtn" type="button" onclick="copyFullAnalysisFromButton(this)" title="Copy full analysis" aria-label="Copy full analysis">📋 Copy</button>
+      <button class="ap-close" onclick="closeAnalysisPanel()" aria-label="Close analysis">✕</button>
+    </div>
   </div>
   <div class="ap-body" id="apBody"></div>
 </div>
@@ -1598,7 +1607,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.7';
+const APP_BUILD = 'V4.9.8';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -11886,6 +11895,400 @@ function copyShadowCensusJson() {
   } catch (e) {
     if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[copyShadowCensusJson] failed', e);
   }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.9.8 — Full Analysis Copy Snapshot                                ║
+// ║                                                                          ║
+// ║  Pure plain-text formatter. Reads ONLY the current scanner result object ║
+// ║  (d, already carrying .evidence/.shadowEvaluation/.shadowComparison/     ║
+// ║  .evaluation/.lifecycle from the existing pipeline) plus the module-     ║
+// ║  level _shadowCensus — never scrapes DOM text, never recalculates any   ║
+// ║  indicator, never mutates d, no network, no persistence. Deterministic: ║
+// ║  identical inputs always produce identical output.                      ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function _buildFullAnalysisCopyText(d, symbol) {
+  const lines = [];
+  function push(s) { lines.push(s); }
+  function blank() { lines.push(''); }
+  function heading(title) { blank(); push('=== ' + title + ' ==='); }
+  function row(label, value) { push(label + ': ' + fmtVal(value)); }
+  function fmtVal(v) {
+    if (v === null || v === undefined) return 'Unknown';
+    if (typeof v === 'number') return isFinite(v) ? String(v) : 'Unknown';
+    const s = String(v);
+    return s === '' ? 'Unknown' : s;
+  }
+  function listRows(label, arr) {
+    push(label + ':');
+    const clean = (arr || []).filter(function(x) { return x != null && String(x).trim() !== ''; });
+    if (!clean.length) { push('- None'); return; }
+    const seen = {}; 
+    clean.forEach(function(x) {
+      const s = String(x).replace(/\r?\n/g, ' ');
+      if (!seen[s]) { seen[s] = true; push('- ' + s); }
+    });
+  }
+  function capWord(w) {
+    if (w == null || w === 'unknown') return 'Unknown';
+    return String(w).charAt(0).toUpperCase() + String(w).slice(1).replace(/_/g, ' ');
+  }
+  function yn(v) { return v === true ? 'Yes' : v === false ? 'No' : 'Unknown'; }
+
+  if (!d) { push('Not available'); return lines.join('\n'); }
+
+  const ev = d.evidence || null;
+  const comp = (ev && ev.components) || {};
+  const sourceTf = (ev && ev.sourceTf) || { view: d.tf || null, setup: d.tf || null, htf: d.htf || null };
+
+  // ── Header ────────────────────────────────────────────────────────────
+  push('TDAS FULL ANALYSIS');
+  row('App build', (typeof APP_BUILD !== 'undefined') ? APP_BUILD : null);
+  var _now;
+  try {
+    _now = new Date().toLocaleString('en-GB', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  } catch (e) { _now = new Date().toISOString(); }
+  row('Generated', _now);
+  row('Symbol', (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : (symbol || d.symbol || null));
+  row('View timeframe', sourceTf.view ? String(sourceTf.view).toUpperCase() : null);
+  row('Setup timeframe', sourceTf.setup ? String(sourceTf.setup).toUpperCase() : null);
+  row('HTF timeframe', sourceTf.htf ? String(sourceTf.htf).toUpperCase() : null);
+  row('Price', (d.price != null && isFinite(d.price)) ? ('$' + d.price) : null);
+
+  // ── TDAS Advisory ─────────────────────────────────────────────────────
+  heading('TDAS ADVISORY');
+  var adv = null;
+  try {
+    if (typeof buildAdvisory === 'function' && typeof resolveMarketEvidenceEntry === 'function') {
+      adv = buildAdvisory(d, resolveMarketEvidenceEntry(symbol, d.tf));
+    }
+  } catch (e) { adv = null; }
+  if (adv) {
+    row('Action', adv.action || adv.headline);
+    row('Summary', adv.headline || null);
+    if (adv.detail) row('Guidance', adv.detail);
+    listRows('Supporting', adv.supporting);
+    listRows('Warnings', adv.warnings);
+    listRows('Blocking', adv.blocking);
+  } else {
+    push('Not available');
+  }
+
+  // ── Market Evidence ───────────────────────────────────────────────────
+  heading('MARKET EVIDENCE');
+  if (ev) {
+    row('Direction', ev.direction);
+    row('Alignment', ev.alignment);
+    row('HTF context', ev.htfContext);
+    row('Market context', ev.marketContext);
+    row('Trend quality', ev.trendQuality);
+    row('Extension', ev.extension);
+    row('Setup integrity', ev.setupIntegrity);
+    row('Stage', ev.stage);
+    listRows('Evidence blockers', ev.blockers);
+    if (comp.temaStructure) {
+      row('TEMA structure (setup)', comp.temaStructure.direction);
+      row('TEMA structure (adjacent)', comp.temaStructure.adjacentDirection);
+      row('TEMA alignment', comp.temaStructure.alignment);
+      row('TEMA momentum', comp.temaStructure.momentum);
+    }
+    if (comp.utDirection) {
+      row('UT direction (setup)', comp.utDirection.direction);
+      row('UT direction (adjacent)', comp.utDirection.adjacentDirection);
+    }
+    if (comp.ma200Relation) {
+      row('200MA relation (setup)', comp.ma200Relation.setup);
+      row('200MA relation (adjacent)', comp.ma200Relation.adjacent);
+    }
+    if (comp.adxState) row('ADX state (setup)', comp.adxState.value != null ? (capWord(comp.adxState.state) + ' (' + comp.adxState.value.toFixed(1) + ')') : 'Unknown');
+    if (comp.adjacentAdxState) row('ADX state (adjacent)', comp.adjacentAdxState.value != null ? (capWord(comp.adjacentAdxState.state) + ' (' + comp.adjacentAdxState.value.toFixed(1) + ')') : 'Unknown');
+    if (comp.ma200RegimeInputs) {
+      const s = comp.ma200RegimeInputs.setup || {}, a = comp.ma200RegimeInputs.adjacent || {};
+      row('200MA regime (setup)', s.regime);
+      row('200MA regime (adjacent)', a.regime);
+      row('200MA chop (setup)', s.chop ? (capWord(s.chop.state) + (s.chop.crossings != null ? (' \u00b7 ' + s.chop.crossings + '/' + s.chop.windowBars) : '')) : 'Unknown');
+    }
+    if (comp.executionExtension) {
+      const ee = comp.executionExtension;
+      row('Execution extension', (ee.timeframe && ee.timeframe !== 'unknown') ? (ee.timeframe + ': ' + capWord(ee.state)) : capWord(ee.state));
+      row('Execution extension \u2014 closed-bar ATR distance', ee.currentBarAtrDistance != null ? ee.currentBarAtrDistance.toFixed(2) : 'Unknown');
+      row('Execution extension \u2014 previous closed bar', ee.previousBarAtrDistance != null ? ee.previousBarAtrDistance.toFixed(2) : 'Unknown');
+      row('Execution extension \u2014 Stage 6 eligible', yn(ee.stageSixEligible));
+    }
+    if (comp.utOpposition) {
+      row('UT opposition (setup)', comp.utOpposition.setup && comp.utOpposition.setup.state);
+      row('UT opposition (1H)', comp.utOpposition.oneH && comp.utOpposition.oneH.state);
+    }
+    if (comp.rsiContext) {
+      row('RSI context (setup)', comp.rsiContext.setup && comp.rsiContext.setup.state);
+      row('RSI context (1H)', comp.rsiContext.oneH && comp.rsiContext.oneH.state);
+    }
+    if (comp.oneHTimingEvidence) {
+      row('1H RSI timing', comp.oneHTimingEvidence.rsi && comp.oneHTimingEvidence.rsi.state);
+      row('1H ADX trigger', comp.oneHTimingEvidence.adx && comp.oneHTimingEvidence.adx.state);
+      row('1H trigger state', comp.oneHTimingEvidence.trigger && comp.oneHTimingEvidence.trigger.state);
+    }
+    row('Setup path', comp.setupPath && comp.setupPath.state);
+    row('Timing state', comp.timingState && comp.timingState.state);
+    listRows('Timing reason', comp.timingState && comp.timingState.reasons);
+  } else {
+    push('Not available');
+  }
+
+  // ── Shadow Evaluation ─────────────────────────────────────────────────
+  heading('SHADOW EVALUATION');
+  const se = d.shadowEvaluation || null;
+  const sc = d.shadowComparison || null;
+  if (se) {
+    row('Model', se.modelVersion);
+    row('Stage', se.stage + ' \u2014 ' + capWord(se.stageKey));
+    row('Classification', capWord(se.classification));
+    row('Executable', yn(se.executable));
+    const snap = se.evidenceSnapshot || {};
+    const spLabelMap = { four_h_led: '4H-led', direct_four_h: 'Direct 4H', standalone_one_h: 'Standalone 1H' };
+    row('Setup path', spLabelMap[snap.setupPath] || 'Unknown');
+    row('Counter-structure', yn(snap.counterStructure));
+    row('Counter-HTF', yn(snap.counterHtf));
+    listRows('Blockers', se.blockers);
+    listRows('Cautions', se.cautions);
+    listRows('Supports', se.supports);
+    if (sc) {
+      row('Decision agreement', yn(sc.decisionAgreement));
+      row('High Conviction agreement', yn(sc.highConvictionAgreement));
+      row('Classification difference', sc.classificationDifference ? 'Yes' : 'No');
+      const disagreementLabelMap = {
+        none: 'None', live_ready_shadow_not_ready: 'Live ready, shadow not ready',
+        shadow_ready_live_not_ready: 'Shadow ready, live not ready',
+        live_high_shadow_not_high: 'Live High Conviction, shadow not',
+        shadow_high_live_not_high: 'Shadow High Conviction, live not',
+      };
+      row('Actionable disagreement', disagreementLabelMap[sc.disagreementType] || 'None');
+    }
+  } else {
+    push('Not available');
+  }
+
+  // ── Shadow Census — Current Scan ─────────────────────────────────────
+  heading('SHADOW CENSUS \u2014 CURRENT SCAN');
+  const census = (typeof _shadowCensus !== 'undefined') ? _shadowCensus : null;
+  if (census) {
+    row('Total evaluated', census.total);
+    const stageStr = Object.keys(census.byStage).sort(function(a, b) { return Number(a) - Number(b); })
+      .map(function(k) { return 'S' + k + ':' + census.byStage[k]; }).join(', ') || 'None';
+    row('Stage distribution', stageStr);
+    row('Live vs shadow ready', census.liveReadyCount + ' vs ' + census.shadowReadyCount);
+    function fmtCensusRate(rateVal, agreeCount, eligibleCount) {
+      if (rateVal == null) return 'Not directly comparable';
+      return (Math.round(rateVal * 1000) / 10) + '% (' + agreeCount + '/' + eligibleCount + ')';
+    }
+    row('Decision agreement', fmtCensusRate(census.decisionAgreementRate, census.decisionAgreementCount, census.decisionAgreementEligibleCount));
+    row('High Conviction agreement', fmtCensusRate(census.highConvictionAgreementRate, census.highConvictionAgreementCount, census.highConvictionAgreementEligibleCount));
+    row('Overall decision agreement', fmtCensusRate(census.overallAgreementRate, census.overallAgreementCount, census.overallAgreementEligibleCount));
+    const disagreementStr = Object.keys(census.disagreementTypes || {})
+      .filter(function(k) { return k !== 'none'; })
+      .map(function(k) { return k + ':' + census.disagreementTypes[k]; }).join(', ') || 'None';
+    row('Disagreement types', disagreementStr);
+  } else {
+    push('Not available');
+  }
+
+  // ── Signal Summary ────────────────────────────────────────────────────
+  heading('SIGNAL SUMMARY');
+  row('Signal', d.signal ? capWord(d.signal) : 'Neutral');
+  row('Score', d.score);
+  if (d.evaluation) {
+    row('Confirm count', d.evaluation.confirmCount);
+    row('Action bias', d.evaluation.actionBias);
+    row('Setup quality', d.evaluation.setupQuality);
+  }
+  row('HTF alignment', d.htfAlign);
+  row('High Conviction (live)', yn(!!d.highConviction));
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────
+  heading('LIFECYCLE');
+  if (d.lifecycle) {
+    row('State', d.lifecycle.state);
+    row('Stage', d.lifecycle.stage);
+    row('Confidence', d.lifecycle.confidence);
+    listRows('Reasons', d.lifecycle.reasons);
+  } else {
+    push('Not available');
+  }
+
+  // ── Evaluation ────────────────────────────────────────────────────────
+  heading('EVALUATION');
+  if (d.evaluation) {
+    const _ev2 = d.evaluation;
+    row('Trade bias', _ev2.tradeBias);
+    row('Action bias', _ev2.actionBias);
+    row('Setup quality', _ev2.setupQuality);
+    row('High probability', yn(_ev2.highProbability));
+    row('Score', _ev2.score);
+    row('Confirm count', _ev2.confirmCount);
+    listRows('Reasons', _ev2.reasons);
+    listRows('Warnings', _ev2.warnings);
+    listRows('Blockers', _ev2.blockers);
+  } else {
+    push('Not available');
+  }
+
+  // ── HTF Context ───────────────────────────────────────────────────────
+  heading('HTF CONTEXT');
+  if (d.htfTrendContext) {
+    row('State', d.htfTrendContext.text);
+    row('TEMA momentum', d.htfWidening ? 'Widening' : 'Converging');
+    if (d.htfUtBot) row('UT Bot', (d.htfUtBot.direction === 1 ? 'Bullish' : 'Bearish') + (d.htfUtBot.barsAgoFlip != null ? (' \u00b7 ' + d.htfUtBot.barsAgoFlip + ' bars since flip') : ''));
+  } else {
+    push('Not available');
+  }
+
+  // ── Indicator Checklist ───────────────────────────────────────────────
+  heading('INDICATOR CHECKLIST');
+  row('Price vs 200MA', d.aboveMA != null ? (d.aboveMA ? 'Above' : 'Below') : 'Unknown');
+  row('MA distance %', (d.maDist != null && isFinite(d.maDist)) ? d.maDist.toFixed(2) : 'Unknown');
+  row('RSI', (d.rsi != null && isFinite(d.rsi)) ? d.rsi.toFixed(1) : 'Unknown');
+  row('Volume ratio', (d.volRatio != null && isFinite(d.volRatio)) ? d.volRatio.toFixed(2) : 'Unknown');
+  row('Volume OK', yn(!!d.volOk));
+
+  // ── TEMA Detail ───────────────────────────────────────────────────────
+  heading('TEMA DETAIL');
+  row('TEMA 17', (d.t17 != null && isFinite(d.t17)) ? d.t17.toFixed(4) : 'Unknown');
+  row('TEMA 92', (d.t92 != null && isFinite(d.t92)) ? d.t92.toFixed(4) : 'Unknown');
+  row('Cross long', yn(!!d.crossLong));
+  row('Cross short', yn(!!d.crossShort));
+  row('TEMA separation', (d.temaSep != null && isFinite(d.temaSep)) ? d.temaSep.toFixed(4) : 'Unknown');
+  row('TEMA widening', yn(!!d.temaWidening));
+
+  // ── Momentum and Trend ────────────────────────────────────────────────
+  heading('MOMENTUM AND TREND');
+  row('ADX', (d.adx != null && isFinite(d.adx)) ? d.adx.toFixed(1) : 'Unknown');
+  row('ADX trending', yn(!!d.adxTrending));
+  row('ADX strong', yn(!!d.adxStrong));
+  row('Trend SMA (' + (d.trendSMALabel || 'n/a') + ')', (d.trendSMA != null && isFinite(d.trendSMA)) ? d.trendSMA : 'Unknown');
+  row('Above trend SMA', yn(d.aboveTrendSMA));
+  row('EMA50', (d.ema50 != null && isFinite(d.ema50)) ? d.ema50.toFixed(4) : 'Unknown');
+  row('EMA50 distance %', (d.ema50Dist != null && isFinite(d.ema50Dist)) ? d.ema50Dist.toFixed(2) : 'Unknown');
+
+  // ── UT Bot ────────────────────────────────────────────────────────────
+  heading('UT BOT');
+  const _ut = safeUtBot(d.utBot);
+  row('Direction', _ut.direction === 1 ? 'Bullish' : _ut.direction === -1 ? 'Bearish' : 'Flat');
+  row('Bars since flip', _ut.barsAgoFlip);
+  row('Recent signal', _ut.recentSignal);
+  row('Trail level', (_ut.trailLevel != null && isFinite(_ut.trailLevel)) ? _ut.trailLevel : 'Unknown');
+  row('UT long confirm', yn(!!d.utLongConfirm));
+  row('UT short confirm', yn(!!d.utShortConfirm));
+  row('UT fresh', yn(!!d.utFresh));
+
+  // ── Fibonacci Levels ──────────────────────────────────────────────────
+  heading('FIBONACCI LEVELS');
+  row('Swing high (50)', (d.swingH50 != null && isFinite(d.swingH50)) ? d.swingH50 : 'Unknown');
+  row('Swing low (50)', (d.swingL50 != null && isFinite(d.swingL50)) ? d.swingL50 : 'Unknown');
+  row('Fib 1.618 extension', (d.fib1618 != null && isFinite(d.fib1618)) ? d.fib1618 : 'Unknown');
+  row('Fib 2.618 extension', (d.fib2618 != null && isFinite(d.fib2618)) ? d.fib2618 : 'Unknown');
+  row('Fib 0.618 retrace', (d.fibRetrace618 != null && isFinite(d.fibRetrace618)) ? d.fibRetrace618 : 'Unknown');
+
+  // ── Risk Levels ───────────────────────────────────────────────────────
+  heading('RISK LEVELS');
+  row('ATR', (d.atr != null && isFinite(d.atr)) ? d.atr.toFixed(4) : 'Unknown');
+  row('Entry (price)', (d.price != null && isFinite(d.price)) ? d.price : 'Unknown');
+  row('Stop (1.5x ATR)', (d.stop15 != null && isFinite(d.stop15)) ? d.stop15 : 'Unknown');
+  row('Target (2.5x ATR / Fib)', (d.target2 != null && isFinite(d.target2)) ? d.target2 : 'Unknown');
+  // TDAS V4.9.8 — deliberately NOT recalculated; copies the SAME displayed
+  // value shown on the Trade Ready back card (d.structR), including its
+  // known pre-existing inconsistency (see the V4.9.5 audit's separate,
+  // still-open R-multiple finding). Correcting it is explicitly out of
+  // scope for this task.
+  row('Displayed R multiple', (d.structR != null) ? (d.structR + 'R') : 'Unknown');
+
+  return lines.join('\n');
+}
+
+// TDAS V4.9.8 — Full Analysis Copy Snapshot button handler. Runs only on
+// direct user interaction (the button's own onclick). Resynchronises
+// evidence/shadow via the existing V4.9.6 helper immediately before
+// generating text — idempotent, a no-op if already fresh, so this never
+// duplicates work the panel's own open/async-refresh paths already did.
+// Never fetches candles, never triggers runScan(), never closes the
+// panel, never changes scroll position.
+function copyFullAnalysisFromButton(btnEl) {
+  try {
+    const symbol = _openAnalysisSymbol;
+    const d = (symbol && typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+    if (!d) { _apCopyFeedback(btnEl, false); return; }
+    if (typeof _refreshShadowFromCurrentEvidence === 'function') {
+      const _didRefresh = _refreshShadowFromCurrentEvidence(d, { rebuildEvidence: true, symbol: symbol });
+      if (_didRefresh && typeof _rebuildShadowCensusFromCurrentScanData === 'function') {
+        _rebuildShadowCensusFromCurrentScanData();
+      }
+    }
+    const text = _buildFullAnalysisCopyText(d, symbol);
+    _copyTextToClipboard(text).then(function(success) { _apCopyFeedback(btnEl, success); });
+  } catch (e) {
+    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[copyFullAnalysisFromButton] failed', e);
+    _apCopyFeedback(btnEl, false);
+  }
+}
+
+// TDAS V4.9.8 — Clipboard API with a safe execCommand('copy') fallback for
+// environments where navigator.clipboard is unavailable or the promise
+// rejects (insecure context, permission denial, etc). Always resolves —
+// never throws — with a boolean success flag.
+function _copyTextToClipboard(text) {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(text).then(function() { return true; }).catch(function() {
+        return _copyTextToClipboardFallback(text);
+      });
+    }
+  } catch (e) { /* fall through to fallback */ }
+  return Promise.resolve(_copyTextToClipboardFallback(text));
+}
+function _copyTextToClipboardFallback(text) {
+  try {
+    if (typeof document === 'undefined' || !document.createElement) return false;
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-9999px';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    if (ta.setSelectionRange) ta.setSelectionRange(0, text.length);
+    const okCopy = document.execCommand ? document.execCommand('copy') : false;
+    document.body.removeChild(ta);
+    return !!okCopy;
+  } catch (e) {
+    return false;
+  }
+}
+
+// TDAS V4.9.8 — brief, non-blocking button feedback ("Copied ✓" / "Copy
+// failed"), restored after ~1.7s. Safe against repeated clicks — each
+// click clears any pending restore timer on that same element first, so
+// rapid re-clicks never leave the button stuck in the feedback state or
+// race two competing restores.
+function _apCopyFeedback(btnEl, success) {
+  if (!btnEl) return;
+  try {
+    if (btnEl._apCopyTimer) { clearTimeout(btnEl._apCopyTimer); btnEl._apCopyTimer = null; }
+    const original = (btnEl._apCopyOriginalHtml != null) ? btnEl._apCopyOriginalHtml : btnEl.innerHTML;
+    btnEl._apCopyOriginalHtml = original;
+    btnEl.classList.remove('ap-copy-success', 'ap-copy-error');
+    if (success) {
+      btnEl.classList.add('ap-copy-success');
+      btnEl.innerHTML = '\u2713 Copied';
+    } else {
+      btnEl.classList.add('ap-copy-error');
+      btnEl.innerHTML = 'Copy failed';
+    }
+    btnEl._apCopyTimer = setTimeout(function() {
+      btnEl.classList.remove('ap-copy-success', 'ap-copy-error');
+      btnEl.innerHTML = original;
+      btnEl._apCopyTimer = null;
+    }, 1700);
+  } catch (e) { /* feedback is cosmetic only — never fatal */ }
 }
 
 function buildMarketEvidenceDiagnosticHtml(d){
