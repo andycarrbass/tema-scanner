@@ -1598,7 +1598,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.5';
+const APP_BUILD = 'V4.9.6';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -4879,27 +4879,86 @@ function _liveClassificationFromD(d) {
 // TDAS V4.9.5 T6 — non-authoritative shadow-vs-live comparison. Pure;
 // mutates nothing; never consumed by rendering, sorting, Advisory, alerts,
 // or persistence.
+// TDAS V4.9.6 — non-authoritative shadow-vs-live comparison. Pure;
+// mutates nothing; never consumed by rendering, sorting, Advisory, alerts,
+// or persistence.
+//
+// V4.9.5 audit finding (preserved verbatim per doctrine): live.classification
+// (no_setup/avoid/watch/consider/strong) and shadow.classification (unknown/
+// blocked/counter_structure/developing/awaiting_trigger/early_trigger/
+// setup_valid_entry_not_optimal/trade_ready/high_conviction_candidate)
+// share NO common string values — raw equality is therefore never a
+// meaningful "agreement" signal and was producing a near-permanent
+// classification_difference on every comparison. V4.9.6 replaces the
+// single misleading `agreement` boolean with four explicit, independently
+// null-able fields, and moves the raw-label check to its own
+// `classificationDifference` boolean (per the doctrine's "cleaner
+// approach" preference) rather than folding it into `disagreementType`.
 function _shadowCompare(shadow, live) {
-  const shadowReady = !!(shadow && shadow.executable);
-  const shadowHigh = !!(shadow && shadow.highConvictionEligible && shadow.stage === 10);
+  const shadowExecutable = (shadow && (shadow.executable === true || shadow.executable === false)) ? shadow.executable : null;
   const liveReady = !!(live && live.tradeReady);
   const liveHigh = !!(live && live.highConviction);
+
+  // decisionAgreement — only comparable when shadow.executable is a
+  // genuine boolean (never at Stage 0, where it is null by design).
+  const decisionAgreement = (shadowExecutable === null) ? null : (liveReady === shadowExecutable);
+
+  // highConvictionAgreement — the canonical shadow High Conviction signal
+  // is classification === 'high_conviction_candidate' (true only at Stage
+  // 10, by construction of _shadowEvaluate()'s own finalize() calls).
+  // "Genuinely unknown" is Stage 0, where highConvictionEligible is null.
+  const shadowHighConvictionUnknown = !!(shadow && shadow.highConvictionEligible === null);
+  const shadowHigh = !!(shadow && shadow.classification === 'high_conviction_candidate');
+  const highConvictionAgreement = shadowHighConvictionUnknown ? null : (liveHigh === shadowHigh);
+
+  // classificationAgreement — per doctrine, do NOT invent a coarse mapping
+  // in this task; no already-existing canonical mapping was found during
+  // audit, so this stays null (ineligible) until one is documented.
+  const classificationAgreement = null;
+
+  const overallAgreement = (decisionAgreement === null || highConvictionAgreement === null)
+    ? null
+    : (decisionAgreement === true && highConvictionAgreement === true);
+
+  // disagreementType is now reserved for genuine Trade Ready / High
+  // Conviction differences only — classification label differences never
+  // appear here (see classificationDifference below instead), and can no
+  // longer override or imply a decision disagreement.
   let disagreementType = 'none';
-  if (liveReady && !shadowReady) disagreementType = 'live_ready_shadow_not_ready';
-  else if (!liveReady && shadowReady) disagreementType = 'shadow_ready_live_not_ready';
-  else if (liveHigh && !shadowHigh) disagreementType = 'live_high_shadow_not_high';
-  else if (!liveHigh && shadowHigh) disagreementType = 'shadow_high_live_not_high';
-  else if (live && shadow && live.classification !== shadow.classification) disagreementType = 'classification_difference';
-  return { live, shadow, agreement: disagreementType === 'none', disagreementType };
+  if (decisionAgreement === false) {
+    disagreementType = liveReady ? 'live_ready_shadow_not_ready' : 'shadow_ready_live_not_ready';
+  } else if (highConvictionAgreement === false) {
+    disagreementType = liveHigh ? 'live_high_shadow_not_high' : 'shadow_high_live_not_high';
+  }
+
+  const classificationDifference = !!(live && shadow && live.classification !== shadow.classification);
+
+  return {
+    live, shadow,
+    decisionAgreement, highConvictionAgreement, classificationAgreement, overallAgreement,
+    disagreementType,
+    classificationDifference,
+    // Backward-compatible alias of decisionAgreement — NOT exact
+    // classification-label agreement. Retained (rather than removed) so
+    // any earlier consumer of the boolean `agreement` field degrades
+    // gracefully; every place it is surfaced in diagnostics is relabeled
+    // "Decision agreement" so it can never be mistaken for label equality.
+    agreement: decisionAgreement,
+  };
 }
 
-// TDAS V4.9.5 T6 — current-completed-scan census only (no cross-scan
+// TDAS V4.9.6 — current-completed-scan census only (no cross-scan
 // accumulation, no persistence, no network). Pure aggregation over an
-// array of { symbol, tf, comparison }.
+// array of { symbol, tf, comparison }. Rates are computed only over
+// entries where the relevant comparison is non-null ("eligible"); zero
+// eligible entries yields `null`, never NaN/Infinity/a misleading 0%.
 function _buildShadowCensus(entries) {
   const list = entries || [];
   const byStage = {}, byClassification = {}, bySetupPath = {}, byTimeframe = {}, disagreementTypes = {};
-  let agreementCount = 0, disagreementCount = 0;
+  let decisionAgreementCount = 0, decisionDisagreementCount = 0, decisionAgreementEligibleCount = 0;
+  let highConvictionAgreementCount = 0, highConvictionDisagreementCount = 0, highConvictionAgreementEligibleCount = 0;
+  let classificationAgreementCount = 0, classificationDisagreementCount = 0, classificationAgreementEligibleCount = 0;
+  let overallAgreementCount = 0, overallDisagreementCount = 0, overallAgreementEligibleCount = 0;
   let liveReadyCount = 0, shadowReadyCount = 0, liveHighConvictionCount = 0, shadowHighConvictionCount = 0;
   const cases = { liveReadyShadowNotReady: [], shadowReadyLiveNotReady: [], liveHighShadowNotHigh: [], shadowHighLiveNotHigh: [] };
 
@@ -4911,12 +4970,29 @@ function _buildShadowCensus(entries) {
     const sp = (shadow.evidenceSnapshot && shadow.evidenceSnapshot.setupPath) || 'unknown';
     bySetupPath[sp] = (bySetupPath[sp] || 0) + 1;
     byTimeframe[tf] = (byTimeframe[tf] || 0) + 1;
-    if (comparison.agreement) agreementCount++; else disagreementCount++;
     disagreementTypes[comparison.disagreementType] = (disagreementTypes[comparison.disagreementType] || 0) + 1;
+
+    if (comparison.decisionAgreement !== null) {
+      decisionAgreementEligibleCount++;
+      if (comparison.decisionAgreement) decisionAgreementCount++; else decisionDisagreementCount++;
+    }
+    if (comparison.highConvictionAgreement !== null) {
+      highConvictionAgreementEligibleCount++;
+      if (comparison.highConvictionAgreement) highConvictionAgreementCount++; else highConvictionDisagreementCount++;
+    }
+    if (comparison.classificationAgreement !== null) {
+      classificationAgreementEligibleCount++;
+      if (comparison.classificationAgreement) classificationAgreementCount++; else classificationDisagreementCount++;
+    }
+    if (comparison.overallAgreement !== null) {
+      overallAgreementEligibleCount++;
+      if (comparison.overallAgreement) overallAgreementCount++; else overallDisagreementCount++;
+    }
+
     if (live.tradeReady) liveReadyCount++;
-    if (shadow.executable) shadowReadyCount++;
+    if (shadow.executable === true) shadowReadyCount++;
     if (live.highConviction) liveHighConvictionCount++;
-    if (shadow.highConvictionEligible && shadow.stage === 10) shadowHighConvictionCount++;
+    if (shadow.classification === 'high_conviction_candidate') shadowHighConvictionCount++;
 
     const compactCase = {
       symbol: symbol, timeframe: tf,
@@ -4930,18 +5006,115 @@ function _buildShadowCensus(entries) {
     if (comparison.disagreementType === 'shadow_high_live_not_high') cases.shadowHighLiveNotHigh.push(compactCase);
   });
 
+  function rate(agreeCount, eligibleCount) { return eligibleCount > 0 ? (agreeCount / eligibleCount) : null; }
+
   return {
     modelVersion: SHADOW_MODEL_VERSION,
     generatedAt: new Date().toISOString(),
     total: list.length,
     byStage: byStage, byClassification: byClassification, bySetupPath: bySetupPath, byTimeframe: byTimeframe,
-    agreementCount: agreementCount, disagreementCount: disagreementCount,
-    agreementRate: list.length > 0 ? (agreementCount / list.length) : null,
+
+    decisionAgreementCount, decisionDisagreementCount, decisionAgreementEligibleCount,
+    decisionAgreementRate: rate(decisionAgreementCount, decisionAgreementEligibleCount),
+
+    highConvictionAgreementCount, highConvictionDisagreementCount, highConvictionAgreementEligibleCount,
+    highConvictionAgreementRate: rate(highConvictionAgreementCount, highConvictionAgreementEligibleCount),
+
+    classificationAgreementCount, classificationDisagreementCount, classificationAgreementEligibleCount,
+    classificationAgreementRate: rate(classificationAgreementCount, classificationAgreementEligibleCount),
+
+    overallAgreementCount, overallDisagreementCount, overallAgreementEligibleCount,
+    overallAgreementRate: rate(overallAgreementCount, overallAgreementEligibleCount),
+
+    // Backward-compatible aliases of DECISION agreement (never exact
+    // classification-label agreement) — retained per doctrine's option 2.
+    // Every diagnostic label referencing these is renamed to "Decision
+    // agreement" so it cannot be mistaken for label-level agreement.
+    agreementCount: decisionAgreementCount, disagreementCount: decisionDisagreementCount,
+    agreementRate: rate(decisionAgreementCount, decisionAgreementEligibleCount),
+
     disagreementTypes: disagreementTypes,
     liveReadyCount: liveReadyCount, shadowReadyCount: shadowReadyCount,
     liveHighConvictionCount: liveHighConvictionCount, shadowHighConvictionCount: shadowHighConvictionCount,
     cases: cases,
   };
+}
+
+// TDAS V4.9.6 — canonical shadow-refresh helper. Fixes the confirmed
+// V4.9.5 audit defect: d.evidence could be rebuilt (at Analysis-panel-open
+// time, or via the async _ensure1HTimingFor() completion callback) once
+// dedicated 1H timing arrived, while d.shadowEvaluation/d.shadowComparison
+// stayed frozen from whatever evidence existed at scan time — producing a
+// card that showed Market Evidence "4H-led" alongside a stale Shadow
+// Evaluation "Direct 4H". This helper is the single place shadow output is
+// ever (re)built, called from all three authorised sites (initial scan,
+// Analysis-panel staleness rebuild, and the async 1H-timing completion
+// callback) so they can never drift apart again.
+//
+// Staleness identity: reuses the EXACT SAME discipline already
+// established for d.evidence itself (d._evidenceBuiltFrom1hTiming !==
+// d._1hTiming — a reference/value check, never a deep comparison), plus
+// one new marker of the same kind for the shadow layer:
+// d._shadowBuiltFromEvidence — the literal d.evidence object reference
+// shadow was last built from. Shadow is rebuilt if and only if that
+// reference has changed (or is absent) — never on unchanged evidence, so
+// repeatedly opening Analysis for an unchanged card performs no
+// recomputation.
+//
+// No duplicate Stage 0-10 implementation: calls the existing
+// _shadowEvaluate()/_liveClassificationFromD()/_shadowCompare() exactly as
+// before. No raw indicator reconstruction. No mutation of d._1hTiming. No
+// new fetch, no new timer, no recursive analysis-panel rendering, and the
+// scanner result object itself is never replaced — only specific fields
+// on it are assigned.
+function _refreshShadowFromCurrentEvidence(d, options) {
+  options = options || {};
+  if (!d) return false;
+
+  // Step 1 — rebuild d.evidence only when explicitly requested AND
+  // genuinely stale/absent (identical condition to the pre-existing
+  // Analysis-panel staleness check).
+  if (options.rebuildEvidence && typeof buildEvidence === 'function') {
+    const symbol = options.symbol || d.symbol;
+    if (!d.evidence || d._evidenceBuiltFrom1hTiming !== d._1hTiming) {
+      d.evidence = buildEvidence(d, resolveMarketEvidenceEntry(symbol, d.tf));
+      d._evidenceBuiltFrom1hTiming = d._1hTiming;
+    }
+  }
+
+  // Step 2 — rebuild shadow evaluation/comparison only when the evidence
+  // object shadow was built from has genuinely changed (reference check).
+  if (d.evidence && d._shadowBuiltFromEvidence !== d.evidence) {
+    const shadowEvaluation = _shadowEvaluate(d.evidence);
+    const live = _liveClassificationFromD(d);
+    const shadowComparison = _shadowCompare(shadowEvaluation, live);
+    d.shadowEvaluation = shadowEvaluation;
+    d.shadowComparison = shadowComparison;
+    d._shadowBuiltFromEvidence = d.evidence;
+    return true;
+  }
+  return false;
+}
+
+// TDAS V4.9.6 — rebuilds the in-memory current-scan shadow census from
+// currentScanData from scratch (never incrementally patched), so a
+// card-level resynchronisation (see _refreshShadowFromCurrentEvidence()
+// above) is immediately reflected scan-wide. No persistence, no network,
+// no re-scan, no indicator recalculation — purely reads each already-
+// cached result's own .shadowComparison.
+function _rebuildShadowCensusFromCurrentScanData() {
+  try {
+    const _entries = [];
+    if (typeof currentScanData !== 'undefined' && currentScanData) {
+      Object.keys(currentScanData).forEach(function(sym) {
+        const v = currentScanData[sym];
+        if (v && v.shadowComparison) _entries.push({ symbol: sym, tf: v.tf, comparison: v.shadowComparison });
+      });
+    }
+    _shadowCensus = _buildShadowCensus(_entries);
+  } catch (e) {
+    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[T6 Shadow] census resynchronisation failed (non-fatal, diagnostic only)', e);
+  }
 }// classification, card class, or action.
 function getMarketEvidenceShadowLabel(evidence) {
   if (!evidence) return 'INSUFFICIENT';
@@ -11432,7 +11605,7 @@ function buildShadowEvaluationDiagnosticHtml(d) {
     const se = d && d.shadowEvaluation;
     if (!se) {
       return '<div class="ap-section">'
-        + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.5</div>'
+        + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.6</div>'
         + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>'
         + '</div>';
     }
@@ -11443,6 +11616,12 @@ function buildShadowEvaluationDiagnosticHtml(d) {
     const snap = se.evidenceSnapshot || {};
     const setupPathLabelMap = { four_h_led: '4H-led', direct_four_h: 'Direct 4H', standalone_one_h: 'Standalone 1H' };
     const setupPathLabel = setupPathLabelMap[snap.setupPath] || 'Unknown';
+    // TDAS V4.9.6 — disagreementType is now reserved for genuine Trade
+    // Ready / conviction-tier differences only; classification_difference
+    // is never a value of this field anymore (see classificationDiffLabel
+    // below instead, driven by the separate classificationDifference
+    // boolean). The map entry is left in place only as a harmless fallback
+    // for any pre-V4.9.6 cached comparison object still in memory.
     const disagreementLabelMap = {
       none: 'None', live_ready_shadow_not_ready: 'Live ready, shadow not ready',
       shadow_ready_live_not_ready: 'Shadow ready, live not ready',
@@ -11451,9 +11630,13 @@ function buildShadowEvaluationDiagnosticHtml(d) {
       classification_difference: 'Classification difference',
     };
     const disagreementLabel = sc ? (disagreementLabelMap[sc.disagreementType] || 'Unknown') : dash;
+    const agreeLabel = function(v) { return v === true ? 'Yes' : v === false ? 'No' : 'Not directly comparable'; };
+    const decisionAgreementLabel = sc ? agreeLabel(sc.decisionAgreement) : dash;
+    const hcAgreementLabel = sc ? agreeLabel(sc.highConvictionAgreement) : dash;
+    const classificationDiffLabel = sc ? (sc.classificationDifference ? 'Yes (labels not directly comparable)' : 'No') : dash;
 
     return '<div class="ap-section">'
-      + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.5</div>'
+      + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.6</div>'
       + '<div class="ap-row"><span>Stage</span><span>' + se.stage + ' \u00b7 ' + cap(se.stageKey) + '</span></div>'
       + '<div class="ap-row"><span>Classification</span><span>' + cap(se.classification) + '</span></div>'
       + '<div class="ap-row"><span>Executable</span><span>' + yn(se.executable) + '</span></div>'
@@ -11463,7 +11646,10 @@ function buildShadowEvaluationDiagnosticHtml(d) {
       + '<div class="ap-row" style="align-items:flex-start;"><span>Blockers</span><span style="font-size:11px;text-align:right;">' + ((se.blockers && se.blockers.length) ? se.blockers.join(', ') : 'None') + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Cautions</span><span style="font-size:11px;text-align:right;">' + ((se.cautions && se.cautions.length) ? se.cautions.join(', ') : 'None') + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Supports</span><span style="font-size:11px;text-align:right;">' + ((se.supports && se.supports.length) ? se.supports.slice(0, 4).join(', ') : 'None') + '</span></div>'
-      + '<div class="ap-row"><span>Live vs Shadow</span><span>' + disagreementLabel + '</span></div>'
+      + '<div class="ap-row"><span>Decision agreement</span><span>' + decisionAgreementLabel + '</span></div>'
+      + '<div class="ap-row"><span>High Conviction agreement</span><span>' + hcAgreementLabel + '</span></div>'
+      + '<div class="ap-row"><span>Classification difference</span><span>' + classificationDiffLabel + '</span></div>'
+      + '<div class="ap-row"><span>Actionable disagreement</span><span>' + disagreementLabel + '</span></div>'
       + '</div>'
       + buildShadowCensusDiagnosticHtml();
   } catch (e) {
@@ -11487,19 +11673,35 @@ function buildShadowCensusDiagnosticHtml() {
       return '<div class="ap-section"><div class="ap-section-title">Shadow Census \u2014 Current Scan</div>'
         + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable (no completed scan yet)</span></div></div>';
     }
-    const pct = (c.agreementRate != null) ? (Math.round(c.agreementRate * 1000) / 10) + '%' : dashChar();
     const stageStr = Object.keys(c.byStage).sort(function(a, b) { return Number(a) - Number(b); })
       .map(function(k) { return 'S' + k + ':' + c.byStage[k]; }).join(', ') || 'None';
     const disagreementStr = Object.keys(c.disagreementTypes)
       .filter(function(k) { return k !== 'none'; })
       .map(function(k) { return k + ':' + c.disagreementTypes[k]; }).join(', ') || 'None';
+    // TDAS V4.9.6 — non-misleading agreement breakdown. Never headlines a
+    // raw classification-label agreement percentage (see the V4.9.5 audit
+    // finding: the live/shadow vocabularies share no common labels, so a
+    // raw-equality rate is meaningless). Each rate shows only over its own
+    // eligible subset; ineligible (null) rates render as "Not directly
+    // comparable" rather than a misleading 0%/100%.
+    function fmtRate(rateVal, agreeCount, eligibleCount) {
+      if (rateVal == null) return 'Not directly comparable';
+      return (Math.round(rateVal * 1000) / 10) + '% \u00b7 ' + agreeCount + '/' + eligibleCount;
+    }
+    const decisionStr = fmtRate(c.decisionAgreementRate, c.decisionAgreementCount, c.decisionAgreementEligibleCount);
+    const hcStr = fmtRate(c.highConvictionAgreementRate, c.highConvictionAgreementCount, c.highConvictionAgreementEligibleCount);
+    const classStr = fmtRate(c.classificationAgreementRate, c.classificationAgreementCount, c.classificationAgreementEligibleCount);
+    const overallStr = fmtRate(c.overallAgreementRate, c.overallAgreementCount, c.overallAgreementEligibleCount);
     return '<div class="ap-section">'
       + '<div class="ap-section-title">Shadow Census \u2014 Current Scan (' + c.modelVersion + ')</div>'
       + '<div class="ap-row"><span>Total Evaluated</span><span>' + c.total + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Stage Distribution</span><span style="font-size:11px;text-align:right;">' + stageStr + '</span></div>'
       + '<div class="ap-row"><span>Live vs Shadow Ready</span><span>' + c.liveReadyCount + ' vs ' + c.shadowReadyCount + '</span></div>'
       + '<div class="ap-row"><span>Live vs Shadow High Conviction</span><span>' + c.liveHighConvictionCount + ' vs ' + c.shadowHighConvictionCount + '</span></div>'
-      + '<div class="ap-row"><span>Agreement Rate</span><span>' + pct + ' (' + c.agreementCount + '/' + c.total + ')</span></div>'
+      + '<div class="ap-row"><span>Decision agreement</span><span>' + decisionStr + '</span></div>'
+      + '<div class="ap-row"><span>High Conviction agreement</span><span>' + hcStr + '</span></div>'
+      + '<div class="ap-row"><span>Classification agreement</span><span>' + classStr + '</span></div>'
+      + '<div class="ap-row"><span>Overall decision agreement</span><span>' + overallStr + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Disagreement Types</span><span style="font-size:11px;text-align:right;">' + disagreementStr + '</span></div>'
       + '<div class="ap-row"><span></span><span><button type="button" onclick="copyShadowCensusJson()" style="font-size:11px;padding:3px 8px;">Copy shadow census JSON</button></span></div>'
       + '</div>';
@@ -11938,7 +12140,22 @@ function openAnalysisPanel(symbol){
   //   it — not only when d.evidence is completely absent. This is a plain
   //   staleness check against an already-computed value; it does not
   //   recalculate UT Bot, fetch anything, or duplicate any timing logic.
-  if((!d.evidence || d._evidenceBuiltFrom1hTiming !== d._1hTiming) && typeof buildEvidence === 'function'){
+  //
+  // TDAS V4.9.6 — the evidence rebuild above now runs through the shared
+  // _refreshShadowFromCurrentEvidence() helper, which ALSO rebuilds
+  // d.shadowEvaluation/d.shadowComparison whenever d.evidence itself
+  // changed (reference check) — fixing the confirmed V4.9.5 defect where
+  // Market Evidence could show "4H-led" while Shadow Evaluation stayed
+  // frozen at a stale "Direct 4H". If a rebuild genuinely occurred, the
+  // in-memory current-scan census is resynchronised too, so the open
+  // diagnostic panel's census section can never disagree with the card
+  // it's attached to. No rescan, no indicator recalculation.
+  if (typeof _refreshShadowFromCurrentEvidence === 'function') {
+    const _didRefresh = _refreshShadowFromCurrentEvidence(d, { rebuildEvidence: true, symbol: symbol });
+    if (_didRefresh && typeof _rebuildShadowCensusFromCurrentScanData === 'function') {
+      _rebuildShadowCensusFromCurrentScanData();
+    }
+  } else if((!d.evidence || d._evidenceBuiltFrom1hTiming !== d._1hTiming) && typeof buildEvidence === 'function'){
     d.evidence = buildEvidence(d, resolveMarketEvidenceEntry(symbol, d.tf));
     d._evidenceBuiltFrom1hTiming = d._1hTiming;
   }
@@ -11980,7 +12197,16 @@ function openAnalysisPanel(symbol){
       // currentScanData[symbol]._1hTiming itself — not duplicated here.
       if(result && result !== _before1h && _openAnalysisSymbol === symbol && currentScanData[symbol]){
         const _liveD = currentScanData[symbol];
-        if (typeof buildEvidence === 'function') {
+        // TDAS V4.9.6 — same shared helper, so evidence AND shadow
+        // resynchronise together here too (this is precisely the "late
+        // genuine _1hTiming arrival after the panel is open" path the
+        // V4.9.5 audit identified as the primary source of drift).
+        if (typeof _refreshShadowFromCurrentEvidence === 'function') {
+          const _didRefreshAsync = _refreshShadowFromCurrentEvidence(_liveD, { rebuildEvidence: true, symbol: symbol });
+          if (_didRefreshAsync && typeof _rebuildShadowCensusFromCurrentScanData === 'function') {
+            _rebuildShadowCensusFromCurrentScanData();
+          }
+        } else if (typeof buildEvidence === 'function') {
           _liveD.evidence = buildEvidence(_liveD, resolveMarketEvidenceEntry(symbol, _liveD.tf));
           _liveD._evidenceBuiltFrom1hTiming = _liveD._1hTiming;
         }
@@ -15627,26 +15853,26 @@ async function runScan(auto){
     return;
   }
   // Sort: active trades (5) → watching (4) → high conviction (3) → signals (2) → neutral (1) → errors (0)
-  // TDAS V4.9.5 T6 — shadow evaluation + current-scan census. Purely
-  // additive: attaches new `shadowEvaluation`/`shadowComparison` fields to
-  // each fulfilled scan result (never overwriting any existing field) and
-  // rebuilds the module-level `_shadowCensus` from scratch for this scan
-  // only (no cross-scan accumulation, no persistence, no network). Runs
-  // BEFORE the sort below but never influences it — `indexed.sort()` reads
-  // only its own existing sortScore()/highConviction/signal logic, none of
-  // which this block touches.
+  // TDAS V4.9.6 — shadow evaluation + current-scan census, via the shared
+  // _refreshShadowFromCurrentEvidence() helper (see its own header
+  // comment). Purely additive: attaches new `shadowEvaluation`/
+  // `shadowComparison` fields to each fulfilled scan result (never
+  // overwriting any existing field) and rebuilds the module-level
+  // `_shadowCensus` from scratch for this scan only (no cross-scan
+  // accumulation, no persistence, no network). Runs BEFORE the sort below
+  // but never influences it — `indexed.sort()` reads only its own
+  // existing sortScore()/highConviction/signal logic, none of which this
+  // block touches. Evidence is already fresh at this point (calcPair()
+  // just built it), so rebuildEvidence is omitted here — only the
+  // Analysis-panel/async-timing paths below ever need that step.
   try {
     const _shadowEntries = [];
     results.forEach(function(r, i) {
       if (r.status !== 'fulfilled' || !r.value) return;
       const v = r.value;
       if (!v.evidence) return; // no genuine MarketEvidence to shadow-classify
-      const shadowEvaluation = _shadowEvaluate(v.evidence);
-      const live = _liveClassificationFromD(v);
-      const shadowComparison = _shadowCompare(shadowEvaluation, live);
-      v.shadowEvaluation = shadowEvaluation;
-      v.shadowComparison = shadowComparison;
-      _shadowEntries.push({ symbol: PAIRS[i], tf: v.tf, comparison: shadowComparison });
+      _refreshShadowFromCurrentEvidence(v, { symbol: PAIRS[i] });
+      if (v.shadowComparison) _shadowEntries.push({ symbol: PAIRS[i], tf: v.tf, comparison: v.shadowComparison });
     });
     _shadowCensus = _buildShadowCensus(_shadowEntries);
   } catch (e) {
