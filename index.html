@@ -1598,7 +1598,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.6';
+const APP_BUILD = 'V4.9.7';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3096,19 +3096,126 @@ function _setupPathFromValues(setupTf, oneHTimingEvidence) {
   return { state: 'unknown', reasons: ['unsupported or missing setup timeframe'] };
 }
 
+// TDAS V4.9.7 — canonical closed-candle execution-extension evidence.
+// Separate from (and never replacing) the existing, frozen, live-price-
+// based _marketEvidenceExtension() descriptive aggregate — this is a NEW,
+// additive, classifier-oriented object. Named provisional constants:
+// EXECUTION_EXTENSION_ELEVATED_ATR/CLIMACTIC_ATR intentionally mirror the
+// existing MARKET_EVIDENCE_STRETCHED_ATR/CLIMACTIC_ATR numeric values
+// (2.5/3.0) without touching those original constants at all — this task
+// changes WHICH price feeds the distance calculation (closed-candle,
+// never live ticker) and HOW stretched/climactic map to a stage-demoting
+// decision, not the ATR multiples themselves. EXECUTION_RSI_NEAR_EXTREME_*
+// are genuinely new provisional calibration constants (audited: no
+// "near-extreme" RSI concept existed anywhere before this task).
+const EXECUTION_EXTENSION_ELEVATED_ATR = 2.5;
+const EXECUTION_EXTENSION_CLIMACTIC_ATR = 3.0;
+const EXECUTION_RSI_NEAR_EXTREME_LONG = 65;
+const EXECUTION_RSI_NEAR_EXTREME_SHORT = 35;
+
+// TDAS V4.9.7 — direction-aware RSI interpretation for execution-extension
+// purposes only. Reuses the existing canonical MARKET_EVIDENCE_RSI_OVERBOUGHT/
+// OVERSOLD (70/30) constants for the "extreme" tier — no competing
+// threshold system. Extreme-AGAINST-trade (e.g. RSI 15 for a long) is
+// deliberately excluded from both tiers here (mapped to 'not_extreme'),
+// per doctrine: "Do not treat extreme-against-trade as chasing evidence."
+function _executionRsiStateFromValues(direction, rsi) {
+  if ((direction !== 'long' && direction !== 'short') || rsi == null || !isFinite(rsi)) return 'unknown';
+  if (direction === 'long') {
+    if (rsi >= MARKET_EVIDENCE_RSI_OVERBOUGHT) return 'extreme_with_trade';
+    if (rsi >= EXECUTION_RSI_NEAR_EXTREME_LONG) return 'near_extreme_with_trade';
+    return 'not_extreme';
+  }
+  if (rsi <= MARKET_EVIDENCE_RSI_OVERSOLD) return 'extreme_with_trade';
+  if (rsi <= EXECUTION_RSI_NEAR_EXTREME_SHORT) return 'near_extreme_with_trade';
+  return 'not_extreme';
+}
+
+// TDAS V4.9.7 — canonical execution-extension state, built ONLY from
+// closed-candle inputs (atrDistance/prevAtrDistance/rsi are all expected
+// to already be closed-candle-derived by the caller — see calcPair()'s
+// currentBarAtrDistance/previousBarAtrDistance, which use lastClose, never
+// the live ticker price the existing descriptive extension field uses).
+// `elevated` is caution-only (stageSixEligible stays false). `chasing`/
+// `climactic` require genuine confirming evidence — directional near-
+// extreme/extreme RSI, OR persistence across two consecutive closed bars
+// — never a single unconfirmed reading, however large.
+function _executionExtensionFromValues(direction, timeframeLabel, atrDistance, prevAtrDistance, rsi) {
+  const rsiState = _executionRsiStateFromValues(direction, rsi);
+  const prevDistance = (prevAtrDistance != null && isFinite(prevAtrDistance)) ? prevAtrDistance : null;
+
+  if ((direction !== 'long' && direction !== 'short') || atrDistance == null || !isFinite(atrDistance)) {
+    return {
+      timeframe: timeframeLabel || 'unknown', state: 'unknown',
+      atrDistance: null, currentBarAtrDistance: null, previousBarAtrDistance: prevDistance,
+      rsiState, closedCandleConfirmed: false, stageSixEligible: false,
+      reasons: ['Execution extension evidence unavailable'],
+    };
+  }
+
+  const directionalConfirm = (rsiState === 'extreme_with_trade' || rsiState === 'near_extreme_with_trade');
+  const prevQualifies = (prevDistance != null && prevDistance >= EXECUTION_EXTENSION_ELEVATED_ATR);
+  const reasons = [];
+  let state, stageSixEligible;
+
+  if (atrDistance < EXECUTION_EXTENSION_ELEVATED_ATR) {
+    state = 'neutral';
+    stageSixEligible = false;
+  } else if (atrDistance < EXECUTION_EXTENSION_CLIMACTIC_ATR) {
+    if (directionalConfirm) {
+      state = 'chasing'; stageSixEligible = true;
+      reasons.push('Closed-candle chasing evidence', 'Directional RSI confirms extension');
+    } else if (prevQualifies) {
+      state = 'chasing'; stageSixEligible = true;
+      reasons.push('Closed-candle chasing evidence', 'Extension persisted across closed bars');
+    } else {
+      state = 'elevated'; stageSixEligible = false;
+      reasons.push('Closed-candle extension elevated');
+    }
+  } else {
+    if (directionalConfirm) {
+      state = 'climactic'; stageSixEligible = true;
+      reasons.push('Closed-candle climactic extension', 'Directional RSI confirms extension');
+    } else if (prevQualifies) {
+      state = 'climactic'; stageSixEligible = true;
+      reasons.push('Closed-candle climactic extension', 'Extension persisted across closed bars');
+    } else {
+      // 3.0+ on a single closed bar with no confirming evidence at all —
+      // per doctrine's own worked examples, this does not automatically
+      // qualify as climactic; it remains a (stronger) caution only.
+      state = 'elevated'; stageSixEligible = false;
+      reasons.push('Closed-candle extension elevated');
+    }
+  }
+
+  return {
+    timeframe: timeframeLabel || 'unknown', state,
+    atrDistance, currentBarAtrDistance: atrDistance, previousBarAtrDistance: prevDistance,
+    rsiState, closedCandleConfirmed: true, stageSixEligible, reasons,
+  };
+}
+
 // TDAS V4.9.4 T5 — canonical global timing state. Pure helper combining
 // only already-canonical T1-T4 + T5 evidence. Diagnostic only — never
 // consumed by evaluateSetup()/Advisory/Trade Ready/High Conviction.
 // Precedence, per doctrine: unknown > setup_valid_entry_not_optimal >
 // weak > awaiting_one_h_trigger > ready > early_trigger.
-function _timingStateFromInputs(setupPath, oneHTrigger, oneHAdx, setupRsiContext, utOppositionSetup, utOppositionOneH, setupExtension, direction) {
+//
+// TDAS V4.9.7 — the `executionExtension` parameter (canonical closed-
+// candle object) REPLACES the old raw descriptive extension string as the
+// Stage-6-eligible source. `extensionActive` is now
+// `executionExtension.stageSixEligible === true` — the original
+// `stretched || climactic` binary collapse (audited as the confirmed
+// V4.9.5 defect) no longer exists anywhere in this function.
+function _timingStateFromInputs(setupPath, oneHTrigger, oneHAdx, setupRsiContext, utOppositionSetup, utOppositionOneH, executionExtension, direction) {
   const sp = setupPath || { state: 'unknown' };
 
   // 1. unknown
   if (sp.state === 'unknown') return { state: 'unknown', reasons: ['setup path unavailable'] };
   if (direction !== 'long' && direction !== 'short') return { state: 'unknown', reasons: ['intended trade direction unavailable'] };
 
-  const extensionActive = (setupExtension === 'stretched' || setupExtension === 'climactic');
+  const ee = executionExtension || { stageSixEligible: false, reasons: [] };
+  const extensionActive = (ee.stageSixEligible === true);
   const rsiExtremeWithTrade = !!(setupRsiContext && setupRsiContext.state === 'extreme_with_trade');
   const hardOppositionAnywhere = !!((utOppositionSetup && utOppositionSetup.state === 'opposing_hard') || (utOppositionOneH && utOppositionOneH.state === 'opposing_hard'));
 
@@ -3120,7 +3227,7 @@ function _timingStateFromInputs(setupPath, oneHTrigger, oneHAdx, setupRsiContext
     const svenoReasons = [];
     if (oh.state === 'late') svenoReasons.push('1H trigger evidence indicates lateness');
     if (oneHAdx && oneHAdx.state === 'strong_rolling_over') svenoReasons.push('1H ADX strong but rolling over');
-    if (extensionActive) svenoReasons.push('Genuine extension/chasing evidence active');
+    if (extensionActive) (ee.reasons || []).forEach(function(r) { svenoReasons.push(r); });
     if (rsiExtremeWithTrade && extensionActive) svenoReasons.push('RSI extreme with the trade combined with extension evidence');
     if (svenoReasons.length) return { state: 'setup_valid_entry_not_optimal', reasons: svenoReasons };
 
@@ -3145,10 +3252,12 @@ function _timingStateFromInputs(setupPath, oneHTrigger, oneHAdx, setupRsiContext
     // 2. setup_valid_entry_not_optimal (setup-timeframe evidence only — no
     // genuine 1H data exists for this path by definition).
     if (rsiExtremeWithTrade && extensionActive) {
-      return { state: 'setup_valid_entry_not_optimal', reasons: ['RSI extreme with the trade combined with extension evidence (setup timeframe)'] };
+      const r = ['RSI extreme with the trade combined with extension evidence (setup timeframe)'];
+      (ee.reasons || []).forEach(function(x) { r.push(x); });
+      return { state: 'setup_valid_entry_not_optimal', reasons: r };
     }
     if (extensionActive) {
-      return { state: 'setup_valid_entry_not_optimal', reasons: ['Genuine extension/chasing evidence active (setup timeframe)'] };
+      return { state: 'setup_valid_entry_not_optimal', reasons: (ee.reasons && ee.reasons.length) ? ee.reasons.slice() : ['Closed-candle extension evidence active (setup timeframe)'] };
     }
     // 5. ready — only when the setup's own UT timing evidence is
     // genuinely aligned and clean. A direct 4H path never becomes ready
@@ -4477,7 +4586,19 @@ function _marketEvidenceComponents(d, openTrade) {
 
   // Canonical setup path and global timing state.
   const setupPath = _setupPathFromValues(d && d.tf, oneHTimingEvidence);
+  // Original descriptive aggregate — UNCHANGED, still live-ticker-price-
+  // based, still feeds only the existing frozen rsiExtension.state field
+  // below. Never used as a Stage-6/timingState input as of V4.9.7.
   const setupExtensionState = _marketEvidenceExtension(d);
+  // TDAS V4.9.7 — canonical, closed-candle-only execution-extension
+  // object. This is the ONLY source that may set stageSixEligible; see
+  // _executionExtensionFromValues()'s own header comment.
+  const executionExtensionTf = (d && d.tf === '1h') ? '1H' : (d && (d.tf === '4h' || d.tf === '1d')) ? '4H' : 'unknown';
+  const executionExtension = _executionExtensionFromValues(
+    direction, executionExtensionTf,
+    d && d.currentBarAtrDistance, d && d.previousBarAtrDistance,
+    rsiValue
+  );
   const timingState = _timingStateFromInputs(
     setupPath,
     oneHTimingEvidence.trigger,
@@ -4485,7 +4606,7 @@ function _marketEvidenceComponents(d, openTrade) {
     rsiContextSetup,
     utOppositionSetup,
     utOppositionOneH,
-    setupExtensionState,
+    executionExtension,
     direction
   );
 
@@ -4509,6 +4630,10 @@ function _marketEvidenceComponents(d, openTrade) {
     rsiContext: { setup: rsiContextSetup, oneH: rsiContextOneH },
     setupPath,
     timingState,
+    // TDAS V4.9.7 — canonical closed-candle execution-extension evidence
+    // (see _executionExtensionFromValues()'s own header comment). Additive
+    // only; never replaces the original rsiExtension field above.
+    executionExtension,
   };
 }
 
@@ -4568,6 +4693,13 @@ function buildEvidence(d, entry) {
       },
       setupPath: { state: 'unknown', reasons: [] },
       timingState: { state: 'unknown', reasons: [] },
+      // TDAS V4.9.7 — additive, safe all-unknown default.
+      executionExtension: {
+        timeframe: 'unknown', state: 'unknown',
+        atrDistance: null, currentBarAtrDistance: null, previousBarAtrDistance: null,
+        rsiState: 'unknown', closedCandleConfirmed: false, stageSixEligible: false,
+        reasons: [],
+      },
     },
   };
   try {
@@ -4669,6 +4801,12 @@ function _shadowEvaluate(ev) {
   const oneHTrigger = (comp.oneHTimingEvidence && comp.oneHTimingEvidence.trigger) || { state: 'unknown' };
   const oneHAdx = (comp.oneHTimingEvidence && comp.oneHTimingEvidence.adx) || { state: 'unknown' };
   const setupTemaDir = (comp.temaStructure && comp.temaStructure.direction) || 'unknown';
+  // TDAS V4.9.7 — canonical closed-candle execution-extension object.
+  // Only ever read here for an INFORMATIONAL "elevated" caution on an
+  // otherwise-ready stage — stageSixEligible itself already flows into
+  // timingState (see _timingStateFromInputs()), so it is never
+  // re-consulted here to change stage/executable/blockers.
+  const executionExtensionObj = comp.executionExtension || { state: 'unknown', reasons: [] };
   const setupMaRelation = (comp.ma200Relation && comp.ma200Relation.setup) || 'unknown';
 
   const blockers = [], cautions = [], supports = [], reasons = [];
@@ -4780,6 +4918,10 @@ function _shadowEvaluate(ev) {
       supports.push('1H trigger ready');
       if (setupUtOpp.state === 'aligned') supports.push('UT integrity acceptable');
       if (setupUtOpp.state === 'opposing_transitional') cautions.push('UT direction transitional opposition');
+      // TDAS V4.9.7 — elevated extension is informational only here (it
+      // never affects stage/executable, since stageSixEligible would
+      // already have demoted this to Stage 6 via timingState otherwise).
+      if (executionExtensionObj.state === 'elevated') (executionExtensionObj.reasons || []).forEach(function(r) { cautions.push(r); });
       const stage10Eligible = (
         setupRegimeConfirmed &&
         ((direction === 'long' && setupMa200Slope === 'rising') || (direction === 'short' && setupMa200Slope === 'falling')) &&
@@ -4813,6 +4955,7 @@ function _shadowEvaluate(ev) {
       supports.push('1H structure valid');
       supports.push('1H ADX executable');
       supports.push('1H trigger ready');
+      if (executionExtensionObj.state === 'elevated') (executionExtensionObj.reasons || []).forEach(function(r) { cautions.push(r); });
       return finalize(7, 'standalone_one_h_ready', 'trade_ready', true, false);
     }
     if (timingState === 'early_trigger') {
@@ -4843,6 +4986,7 @@ function _shadowEvaluate(ev) {
     if (stage8Eligible) {
       supports.push('4H structure exceptionally clean');
       reasons.push('Direct 4H execution candidate');
+      if (executionExtensionObj.state === 'elevated') (executionExtensionObj.reasons || []).forEach(function(r) { cautions.push(r); });
       return finalize(8, 'direct_four_h_ready', 'trade_ready', true, false);
     }
     reasons.push('Direct 4H setup — timing evidence not yet fully aligned');
@@ -8852,6 +8996,22 @@ async function calcPair(symbol,tf){
     });
   }
   const atr=calcATR(highs,lows,closes,14);
+  // TDAS V4.9.7 — closed-candle execution-extension inputs (current +
+  // previous closed bar). Reuses the SAME already-closed candle series
+  // (highs/lows/closes) atr/trendSMA/rsi themselves already use — no new
+  // fetch, no separate indicator implementation. previousBarAtrDistance
+  // mirrors the exact shift-the-window-and-recompute technique already
+  // established by T1's prevMa200 and T3's chop detection. currentBar*
+  // uses lastClose (the genuinely closed candle's own price) rather than
+  // the live ticker `price` used by the existing descriptive
+  // _marketEvidenceExtension() — this is the specific fix for the
+  // confirmed V4.9.5 audit finding that live intra-candle price could
+  // create a stage-demoting result.
+  const currentBarAtrDistance = (atr != null && atr > 0 && trendSMA != null) ? Math.abs(lastClose - trendSMA) / atr : null;
+  const _prevClosedPrice = closes.length >= 2 ? closes[closes.length-2] : null;
+  const _prevAtr = (highs.length >= 2 && lows.length >= 2 && closes.length >= 2) ? calcATR(highs.slice(0,-1), lows.slice(0,-1), closes.slice(0,-1), 14) : null;
+  const _prevTrendSMA = (tf==='4h'||tf==='1d') ? sma(closes.slice(0,-1), 80) : sma(closes.slice(0,-1), 135);
+  const previousBarAtrDistance = (_prevAtr != null && _prevAtr > 0 && _prevTrendSMA != null && _prevClosedPrice != null) ? Math.abs(_prevClosedPrice - _prevTrendSMA) / _prevAtr : null;
   const aboveMA=ma200!==null?price>ma200:null;
   const maDist=ma200!==null?(price-ma200)/ma200*100:null;
   // aboveMA_closed: last CLOSED candle vs 200MA — as opposed to aboveMA above,
@@ -9812,6 +9972,8 @@ async function calcPair(symbol,tf){
 
   }
   const _result={price,t17,t92,prevT92,ma200,prevMa200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,tf,score,
+    // TDAS V4.9.7 — additive closed-candle execution-extension inputs.
+    currentBarAtrDistance,previousBarAtrDistance,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
     utBot,utLongConfirm,utShortConfirm,utFresh,
     adx,adxTrending,adxStrong,
@@ -11804,6 +11966,31 @@ function buildMarketEvidenceDiagnosticHtml(d){
       const text = (r.value != null) ? (capWord(r.state) + ' (' + r.value.toFixed(1) + ')') : capWord(r.state);
       return '<div class="ap-row"><span>RSI / Extension</span><span>' + text + '</span></div>';
     })();
+    // TDAS V4.9.7 — additive, diagnostic-only rows for the NEW canonical
+    // closed-candle execution-extension object (see
+    // _executionExtensionFromValues()'s own header comment). Deliberately
+    // labeled "Execution Extension" — distinct from the "RSI / Extension"
+    // row above, which remains the original, unchanged, live-price-based
+    // descriptive aggregate. Degrades safely to "Unknown" for older cached
+    // evidence with no executionExtension field at all.
+    const executionExtensionRow = (() => {
+      const ee = comp.executionExtension || {};
+      const tfLabel2 = (ee.timeframe && ee.timeframe !== 'unknown') ? (ee.timeframe + ': ') : '';
+      const text = (ee.state && ee.state !== 'unknown') ? (tfLabel2 + capWord(ee.state)) : 'Unknown';
+      return '<div class="ap-row"><span>Execution Extension</span><span>' + text + '</span></div>';
+    })();
+    const executionExtensionBarsRow = (() => {
+      const ee = comp.executionExtension || {};
+      if (!ee.closedCandleConfirmed) return '';
+      const cur = (ee.currentBarAtrDistance != null) ? ee.currentBarAtrDistance.toFixed(1) : dash;
+      const prev = (ee.previousBarAtrDistance != null) ? ee.previousBarAtrDistance.toFixed(1) : dash;
+      return '<div class="ap-row"><span>Closed-bar ATR distance</span><span>' + cur + ' \u00b7 prev ' + prev + '</span></div>';
+    })();
+    const executionExtensionStageSixRow = (() => {
+      const ee = comp.executionExtension || {};
+      if (!ee.closedCandleConfirmed) return '';
+      return '<div class="ap-row"><span>Stage 6 eligible</span><span>' + (ee.stageSixEligible ? 'Yes' : 'No') + '</span></div>';
+    })();
     // TDAS V4.9 T1 — additive diagnostic-only rows. Reads
     // ev.components.ma200RegimeInputs (see _marketEvidenceComponents());
     // degrades safely to "Unknown" when absent (older cached evidence
@@ -11982,6 +12169,9 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + adxRow
       + adjacentAdxRow
       + rsiRow
+      + executionExtensionRow
+      + executionExtensionBarsRow
+      + executionExtensionStageSixRow
       + ma200SlopeRow
       + tema92Ma200Row
       + ma200RegimeRow
