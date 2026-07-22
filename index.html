@@ -902,6 +902,38 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .ap-row:not(:last-child){border-bottom:1px solid var(--border);}
 .ap-row span:last-child{font-family:var(--mono);color:var(--text);}
 
+/* TDAS V4.9.10 — Full Analysis collapsible sections + layout refinement.
+   Purely presentational: no data-model, evidence, classifier or Advisory
+   change. Section order/content is untouched — only visual grouping,
+   collapse/expand, and row layout. */
+.ap-controls-row{display:flex;gap:10px;padding:0 16px;margin-top:-4px;}
+.ap-controls-btn{background:none;border:none;color:var(--text3);font-size:11px;cursor:pointer;padding:2px 4px;text-decoration:underline;text-underline-offset:2px;}
+.ap-controls-btn:hover{color:var(--text2);}
+.ap-controls-btn:focus-visible{outline:2px solid var(--blue-text,#4a9eff);outline-offset:1px;}
+.ap-section-header{display:flex;justify-content:space-between;align-items:center;width:100%;background:none;border:none;cursor:pointer;padding:0;margin:0 0 8px 0;text-align:left;font:inherit;}
+.ap-section-header .ap-section-title{margin-bottom:0;}
+.ap-section-header:focus-visible{outline:2px solid var(--blue-text,#4a9eff);outline-offset:2px;}
+.ap-chevron{color:var(--text3);font-size:10px;transition:transform 0.15s ease;flex-shrink:0;margin-left:8px;}
+.ap-section.ap-collapsed .ap-chevron{transform:rotate(-90deg);}
+.ap-section.ap-collapsed .ap-section-header{margin-bottom:0;}
+.ap-section-body{display:flex;flex-direction:column;}
+.ap-section.ap-collapsed .ap-section-body{display:none;}
+.ap-section.ap-nested{background:var(--bg2);border-radius:var(--radius-sm);padding:8px 10px;margin-top:6px;}
+.ap-row-stacked{padding:5px 0;font-size:13px;color:var(--text2);}
+.ap-row-stacked:not(:last-child){border-bottom:1px solid var(--border);}
+.ap-row-stacked .ap-row-stacked-label{display:block;color:var(--text3);font-size:11px;text-transform:uppercase;letter-spacing:0.3px;margin-bottom:4px;}
+.ap-row-stacked ul{margin:0;padding:0;list-style:none;}
+.ap-row-stacked li{padding:2px 0 2px 14px;position:relative;line-height:1.4;}
+.ap-row-stacked li:before{content:'\2022';position:absolute;left:2px;color:var(--text3);}
+.ap-subgroup-heading{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;opacity:0.75;margin:10px 0 4px 0;padding-top:6px;border-top:1px solid var(--border);}
+.ap-subgroup-heading:first-of-type{margin-top:0;padding-top:0;border-top:none;}
+.ap-verdict{padding:2px 0 10px 0;}
+.ap-verdict-stage{font-size:11px;color:var(--text3);letter-spacing:0.5px;text-transform:uppercase;}
+.ap-verdict-classification{font-size:16px;font-weight:700;color:var(--text);margin:2px 0 4px 0;letter-spacing:0.2px;}
+.ap-verdict-executable{font-size:12px;color:var(--text2);}
+.ap-census-pills{display:flex;flex-wrap:wrap;gap:6px;}
+.ap-census-pill{background:var(--bg2);border:1px solid var(--border);border-radius:99px;padding:2px 8px;font-size:11px;font-family:var(--mono);color:var(--text2);white-space:nowrap;}
+
 /* ── Decision Log ── */
 .log-section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:8px;}
 .log-section-header h2{font-size:17px;font-weight:500;}
@@ -1483,6 +1515,10 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <button class="ap-close" onclick="closeAnalysisPanel()" aria-label="Close analysis">✕</button>
     </div>
   </div>
+  <div class="ap-controls-row">
+    <button class="ap-controls-btn" type="button" onclick="expandAllApSections()">Expand all</button>
+    <button class="ap-controls-btn" type="button" onclick="collapseAllApSections()">Collapse all</button>
+  </div>
   <div class="ap-body" id="apBody"></div>
 </div>
 
@@ -1607,7 +1643,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.9';
+const APP_BUILD = 'V4.9.10';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -11813,10 +11849,7 @@ function buildShadowEvaluationDiagnosticHtml(d) {
   try {
     const se = d && d.shadowEvaluation;
     if (!se) {
-      return '<div class="ap-section">'
-        + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.6</div>'
-        + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>'
-        + '</div>';
+      return _apSectionWrap('Shadow Evaluation \u2014 V4.9.10', '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>', true);
     }
     const sc = d.shadowComparison || null;
     const dash = '\u2014';
@@ -11844,27 +11877,34 @@ function buildShadowEvaluationDiagnosticHtml(d) {
     const hcAgreementLabel = sc ? agreeLabel(sc.highConvictionAgreement) : dash;
     const classificationDiffLabel = sc ? (sc.classificationDifference ? 'Yes (labels not directly comparable)' : 'No') : dash;
 
-    return '<div class="ap-section">'
-      + '<div class="ap-section-title">Shadow Evaluation \u2014 V4.9.6</div>'
-      + '<div class="ap-row"><span>Stage</span><span>' + se.stage + ' \u00b7 ' + cap(se.stageKey) + '</span></div>'
-      + '<div class="ap-row"><span>Classification</span><span>' + cap(se.classification) + '</span></div>'
-      + '<div class="ap-row"><span>Executable</span><span>' + yn(se.executable) + '</span></div>'
-      + '<div class="ap-row"><span>Setup Path</span><span>' + setupPathLabel + '</span></div>'
+    // TDAS V4.9.10 — verdict block: Stage/Classification/Executable shown
+    // prominently first, per the required hierarchy. Same three values,
+    // same wording — only the visual weight changes.
+    const _seVerdict = '<div class="ap-verdict">'
+      + '<div class="ap-verdict-stage">STAGE ' + se.stage + '</div>'
+      + '<div class="ap-verdict-classification">' + cap(se.classification).toUpperCase() + '</div>'
+      + '<div class="ap-verdict-executable">Executable: ' + yn(se.executable) + '</div>'
+      + '</div>';
+    // Compact context strip.
+    const _seContext = '<div class="ap-row"><span>Setup Path</span><span>' + setupPathLabel + '</span></div>'
       + '<div class="ap-row"><span>Counter-Structure</span><span>' + yn(snap.counterStructure) + '</span></div>'
-      + '<div class="ap-row"><span>Counter-HTF</span><span>' + yn(snap.counterHtf) + '</span></div>'
-      + '<div class="ap-row" style="align-items:flex-start;"><span>Blockers</span><span style="font-size:11px;text-align:right;">' + ((se.blockers && se.blockers.length) ? se.blockers.join(', ') : 'None') + '</span></div>'
-      + '<div class="ap-row" style="align-items:flex-start;"><span>Cautions</span><span style="font-size:11px;text-align:right;">' + ((se.cautions && se.cautions.length) ? se.cautions.join(', ') : 'None') + '</span></div>'
-      + '<div class="ap-row" style="align-items:flex-start;"><span>Supports</span><span style="font-size:11px;text-align:right;">' + ((se.supports && se.supports.length) ? se.supports.slice(0, 4).join(', ') : 'None') + '</span></div>'
-      + '<div class="ap-row"><span>Decision agreement</span><span>' + decisionAgreementLabel + '</span></div>'
+      + '<div class="ap-row"><span>Counter-HTF</span><span>' + yn(snap.counterHtf) + '</span></div>';
+    // Stacked evidence lists — full bullet lists, never a compressed
+    // right-aligned comma-joined line.
+    const _seLists = _apStackedRow('Blockers', se.blockers)
+      + _apStackedRow('Cautions', se.cautions)
+      + _apStackedRow('Supports', se.supports);
+    // Agreement block.
+    const _seAgreement = '<div class="ap-row"><span>Decision agreement</span><span>' + decisionAgreementLabel + '</span></div>'
       + '<div class="ap-row"><span>High Conviction agreement</span><span>' + hcAgreementLabel + '</span></div>'
       + '<div class="ap-row"><span>Classification difference</span><span>' + classificationDiffLabel + '</span></div>'
-      + '<div class="ap-row"><span>Actionable disagreement</span><span>' + disagreementLabel + '</span></div>'
-      + '</div>'
+      + '<div class="ap-row"><span>Actionable disagreement</span><span>' + disagreementLabel + '</span></div>';
+
+    return _apSectionWrap('Shadow Evaluation \u2014 V4.9.10', _seVerdict + _seContext + _seLists + _seAgreement, true)
       + buildShadowCensusDiagnosticHtml();
   } catch (e) {
     if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildShadowEvaluationDiagnosticHtml] render failure', e);
-    return '<div class="ap-section"><div class="ap-section-title">Shadow Evaluation \u2014 V4.9.5</div>'
-      + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div></div>';
+    return _apSectionWrap('Shadow Evaluation \u2014 V4.9.10', '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div>', true);
   }
 }
 
@@ -11879,11 +11919,13 @@ function buildShadowCensusDiagnosticHtml() {
   try {
     const c = (typeof _shadowCensus !== 'undefined') ? _shadowCensus : null;
     if (!c) {
-      return '<div class="ap-section"><div class="ap-section-title">Shadow Census \u2014 Current Scan</div>'
-        + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable (no completed scan yet)</span></div></div>';
+      return _apSectionWrap('Shadow Census \u2014 Current Scan', '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable (no completed scan yet)</span></div>', false);
     }
-    const stageStr = Object.keys(c.byStage).sort(function(a, b) { return Number(a) - Number(b); })
-      .map(function(k) { return 'S' + k + ':' + c.byStage[k]; }).join(', ') || 'None';
+    // TDAS V4.9.10 — compact wrapped pill layout replaces the previous
+    // single overlong right-aligned line. Same byStage data, same values
+    // — presentation only.
+    const stagePills = Object.keys(c.byStage).sort(function(a, b) { return Number(a) - Number(b); })
+      .map(function(k) { return '<span class="ap-census-pill">S' + k + ' ' + c.byStage[k] + '</span>'; }).join('') || '<span class="ap-census-pill">None</span>';
     const disagreementStr = Object.keys(c.disagreementTypes)
       .filter(function(k) { return k !== 'none'; })
       .map(function(k) { return k + ':' + c.disagreementTypes[k]; }).join(', ') || 'None';
@@ -11901,10 +11943,8 @@ function buildShadowCensusDiagnosticHtml() {
     const hcStr = fmtRate(c.highConvictionAgreementRate, c.highConvictionAgreementCount, c.highConvictionAgreementEligibleCount);
     const classStr = fmtRate(c.classificationAgreementRate, c.classificationAgreementCount, c.classificationAgreementEligibleCount);
     const overallStr = fmtRate(c.overallAgreementRate, c.overallAgreementCount, c.overallAgreementEligibleCount);
-    return '<div class="ap-section">'
-      + '<div class="ap-section-title">Shadow Census \u2014 Current Scan (' + c.modelVersion + ')</div>'
-      + '<div class="ap-row"><span>Total Evaluated</span><span>' + c.total + '</span></div>'
-      + '<div class="ap-row" style="align-items:flex-start;"><span>Stage Distribution</span><span style="font-size:11px;text-align:right;">' + stageStr + '</span></div>'
+    const _censusRows = '<div class="ap-row"><span>Total Evaluated</span><span>' + c.total + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Stage Distribution</span><span class="ap-census-pills">' + stagePills + '</span></div>'
       + '<div class="ap-row"><span>Live vs Shadow Ready</span><span>' + c.liveReadyCount + ' vs ' + c.shadowReadyCount + '</span></div>'
       + '<div class="ap-row"><span>Live vs Shadow High Conviction</span><span>' + c.liveHighConvictionCount + ' vs ' + c.shadowHighConvictionCount + '</span></div>'
       + '<div class="ap-row"><span>Decision agreement</span><span>' + decisionStr + '</span></div>'
@@ -11912,12 +11952,11 @@ function buildShadowCensusDiagnosticHtml() {
       + '<div class="ap-row"><span>Classification agreement</span><span>' + classStr + '</span></div>'
       + '<div class="ap-row"><span>Overall decision agreement</span><span>' + overallStr + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Disagreement Types</span><span style="font-size:11px;text-align:right;">' + disagreementStr + '</span></div>'
-      + '<div class="ap-row"><span></span><span><button type="button" onclick="copyShadowCensusJson()" style="font-size:11px;padding:3px 8px;">Copy shadow census JSON</button></span></div>'
-      + '</div>';
+      + '<div class="ap-row"><span></span><span><button type="button" onclick="copyShadowCensusJson()" style="font-size:11px;padding:3px 8px;">Copy shadow census JSON</button></span></div>';
+    return _apSectionWrap('Shadow Census \u2014 Current Scan (' + c.modelVersion + ')', _censusRows, false);
   } catch (e) {
     if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildShadowCensusDiagnosticHtml] render failure', e);
-    return '<div class="ap-section"><div class="ap-section-title">Shadow Census \u2014 Current Scan</div>'
-      + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div></div>';
+    return _apSectionWrap('Shadow Census \u2014 Current Scan', '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div>', false);
   }
 }
 function dashChar() { return '\u2014'; }
@@ -11933,6 +11972,109 @@ function copyShadowCensusJson() {
   } catch (e) {
     if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[copyShadowCensusJson] failed', e);
   }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.9.10 — Full Analysis Collapsible Layout                          ║
+// ║                                                                          ║
+// ║  Purely presentational. No data-model, evidence, classifier, Advisory,   ║
+// ║  or risk change — every section still renders the exact same fields in   ║
+// ║  the exact same order; only the wrapping markup (collapsible header +    ║
+// ║  body) and grouping (subgroup headings, verdict block, stacked rows)     ║
+// ║  are new. The V4.9.8 copy formatter never touches this markup at all —   ║
+// ║  it reads canonical fields directly, so it is unaffected by any         ║
+// ║  collapse state (see _buildFullAnalysisCopyText()).                      ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// TDAS V4.9.10 — shared collapsible-section string builder. Centralizes
+// the toggle markup in ONE place so every section (and the one nested UT
+// raw-inputs block) shares identical, testable structure — no per-section
+// hand-written toggle logic, no risk of drift between sections.
+let _apSectionIdCounter = 0;
+function _apSectionWrap(title, innerRowsHtml, defaultOpen, opts) {
+  opts = opts || {};
+  const id = 'ap-sec-' + (_apSectionIdCounter++);
+  const nestedClass = opts.nested ? ' ap-nested' : '';
+  const collapsedClass = defaultOpen ? '' : ' ap-collapsed';
+  const styleAttr = opts.sectionStyle ? (' style="' + opts.sectionStyle + '"') : '';
+  return '<div class="ap-section' + nestedClass + collapsedClass + '"' + styleAttr + '>'
+    + '<button class="ap-section-header" type="button" aria-expanded="' + (defaultOpen ? 'true' : 'false') + '" aria-controls="' + id + '" onclick="toggleApSection(this)">'
+      + '<span class="ap-section-title">' + title + '</span>'
+      + '<span class="ap-chevron" aria-hidden="true">\u25be</span>'
+    + '</button>'
+    + '<div class="ap-section-body" id="' + id + '">' + innerRowsHtml + '</div>'
+    + '</div>';
+}
+
+// TDAS V4.9.10 — a "stacked" row: a label followed by a full-width
+// bulleted list beneath it, used for reasons/cautions/blockers/supports/
+// guidance and any other list-like or long explanatory value. Empty
+// arrays render a single "None" bullet, never a blank row.
+function _apStackedRow(label, items) {
+  const clean = (items || []).filter(function(x) { return x != null && String(x).trim() !== ''; });
+  const seen = {};
+  const lis = [];
+  (clean.length ? clean : ['None']).forEach(function(x) {
+    // Defensive: every real caller passes string arrays (blockers/cautions/
+    // supports/reasons/warnings), but guard against a stray non-string
+    // value producing "[object Object]" rather than throwing or silently
+    // corrupting the list.
+    const s = (typeof x === 'string' ? x : (typeof x === 'number' || typeof x === 'boolean') ? String(x) : JSON.stringify(x)).replace(/\r?\n/g, ' ');
+    if (!seen[s]) { seen[s] = true; lis.push('<li>' + s + '</li>'); }
+  });
+  return '<div class="ap-row-stacked"><span class="ap-row-stacked-label">' + label + '</span><ul>' + lis.join('') + '</ul></div>';
+}
+
+// TDAS V4.9.10 — a quiet subgroup heading used within Market Evidence to
+// visually separate Core Structure / Structure and Regime / Execution /
+// Provenance and Lifecycle without splitting the card into separate
+// collapsible sections (still one card, per doctrine).
+function _apSubgroupHeading(title) {
+  return '<div class="ap-subgroup-heading">' + title + '</div>';
+}
+
+// TDAS V4.9.10 — toggle a single section open/closed. Pure DOM
+// interaction; never touches any data field. Keeps aria-expanded and the
+// chevron/body visibility (via the `ap-collapsed` class) in sync.
+function toggleApSection(headerBtn) {
+  if (!headerBtn) return;
+  const section = (typeof headerBtn.closest === 'function') ? headerBtn.closest('.ap-section') : headerBtn.parentElement;
+  if (!section || !section.classList) return;
+  const collapsed = section.classList.contains('ap-collapsed');
+  if (collapsed) {
+    section.classList.remove('ap-collapsed');
+    if (headerBtn.setAttribute) headerBtn.setAttribute('aria-expanded', 'true');
+  } else {
+    section.classList.add('ap-collapsed');
+    if (headerBtn.setAttribute) headerBtn.setAttribute('aria-expanded', 'false');
+  }
+}
+
+// TDAS V4.9.10 — Expand all / Collapse all. Affects every collapsible
+// section (including the nested UT raw-inputs block) currently in the
+// Full Analysis body only — never the header, title, Copy, or close
+// controls, and never the default-state definitions themselves. No
+// persistence: reopening Full Analysis always rebuilds apBody.innerHTML
+// from scratch, so collapse state resets to the approved defaults.
+function expandAllApSections() {
+  const body = (typeof document !== 'undefined') ? document.getElementById('apBody') : null;
+  if (!body || !body.querySelectorAll) return;
+  const sections = body.querySelectorAll('.ap-section');
+  sections.forEach(function(sec) {
+    sec.classList.remove('ap-collapsed');
+    const header = sec.querySelector ? sec.querySelector('.ap-section-header') : null;
+    if (header && header.setAttribute) header.setAttribute('aria-expanded', 'true');
+  });
+}
+function collapseAllApSections() {
+  const body = (typeof document !== 'undefined') ? document.getElementById('apBody') : null;
+  if (!body || !body.querySelectorAll) return;
+  const sections = body.querySelectorAll('.ap-section');
+  sections.forEach(function(sec) {
+    sec.classList.add('ap-collapsed');
+    const header = sec.querySelector ? sec.querySelector('.ap-section-header') : null;
+    if (header && header.setAttribute) header.setAttribute('aria-expanded', 'false');
+  });
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -12335,10 +12477,7 @@ function buildMarketEvidenceDiagnosticHtml(d){
   try {
     const ev = d && d.evidence;
     if (!ev) {
-      return '<div class="ap-section">'
-        + '<div class="ap-section-title">Market Evidence (diagnostic)</div>'
-        + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>'
-        + '</div>'
+      return _apSectionWrap('Market Evidence (diagnostic)', '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Unavailable</span></div>', true)
         + buildShadowEvaluationDiagnosticHtml(d);
     }
     const dash = '\u2014';
@@ -12596,8 +12735,8 @@ function buildMarketEvidenceDiagnosticHtml(d){
     const blockersLabel = (ev.blockers && ev.blockers.length) ? ev.blockers.join(', ') : 'None';
     const src = ev.sourceTf || {};
 
-    return '<div class="ap-section">'
-      + '<div class="ap-section-title">Market Evidence (diagnostic)</div>'
+    const _meRows = ''
+      + _apSubgroupHeading('Core structure')
       + '<div class="ap-row"><span>Direction</span><span>' + dirLabel + '</span></div>'
       + '<div class="ap-row"><span>Alignment</span><span>' + alignLabel + '</span></div>'
       + dissentHtml
@@ -12605,6 +12744,7 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + '<div class="ap-row"><span>Market Context</span><span>' + marketLabel + '</span></div>'
       + '<div class="ap-row"><span>Trend Quality</span><span>' + trendLabel + '</span></div>'
       + '<div class="ap-row"><span>Extension</span><span>' + extLabel + '</span></div>'
+      + _apSubgroupHeading('Structure and regime')
       + temaStructureRow
       + temaMomentumRow
       + utDirectionRow
@@ -12612,13 +12752,14 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + adxRow
       + adjacentAdxRow
       + rsiRow
-      + executionExtensionRow
-      + executionExtensionBarsRow
-      + executionExtensionStageSixRow
       + ma200SlopeRow
       + tema92Ma200Row
       + ma200RegimeRow
       + ma200ChopRow
+      + _apSubgroupHeading('Execution')
+      + executionExtensionRow
+      + executionExtensionBarsRow
+      + executionExtensionStageSixRow
       + oneHRsiRow
       + oneHAdxRow
       + oneHTriggerRow
@@ -12630,21 +12771,22 @@ function buildMarketEvidenceDiagnosticHtml(d){
       + setupPathRow
       + timingStateRow
       + timingStateReasonRow
+      + _apSubgroupHeading('Provenance and lifecycle evidence')
       + freshRow('Setup UT freshness', ev.freshness && ev.freshness.setupUt)
       + freshRow('Adjacent UT freshness', ev.freshness && ev.freshness.adjacentUt)
       + freshRow('1H timing UT freshness', ev.freshness && ev.freshness.oneHUt, isOneHSetup)
       + '<div class="ap-row"><span>Setup Integrity</span><span>' + integrityLabel + '</span></div>'
       + '<div class="ap-row"><span>Stage</span><span>' + stageLabel + '</span></div>'
-      + '<div class="ap-row" style="align-items:flex-start;"><span>Blockers</span><span style="font-size:11px;text-align:right;">' + blockersLabel + '</span></div>'
+      + _apStackedRow('Evidence Blockers', ev.blockers)
       + '<div class="ap-row"><span>Source TF \u00b7 View</span><span>' + (src.view ? src.view.toUpperCase() : dash) + '</span></div>'
       + '<div class="ap-row"><span>Source TF \u00b7 Setup</span><span>' + (src.setup ? src.setup.toUpperCase() : dash) + '</span></div>'
-      + '<div class="ap-row"><span>Source TF \u00b7 HTF</span><span>' + (src.htf ? src.htf.toUpperCase() : dash) + '</span></div>'
-      + '</div>'
+      + '<div class="ap-row"><span>Source TF \u00b7 HTF</span><span>' + (src.htf ? src.htf.toUpperCase() : dash) + '</span></div>';
+
+    return _apSectionWrap('Market Evidence (diagnostic)', _meRows, true)
       + buildShadowEvaluationDiagnosticHtml(d);
   } catch(e){
     if(typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildMarketEvidenceDiagnosticHtml] render failure', e);
-    return '<div class="ap-section"><div class="ap-section-title">Market Evidence (diagnostic)</div>'
-      + '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div></div>';
+    return _apSectionWrap('Market Evidence (diagnostic)', '<div class="ap-row"><span style="color:var(--text3);font-size:11px;">Diagnostic unavailable</span></div>', true);
   }
 }
 
@@ -12908,21 +13050,16 @@ function openAnalysisPanel(symbol){
   let _tcHtml;
   if(htfTrendContext){
     const _isB=htfTrendContext.key.includes('bearish');
-    _tcHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">'+_htfLabel+' Trend Context</div>'
-      +'<div class="ap-row"><span>State</span><span style="color:'+htfTrendContext.color+';font-weight:600;">'+htfTrendContext.icon+' '+htfTrendContext.text+'</span></div>'
+    const _tcRows='<div class="ap-row"><span>State</span><span style="color:'+htfTrendContext.color+';font-weight:600;">'+htfTrendContext.icon+' '+htfTrendContext.text+'</span></div>'
       +'<div class="ap-row"><span>SMA200 Position</span><span style="color:'+(_isB?'var(--red-text)':'var(--green-text)')+';">'
         +(_isB?'Below '+_htfLabel+' SMA200 \u2014 bearish':'Above '+_htfLabel+' SMA200 \u2014 bullish')+'</span></div>'
       +'<div class="ap-row"><span>TEMA momentum</span><span style="color:'+(htfWidening?'var(--green-text)':'var(--amber-text)')+';">'
         +(_isB?'Bearish':'Bullish')+' \u00b7 '+(htfWidening?'widening':'converging')+'</span></div>'
       +(htfUtBot ? '<div class="ap-row"><span>UT Bot</span><span style="color:'+(htfUtBot.direction===1?'var(--green-text)':'var(--red-text)')+';">'+(htfUtBot.direction===1?'Bullish':'Bearish')+(htfUtBot.barsAgoFlip!=null?' \u00b7 '+htfUtBot.barsAgoFlip+' bars since flip':'')+'</span></div>' : '')
-      +'<div class="ap-row" style="padding-top:4px;"><span style="color:var(--text3);font-size:11px;font-style:italic;">'+htfTrendContext.desc+'</span></div>'
-      +'</div>';
+      +'<div class="ap-row-stacked"><span class="ap-row-stacked-label">Summary</span><ul><li>'+htfTrendContext.desc+'</li></ul></div>';
+    _tcHtml=_apSectionWrap(_htfLabel+' Trend Context', _tcRows, false);
   }else{
-    _tcHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">'+_htfLabel+' Trend Context</div>'
-      +'<div class="ap-row"><span style="color:var(--text3);">Insufficient '+_htfLabel+' candle history to determine trend context (need \u2265200 closed bars for SMA200)</span></div>'
-      +'</div>';
+    _tcHtml=_apSectionWrap(_htfLabel+' Trend Context', '<div class="ap-row"><span style="color:var(--text3);">Insufficient '+_htfLabel+' candle history to determine trend context (need \u2265200 closed bars for SMA200)</span></div>', false);
   }
 
   // TDAS Phase 2: pre-compute Lifecycle row — always shown when lifecycle present.
@@ -12937,13 +13074,11 @@ function openAnalysisPanel(symbol){
     if(_lc.state==='CLOSE'||_lc.state==='PREPARE_EXIT') _lcColor='var(--red-text)';
     if(_lc.state==='REDUCE') _lcColor='var(--amber-text)';
     if(_lc.state==='CONFIRMED'||_lc.state==='HIGH_PROBABILITY') _lcColor='var(--green-text)';
-    _lifecycleHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">Lifecycle'+_lifecycleSuffix+'</div>'
-      +'<div class="ap-row"><span>State</span><span style="color:'+_lcColor+';font-weight:600;">'+_lc.state.replace(/_/g,' ')+'</span></div>'
+    const _lcRows='<div class="ap-row"><span>State</span><span style="color:'+_lcColor+';font-weight:600;">'+_lc.state.replace(/_/g,' ')+'</span></div>'
       +'<div class="ap-row"><span>Stage</span><span style="color:var(--text2);">'+_lc.stage+'</span></div>'
       +'<div class="ap-row"><span>Confidence</span><span style="color:var(--text2);">'+_lc.confidence+'</span></div>'
-      +(_lc.reasons&&_lc.reasons.length?'<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--text3);">Reasons</span><span style="color:var(--text3);font-size:11px;text-align:right;">'+_lc.reasons.join('<br>')+'</span></div>':'')
-      +'</div>';
+      +(_lc.reasons&&_lc.reasons.length?_apStackedRow('Reasons', _lc.reasons):'');
+    _lifecycleHtml=_apSectionWrap('Lifecycle'+_lifecycleSuffix, _lcRows, false);
   }
 
   // TDAS Phase 1.5: pre-compute Evaluation section — string concat, no nested backtick.
@@ -12988,29 +13123,32 @@ function openAnalysisPanel(symbol){
     if(_ev.confirms.adx)   _cbadges.push('✓ ADX');   else _cbadges.push('✗ ADX');
     if(_ev.confirms.rsi)   _cbadges.push('✓ RSI');   else _cbadges.push('✗ RSI');
     if(_ev.confirms.regime)_cbadges.push('✓ Regime');else _cbadges.push('✗ Regime');
-    _evalHtml='<div class="ap-section">'
-      +'<div class="ap-section-title">Evaluation'+_viewSuffix+'</div>'
-      +'<div class="ap-row"><span>Setup quality</span><span style="color:'+_sqColor+';font-weight:600;">'+_ev.setupQuality+'</span></div>'
+    _evalHtml=_apSectionWrap('Evaluation'+_viewSuffix,
+      '<div class="ap-row"><span>Setup quality</span><span style="color:'+_sqColor+';font-weight:600;">'+_ev.setupQuality+'</span></div>'
       +'<div class="ap-row"><span>Action bias</span><span style="color:'+_abColor+';font-weight:600;">'+_ev.actionBias.replace(/_/g,' ')+'</span></div>'
       +'<div class="ap-row"><span>High probability</span><span style="color:'+_hpColor+';">'+_hpText+'</span></div>'
       +'<div class="ap-row"><span>Regime aligned</span><span style="color:'+_raColor+';">'+_raText+'</span></div>'
       +'<div class="ap-row" style="align-items:flex-start;"><span>Confirms</span><span style="color:var(--text3);font-size:11px;text-align:right;">'+_cbadges.join(' · ')+'</span></div>'
-      +(_ev.reasons.length?'<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--text3);">Reasons</span><span style="color:var(--text3);font-size:11px;text-align:right;">'+_ev.reasons.join('<br>')+'</span></div>':'')
-      +_warnRows
-      +_blockRows
-      +'</div>';
+      +(_ev.reasons.length?_apStackedRow('Reasons', _ev.reasons):'')
+      +(_ev.warnings.length?_apStackedRow('\u26a0 Caution', _ev.warnings):'')
+      +(_ev.blockers.length?_apStackedRow('\u26d4 Blocker', _ev.blockers):'')
+    , false);
   }
 
-  // TDAS Phase 1: build regime row and stitch INSIDE the _tcHtml ap-section
-  // so it renders within the HTF Trend Context box, not outside it.
-  // _tcHtml closes with '</div>' — we insert the regime row before that closing tag.
+  // TDAS Phase 1: build regime row and stitch INSIDE the _tcHtml section
+  // BODY (not merely inside the outer section) so it renders within the
+  // HTF Trend Context box and is correctly hidden/shown together with the
+  // rest of that section's rows when collapsed/expanded (V4.9.10:
+  // _apSectionWrap()'s structure ends with the section body's own closing
+  // tag immediately followed by the outer section's closing tag —
+  // "</div></div>" — so the insertion point is before BOTH, not just one).
   if(d.regime){
     var _rDir=d.regime.direction;
     var _rColor=_rDir==='bearish'?'var(--red-text)':_rDir==='bullish'?'var(--green-text)':'var(--text3)';
     var _rLadder=d.regime.ladder!=null?' · Ladder '+d.regime.ladder:'';
     var _regimeRow='<div class="ap-row"><span>TDAS Regime</span><span style="color:'+_rColor+';font-weight:600;">'+d.regime.label+_rLadder+'</span></div>';
-    // Insert before the closing </div> of the ap-section container
-    _tcHtml=_tcHtml.slice(0,-6)+_regimeRow+'</div>';
+    // Insert before the closing "</div></div>" (section-body, then section)
+    _tcHtml=_tcHtml.slice(0,-12)+_regimeRow+'</div></div>';
   }
 
   // TDAS Phase 3: build advisory block — detail view only, additive.
@@ -13027,22 +13165,15 @@ function openAnalysisPanel(symbol){
       : (_advisory.action && _advisory.action.indexOf('HIGH_CONVICTION') === 0) ? 'var(--green-text)'
       : (_advisory.action === 'HOLD' || (_advisory.action && _advisory.action.indexOf('CONSIDER') === 0)) ? 'var(--green-text)'
       : 'var(--text2)';
-    function _advList(label, items, color) {
-      if (!items || !items.length) return '';
-      return '<div class="ap-row" style="align-items:flex-start;">'
-        + '<span style="color:' + color + ';">' + label + '</span>'
-        + '<span style="color:' + color + ';font-size:11px;text-align:right;">' + items.join('<br>') + '</span></div>';
-    }
-    _advisoryHtml = '<div class="ap-section" style="border:1px solid ' + _advColor + ';">'
-      + '<div class="ap-section-title" style="letter-spacing:0.6px;">TDAS Advisory</div>'
-      + '<div class="ap-row"><span style="font-size:16px;font-weight:700;color:' + _advColor + ';">' + _advisory.headline + '</span>'
+    _advisoryHtml = _apSectionWrap('TDAS Advisory',
+      '<div class="ap-row"><span style="font-size:16px;font-weight:700;color:' + _advColor + ';">' + _advisory.headline + '</span>'
       + (_advisory.readyLabel ? '<span style="font-size:11px;font-weight:700;color:var(--green-text);background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.25);padding:2px 8px;border-radius:99px;">' + _advisory.readyLabel + '</span>' : '') + '</div>'
       + (_advisory.detail ? '<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--text2);font-size:13px;">' + _advisory.detail + '</span></div>' : '')
-      + _advList('Supporting', _advisory.supporting, 'var(--green-text)')
-      + _advList('Warnings',   _advisory.warnings,   'var(--amber-text)')
-      + _advList('Blocking',   _advisory.blocking,   'var(--red-text)')
+      + (_advisory.supporting && _advisory.supporting.length ? _apStackedRow('Supporting', _advisory.supporting) : '')
+      + (_advisory.warnings && _advisory.warnings.length ? _apStackedRow('Warnings', _advisory.warnings) : '')
+      + (_advisory.blocking && _advisory.blocking.length ? _apStackedRow('Blocking', _advisory.blocking) : '')
       + (_advisory.next ? '<div class="ap-row" style="align-items:flex-start;border-top:1px solid var(--border);margin-top:4px;padding-top:4px;"><span style="color:var(--text3);font-size:11px;font-style:italic;">' + _advisory.next + '</span></div>' : '')
-      + '</div>';
+    , true, { sectionStyle: 'border:1px solid ' + _advColor + ';' });
   }
 
   // TDAS TRADE READY Phase 3: static checklist preview — detail view only.
@@ -13082,30 +13213,19 @@ function openAnalysisPanel(symbol){
     _logMarketEvidenceShadowDisagreement(symbol, d, _beOpenTrade);
   }
 
-  body.innerHTML = `
-    ${_advisoryHtml}
-    ${_tradeReadyHtml}
-    ${_beStatusHtml}
-    ${_marketEvidenceHtml}
-    <!-- Signal summary -->
-    <div class="ap-section">
-      <div class="ap-section-title">Signal summary${_viewSuffix}</div>
+  // TDAS V4.9.10 — remaining sections precomputed as standalone template
+  // literals (same pattern as _tcHtml/_evalHtml/_lifecycleHtml/_advisoryHtml
+  // above), each passed through the shared _apSectionWrap() helper. Same
+  // exact fields, same exact values, same exact order — only the
+  // collapsible wrapper and (for UT Bot) a nested raw-inputs block are new.
+  const _signalSummaryRows = `
       <div class="ap-row"><span>Signal</span><span style="color:${signal==='long'?'var(--green-text)':signal==='short'?'var(--red-text)':'var(--text3)'};">${signal==='long'?'▲ Long':signal==='short'?'▼ Short':'Neutral'}</span></div>
       <div class="ap-row"><span>Score</span><span>${score||0}%</span></div>
-
       <div class="ap-row"><span>HTF alignment</span><span style="color:${htfAlign==='aligned'?'var(--green-text)':htfAlign==='conflict'?'var(--red-text)':'var(--text3)'};">${htfAlign==='aligned'?'Aligned ✓':htfAlign==='conflict'?'Conflict ✗':htfAlign==='insufficient'?'Insufficient data':'Neutral —'}</span></div>
-      <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>
-    </div>
+      <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>`;
+  const _signalSummaryHtml = _apSectionWrap('Signal summary'+_viewSuffix, _signalSummaryRows, false);
 
-    ${_lifecycleHtml}
-
-    ${_evalHtml}
-
-    ${_tcHtml}
-
-    <!-- Indicator checklist -->
-    <div class="ap-section">
-      <div class="ap-section-title">${_setupPrefix}Indicator checklist</div>
+  const _indicatorChecklistRows = `
       <div class="cond"><span class="dot ${aboveMA===null?'na':c1ok?'ok':'no'}"></span><span style="color:var(--ma200-yellow);">200 MA</span>${aboveMA!==null?' — price '+(aboveMA?'above':'below'):' · insufficient data'}</div>
       <div class="cond"><span class="dot ${signal==='neutral'?'na':(signal==='long'&&aboveTrendSMA)||(signal==='short'&&!aboveTrendSMA)?'ok':signal!=='neutral'?'no':'na'}"></span><span style="color:var(--sma-blue);">${trendSMALabel}</span>${aboveTrendSMA===null?' · insufficient data':' — price '+(aboveTrendSMA?'above':'below')}</div>
       <div class="cond"><span class="dot ${ema50State==='entry'?'ok':ema50State==='reclaimed'?'no':ema50State==='approaching'?'warn':'na'}"></span><span style="color:#a78bfa;">EMA 50</span> · ${ema50Label}</div>
@@ -13114,37 +13234,31 @@ function openAnalysisPanel(symbol){
       <div class="cond"><span class="dot ${volOk?'ok':'warn'}"></span>Volume ${volRatio!==null?volRatio.toFixed(2)+'×':'—'} avg ${volOk?'':'(weak) ⚠'}</div>
       <div class="cond"><span class="dot ${adxTrending?'ok':'warn'}"></span>ADX ${_adx} · ${adxStrong?'Strong trend':adxTrending?'Trending':'Ranging ⚠'}</div>
       <div class="cond"><span class="dot ${htfDot}"></span>HTF ${(htf||'').toUpperCase()} ${htfAlign==='aligned'?'aligned ✓':htfAlign==='conflict'?'conflict ✗':htfAlign==='insufficient'?'insufficient data':'—'}</div>
-      <div class="cond"><span class="dot ${signal==='long'&&utLongConfirm?'ok':signal==='short'&&utShortConfirm?'ok':signal!=='neutral'?'no':'na'}"></span>UT Bot <span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span> · ${(_utBot.barsAgoFlip??99)===0?'this bar ⚡':(_utBot.barsAgoFlip??99)+'b · '+classifyUtFreshness(_utBot.barsAgoFlip??99).label}</div>
-    </div>
+      <div class="cond"><span class="dot ${signal==='long'&&utLongConfirm?'ok':signal==='short'&&utShortConfirm?'ok':signal!=='neutral'?'no':'na'}"></span>UT Bot <span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span> · ${(_utBot.barsAgoFlip??99)===0?'this bar ⚡':(_utBot.barsAgoFlip??99)+'b · '+classifyUtFreshness(_utBot.barsAgoFlip??99).label}</div>`;
+  const _indicatorChecklistHtml = _apSectionWrap(_setupPrefix+'Indicator checklist', _indicatorChecklistRows, false);
 
-    <!-- TEMA detail -->
-    <div class="ap-section">
-      <div class="ap-section-title">${_setupPrefix}TEMA detail</div>
+  const _temaDetailRows = `
       <div class="ap-row"><span>TEMA 17</span><span>${fmt(t17)}</span></div>
       <div class="ap-row"><span>TEMA 92</span><span>${fmt(t92)}</span></div>
       <div class="ap-row"><span>Separation</span><span style="color:${temaWidening?'var(--green-text)':'var(--amber-text)'};">${temaWidening?'▲ Widening':'▼ Converging'}</span></div>
-      <div class="ap-row"><span>TEMA 92 slope</span><span style="color:${(d.states&&d.states.tema92Slope==='rising')?'var(--green-text)':(d.states&&d.states.tema92Slope==='falling')?'var(--red-text)':'var(--text3)'};">${d.states?(d.states.tema92Slope.charAt(0).toUpperCase()+d.states.tema92Slope.slice(1)):'Unknown'}</span></div>
-    </div>
+      <div class="ap-row"><span>TEMA 92 slope</span><span style="color:${(d.states&&d.states.tema92Slope==='rising')?'var(--green-text)':(d.states&&d.states.tema92Slope==='falling')?'var(--red-text)':'var(--text3)'};">${d.states?(d.states.tema92Slope.charAt(0).toUpperCase()+d.states.tema92Slope.slice(1)):'Unknown'}</span></div>`;
+  const _temaDetailHtml = _apSectionWrap(_setupPrefix+'TEMA detail', _temaDetailRows, false);
 
-    <!-- RSI / Volume / ADX -->
-    <div class="ap-section">
-      <div class="ap-section-title">${_setupPrefix}Momentum &amp; trend</div>
+  const _momentumTrendRows = `
       <div class="ap-row"><span>RSI (14)</span><span style="color:${_rsi!==null?rsiColor(_rsi):'var(--text3)'};">${_rsi!==null?_rsi.toFixed(1):'—'} ${_rsi===null?'':_rsi>70?'Overbought':_rsi<30?'Oversold':'Neutral'}</span></div>
       <div class="ap-row"><span>ADX (14)</span><span style="color:${adxStrong?'var(--green-text)':adxTrending?'var(--amber-text)':'var(--red-text)'};">${_adx} — ${adxStrong?'Strong':adxTrending?'Trending':'Ranging'}</span></div>
       <div class="ap-row"><span>Volume vs avg</span><span style="color:${volOk?'var(--green-text)':'var(--amber-text)'};">${volRatio!==null?volRatio.toFixed(2)+'×':'—'} ${volOk?'':'(weak)'}</span></div>
-      <div class="ap-row"><span>200 MA distance</span><span style="color:${maDist!==null&&Math.abs(maDist)>5?'var(--amber-text)':'var(--text)'};">${maDist!==null?pct(maDist):'—'} (${ma200!==null?fmt(ma200):'—'})</span></div>
-    </div>
+      <div class="ap-row"><span>200 MA distance</span><span style="color:${maDist!==null&&Math.abs(maDist)>5?'var(--amber-text)':'var(--text)'};">${maDist!==null?pct(maDist):'—'} (${ma200!==null?fmt(ma200):'—'})</span></div>`;
+  const _momentumTrendHtml = _apSectionWrap(_setupPrefix+'Momentum & trend', _momentumTrendRows, false);
 
-    <!-- UT Bot detail -->
-    <div class="ap-section">
-      <div class="ap-section-title">${_setupPrefix}UT Bot Alert · KV ${UT_BOT_KEY_VALUE} · ATR ${UT_BOT_ATR_PERIOD}${UT_BOT_SOURCE_MODE==='heikin_ashi'?' · HA source':''}</div>
-      <div class="ap-row"><span>Direction</span><span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span></div>
-      <div class="ap-row"><span>Trail stop level</span><span>${fmt(_utBot.trailLevel)}</span></div>
-      <div class="ap-row"><span>Last UT flip</span><span style="color:${utFreshnessColorForKey(classifyUtFreshness(_utBot.barsAgoFlip??99).key)};">${(()=>{const _bars=_utBot.barsAgoFlip??99;const _dirWord=_utBot.direction===1?'Bullish':_utBot.direction===-1?'Bearish':'—';if(_utBot.direction===0)return'No UT Bot data';const _label=classifyUtFreshness(_bars).label;return _bars===0?_dirWord+' ⚡ This bar · '+_label:_dirWord+' · '+_bars+' bars ago · '+_label;})()}</span></div>
-      <div class="ap-row"><span>Signal vs thesis</span><span style="color:${(()=>{if(signal==='neutral'||_utBot.direction===0)return'var(--text3)';const _aligns=(signal==='long'&&_utBot.direction===1)||(signal==='short'&&_utBot.direction===-1);const _rank=classifyUtFreshness(_utBot.barsAgoFlip??99).rank;if(_aligns)return _rank<=1?'var(--green-text)':_rank===2?'var(--amber-text)':'var(--text3)';return _rank<=1?'var(--red-text)':_rank===2?'var(--amber-text)':'var(--text3)';})()};">${(()=>{if(signal==='neutral')return'—';if(_utBot.direction===0)return'No UT Bot data';const _aligns=(signal==='long'&&_utBot.direction===1)||(signal==='short'&&_utBot.direction===-1);const _fresh=classifyUtFreshness(_utBot.barsAgoFlip??99);if(_aligns){if(_fresh.rank<=1)return'Direction aligned — recent confirming signal';if(_fresh.key==='mature')return'Direction aligned — mature signal, less immediate';return'Direction aligned — old signal, context only';}return'Counter-signal — '+_fresh.label;})()}</span></div>
-      <div class="ap-row" style="border-top:1px solid var(--border);margin-top:6px;padding-top:6px;">
-        <span style="color:var(--text3);font-size:10px;text-transform:uppercase;letter-spacing:0.4px;">Raw calculation inputs</span>
-      </div>
+  // TDAS V4.9.10 — UT Bot: main summary rows stay directly in the section
+  // body; "Raw calculation inputs" is now a genuine NESTED collapsible
+  // block (defaulted collapsed) via the same _apSectionWrap() helper with
+  // opts.nested — same exact raw values, same exact labels, just properly
+  // collapsible and independently accessible rather than a plain divider
+  // row. Copy snapshot is unaffected (it reads d/d.states directly, never
+  // this markup — see _buildFullAnalysisCopyText()).
+  const _utBotRawRows = `
       <div class="ap-row"><span style="color:var(--text3);">barsAgoFlip</span><span style="font-family:var(--mono);font-size:12px;">${_utBot.barsAgoFlip??'—'}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">freshSignal (last bar)</span><span style="font-family:var(--mono);font-size:12px;">${_utBot.signal||'none'}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">recentSignal (raw flag)</span><span style="font-family:var(--mono);font-size:12px;">${_utBot.recentSignal||'none'}</span></div>
@@ -13152,27 +13266,44 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span style="color:var(--text3);">trailLevel (prev bar)</span><span style="font-family:var(--mono);font-size:12px;">${fmt(_utBot.prevTrailLevel)}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">Trade age (time-based)</span><span style="font-family:var(--mono);font-size:12px;">${d.tradeAgeHours!=null?d.tradeAgeHours+' hrs':'—'}</span></div>
       <div class="ap-row"><span style="color:var(--text3);">Trade stage</span><span style="font-family:var(--mono);font-size:12px;">${d.tradeStage||'—'}</span></div>
-      <div class="ap-row"><span style="color:var(--text3);">Signal type</span><span style="font-family:var(--mono);font-size:12px;color:var(--text3);font-size:10px;">barsAgoFlip = bars since last sig≠none (direction flip OR trail re-cross)</span></div>
-    </div>
+      <div class="ap-row"><span style="color:var(--text3);">Signal type</span><span style="font-family:var(--mono);font-size:12px;color:var(--text3);font-size:10px;">barsAgoFlip = bars since last sig≠none (direction flip OR trail re-cross)</span></div>`;
+  const _utBotRows = `
+      <div class="ap-row"><span>Direction</span><span style="color:${_utBot.direction===1?'var(--green-text)':'var(--red-text)'};">${_utBot.direction===1?'Bullish':'Bearish'}</span></div>
+      <div class="ap-row"><span>Trail stop level</span><span>${fmt(_utBot.trailLevel)}</span></div>
+      <div class="ap-row"><span>Last UT flip</span><span style="color:${utFreshnessColorForKey(classifyUtFreshness(_utBot.barsAgoFlip??99).key)};">${(()=>{const _bars=_utBot.barsAgoFlip??99;const _dirWord=_utBot.direction===1?'Bullish':_utBot.direction===-1?'Bearish':'—';if(_utBot.direction===0)return'No UT Bot data';const _label=classifyUtFreshness(_bars).label;return _bars===0?_dirWord+' ⚡ This bar · '+_label:_dirWord+' · '+_bars+' bars ago · '+_label;})()}</span></div>
+      <div class="ap-row"><span>Signal vs thesis</span><span style="color:${(()=>{if(signal==='neutral'||_utBot.direction===0)return'var(--text3)';const _aligns=(signal==='long'&&_utBot.direction===1)||(signal==='short'&&_utBot.direction===-1);const _rank=classifyUtFreshness(_utBot.barsAgoFlip??99).rank;if(_aligns)return _rank<=1?'var(--green-text)':_rank===2?'var(--amber-text)':'var(--text3)';return _rank<=1?'var(--red-text)':_rank===2?'var(--amber-text)':'var(--text3)';})()};">${(()=>{if(signal==='neutral')return'—';if(_utBot.direction===0)return'No UT Bot data';const _aligns=(signal==='long'&&_utBot.direction===1)||(signal==='short'&&_utBot.direction===-1);const _fresh=classifyUtFreshness(_utBot.barsAgoFlip??99);if(_aligns){if(_fresh.rank<=1)return'Direction aligned — recent confirming signal';if(_fresh.key==='mature')return'Direction aligned — mature signal, less immediate';return'Direction aligned — old signal, context only';}return'Counter-signal — '+_fresh.label;})()}</span></div>`
+    + _apSectionWrap('Raw calculation inputs', _utBotRawRows, false, { nested: true });
+  const _utBotHtml = _apSectionWrap(_setupPrefix+'UT Bot Alert · KV '+UT_BOT_KEY_VALUE+' · ATR '+UT_BOT_ATR_PERIOD+(UT_BOT_SOURCE_MODE==='heikin_ashi'?' · HA source':''), _utBotRows, false);
 
-    ${signal!=='neutral'?`
-    <!-- Fibonacci levels -->
-    <div class="ap-section">
-      <div class="ap-section-title">${_setupPrefix}Fibonacci levels · 50-bar swing</div>
+  const _fibRows = `
       <div class="ap-row"><span>0.618 retrace <span style="font-size:10px;color:var(--text3);">(entry zone)</span></span><span style="color:#a78bfa;">${fmt(fibRetrace618)}</span></div>
       <div class="ap-row"><span>1.618 ext <span style="font-size:10px;color:var(--text3);">(target)</span></span><span style="color:var(--green-text);">${fmt(fib1618)}</span></div>
       <div class="ap-row"><span>2.618 ext <span style="font-size:10px;color:var(--text3);">(stretch)</span></span><span style="color:var(--green-text);opacity:0.7;">${fmt(fib2618)}</span></div>
-      <div class="ap-row"><span>Swing H / Swing L</span><span>${fmt(swingH50)} / ${fmt(swingL50)}</span></div>
-    </div>
+      <div class="ap-row"><span>Swing H / Swing L</span><span>${fmt(swingH50)} / ${fmt(swingL50)}</span></div>`;
+  const _fibHtml = _apSectionWrap(_setupPrefix+'Fibonacci levels · 50-bar swing', _fibRows, false);
 
-    <!-- Risk levels -->
-    <div class="ap-section">
-      <div class="ap-section-title">${_setupPrefix}Risk levels · ATR-based</div>
+  const _riskRows = `
       <div class="ap-row"><span>${signal==='long'?'Stop (1.5× ATR)':'Target (2× ATR)'}</span><span style="color:${signal==='long'?'var(--red-text)':'var(--green-text)'};">${fmt(signal==='long'?stop15:target2)}</span></div>
       <div class="ap-row"><span>Entry (signal)</span><span>${fmt(price)}</span></div>
       <div class="ap-row"><span>${signal==='long'?'Target (2× ATR)':'Stop (1.5× ATR)'}</span><span style="color:${signal==='long'?'var(--green-text)':'var(--red-text)'};">${fmt(signal==='long'?target2:stop15)}</span></div>
-      <div class="ap-row"><span>Displayed R multiple</span><span>${d.displayR!=null?d.displayR+'R':'Not available'}</span></div>
-    </div>`:''}
+      <div class="ap-row"><span>Displayed R multiple</span><span>${d.displayR!=null?d.displayR+'R':'Not available'}</span></div>`;
+  const _riskHtml = _apSectionWrap(_setupPrefix+'Risk levels · ATR-based', _riskRows, true);
+
+  body.innerHTML = `
+    ${_advisoryHtml}
+    ${_tradeReadyHtml}
+    ${_beStatusHtml}
+    ${_marketEvidenceHtml}
+    ${_signalSummaryHtml}
+    ${_lifecycleHtml}
+    ${_evalHtml}
+    ${_tcHtml}
+    ${_indicatorChecklistHtml}
+    ${_temaDetailHtml}
+    ${_momentumTrendHtml}
+    ${_utBotHtml}
+    ${signal!=='neutral'?`${_fibHtml}
+    ${_riskHtml}`:''}
   `;
 
   overlay.classList.add('open');
