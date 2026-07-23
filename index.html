@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.12';
+const APP_BUILD = 'V4.9.13';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2531,16 +2531,34 @@ const MA200_CHOP_CROSSING_THRESHOLD = 3;
 // rolling SMA200 is recomputed from scratch using only the 200 candles
 // ending at that bar (not a single static SMA200 applied across the
 // whole window) — this is what makes "side changes" genuine rather than
-// an artifact of a stale average. Each inspected bar is classified
-// above/at/below using the SAME REGIME_MA_PRESSURE_PCT tolerance already
-// established for ma200Relation/tema92VsMa200 (no new threshold). Bars
-// classified 'at' (inside the pressure band) are treated neutrally — they
-// neither count as a crossing nor reset the pending side — so testing/
-// pressure-band noise cannot manufacture artificial flip-flopping, and a
-// single clean reclaim or breakdown produces exactly one crossing, not
-// chop. Insufficient closed history (not enough bars to compute a
+// an artifact of a stale average.
+//
+// TDAS V4.9.13 — 200MA Chop Crossing Fix. Confirmed audit finding: this
+// function previously classified each bar using the SAME 2%
+// REGIME_MA_PRESSURE_PCT band already established for DIRECTIONAL
+// evidence (ma200Relation/tema92VsMa200/regime pressure) — a threshold
+// deliberately wide there to avoid noise-driven false directional flips.
+// Reused here for CHOP/crossing detection, that same width suppressed
+// genuine close-above/close-below oscillation whenever price stayed
+// within 2% of its rolling 200MA (a textbook "hugging the MA" chop
+// pattern), producing false "Clear · 0 crossings" reports. Chop detection
+// now uses a strict close-vs-MA comparison — only a negligible
+// floating-point epsilon (MA200_CHOP_EQUALITY_EPSILON_PCT, far below any
+// meaningful price move) is applied, purely for numeric equality safety,
+// never a meaningful percentage deadband. REGIME_MA_PRESSURE_PCT itself
+// is completely untouched and still governs ma200Relation/
+// tema92VsMa200/directional regime pressure exactly as before — this
+// function no longer reads that constant at all.
+//
+// Bars classified 'at' (the negligible-epsilon equality case only, not a
+// percentage band) are treated neutrally — they neither count as a
+// crossing nor reset the pending side — so below -> at -> above and
+// above -> at -> below each still count as exactly one crossing, and a
+// single clean reclaim or breakdown still produces exactly one crossing,
+// not chop. Insufficient closed history (not enough bars to compute a
 // genuine rolling SMA200 across the whole window) or any non-finite
 // price/average returns 'unknown' with crossings: null — never fabricated.
+const MA200_CHOP_EQUALITY_EPSILON_PCT = 0.0001; // 0.0001% — numeric-equality safety only, never a meaningful deadband
 function _ma200ChopFromCloses(closes) {
   const windowBars = MA200_CHOP_WINDOW_BARS;
   const threshold = MA200_CHOP_CROSSING_THRESHOLD;
@@ -2555,7 +2573,7 @@ function _ma200ChopFromCloses(closes) {
       return { state: 'unknown', crossings: null, windowBars, threshold };
     }
     const distPct = (price - windowSma) / windowSma * 100;
-    const rel = (isFinite(distPct) && Math.abs(distPct) <= REGIME_MA_PRESSURE_PCT) ? 'at'
+    const rel = (isFinite(distPct) && Math.abs(distPct) <= MA200_CHOP_EQUALITY_EPSILON_PCT) ? 'at'
       : (price > windowSma ? 'above' : 'below');
     relations.push(rel);
   }
