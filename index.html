@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.0D';
+const APP_BUILD = 'V4.10.0E';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5188,18 +5188,59 @@ function buildAuthoritativeClassification(d, rawEvaluation) {
 // _buildScannerAdvisory(d).tradeReady boolean, d.highConviction boolean
 // (calcPair()), and d.evaluation.actionBias/score/confirmCount
 // (evaluateSetup()) — no new classification logic, no re-derivation.
-function _liveClassificationFromD(d) {
+//
+// TDAS V4.10.0E — Diagnostic Alignment. Now derives and exposes THREE
+// separate readiness values, per the V4.10.0D activation:
+//   legacyReady        — _buildLegacyTradeReadyVerdict(d, ev).tradeReady,
+//                         computed directly (never re-invokes
+//                         _buildScannerAdvisory(), so this is immune to
+//                         the ordering/staleness class of bug fixed in
+//                         _refreshShadowFromCurrentEvidence() above).
+//   evaluationReady     — d.authoritativeClassification.rawEvaluation.executable
+//                         (true/false/null=unknown — never coerced to false).
+//   authoritativeReady  — the ACTUAL production decision: mirrors
+//                         _buildScannerAdvisory()'s own source-selection
+//                         formula exactly (DIAG.evaluationEngineLive===true
+//                         && tradeReadyKnown===true ? evaluation : legacy),
+//                         computed independently here rather than by
+//                         re-invoking that function, so this diagnostic
+//                         layer can never again read a stale/not-yet-set
+//                         d.authoritativeClassification mid-build.
+// `tradeReady` (the pre-existing field name, kept for backward
+// compatibility with every existing consumer of this function's output —
+// _shadowCompare(), _buildShadowCensus(), and the retained tests that
+// exercise them directly) now correctly equals authoritativeReady, i.e.
+// genuinely "what production currently decided" — fulfilling this
+// function's own long-standing header comment ("canonical live
+// classification") for the first time since V4.10.0D's activation.
+function _liveClassificationFromD(d, authoritativeClassification) {
   const ev = (d && d.evaluation) || {};
   let classification = 'no_setup';
   if (ev.actionBias === ACTION_BIAS.AVOID) classification = 'avoid';
   else if (ev.actionBias === ACTION_BIAS.WATCH_LONG || ev.actionBias === ACTION_BIAS.WATCH_SHORT) classification = 'watch';
   else if (ev.actionBias === ACTION_BIAS.CONSIDER_LONG || ev.actionBias === ACTION_BIAS.CONSIDER_SHORT) classification = 'consider';
   else if (ev.actionBias === ACTION_BIAS.STRONG_LONG || ev.actionBias === ACTION_BIAS.STRONG_SHORT) classification = 'strong';
-  let tradeReady = false;
-  try { tradeReady = !!(_buildScannerAdvisory(d) || {}).tradeReady; } catch (e) { tradeReady = false; }
+
+  const legacyReady = _buildLegacyTradeReadyVerdict(d, ev).tradeReady;
+
+  const _ac = authoritativeClassification || (d && d.authoritativeClassification) || null;
+  const _rawExecutable = (_ac && _ac.rawEvaluation && (_ac.rawEvaluation.executable === true || _ac.rawEvaluation.executable === false))
+    ? _ac.rawEvaluation.executable : null;
+  const evaluationReady = _rawExecutable; // true | false | null (unknown) — never coerced
+  const evaluationKnown = evaluationReady !== null;
+
+  const authoritativeKnown = !!(typeof DIAG !== 'undefined' && DIAG.evaluationEngineLive === true && _ac && _ac.tradeReadyKnown === true);
+  const authoritativeReady = authoritativeKnown ? _ac.tradeReady : legacyReady;
+  const authoritativeSource = authoritativeKnown ? 'evaluation_engine' : 'legacy_fallback';
+
   return {
     classification,
-    tradeReady,
+    tradeReady: authoritativeReady,
+    legacyReady,
+    evaluationReady,
+    evaluationKnown,
+    authoritativeReady,
+    authoritativeSource,
     highConviction: !!(d && d.highConviction),
     score: (ev.score != null) ? ev.score : null,
     confirms: (ev.confirmCount != null) ? ev.confirmCount : null,
@@ -5231,12 +5272,26 @@ function _shadowCompare(shadow, live) {
 
   // decisionAgreement — only comparable when shadow.executable is a
   // genuine boolean (never at Stage 0, where it is null by design).
+  //
+  // TDAS V4.10.0E — Diagnostic Alignment. `live.tradeReady` (read via
+  // `liveReady` above) is, as of the _liveClassificationFromD() fix, now
+  // genuinely the AUTHORITATIVE production result — so this existing
+  // field correctly measures authoritative-vs-Evaluation agreement
+  // without any rename needed. Retained tests that hand-construct a
+  // `live` fixture directly (bypassing _liveClassificationFromD()) are
+  // unaffected: this function has always been agnostic to where
+  // live.tradeReady came from, by design.
   const decisionAgreement = (shadowExecutable === null) ? null : (liveReady === shadowExecutable);
 
   // highConvictionAgreement — the canonical shadow High Conviction signal
   // is classification === 'high_conviction_candidate' (true only at Stage
   // 10, by construction of _shadowEvaluate()'s own finalize() calls).
   // "Genuinely unknown" is Stage 0, where highConvictionEligible is null.
+  // NOTE: High Conviction has NOT been migrated (V4.10.0D activated
+  // scanner Trade Ready only) — this remains a legacy-live-HC-vs-shadow-
+  // HC-candidate comparison, not an authoritative one. See the Full
+  // Analysis/census label text, which now says "Legacy High Conviction
+  // agreement" for clarity; this field's own name is unchanged.
   const shadowHighConvictionUnknown = !!(shadow && shadow.highConvictionEligible === null);
   const shadowHigh = !!(shadow && shadow.classification === 'high_conviction_candidate');
   const highConvictionAgreement = shadowHighConvictionUnknown ? null : (liveHigh === shadowHigh);
@@ -5253,7 +5308,13 @@ function _shadowCompare(shadow, live) {
   // disagreementType is now reserved for genuine Trade Ready / High
   // Conviction differences only — classification label differences never
   // appear here (see classificationDifference below instead), and can no
-  // longer override or imply a decision disagreement.
+  // longer override or imply a decision disagreement. Internal enum
+  // string values (live_ready_shadow_not_ready, etc.) are UNCHANGED from
+  // V4.9.6 — retained verbatim for the retained test suite's own pinned
+  // assertions and the census's disagreementTypes keying. As of V4.10.0E
+  // these values are never shown verbatim in user-visible output (see
+  // authoritativeDisagreementType/legacyMigrationDifference below, and
+  // the corrected display-label maps in the HTML/copy-text renderers).
   let disagreementType = 'none';
   if (decisionAgreement === false) {
     disagreementType = liveReady ? 'live_ready_shadow_not_ready' : 'shadow_ready_live_not_ready';
@@ -5262,6 +5323,55 @@ function _shadowCompare(shadow, live) {
   }
 
   const classificationDifference = !!(live && shadow && live.classification !== shadow.classification);
+
+  // ── TDAS V4.10.0E — Diagnostic Alignment: additive comparison contract ──
+  // Everything above this point is byte-for-byte unchanged from V4.9.6.
+  // The fields below are new and purely additive — no existing field is
+  // renamed, removed, or reinterpreted.
+  //
+  // legacyReady/evaluationKnown/authoritativeReady/authoritativeSource are
+  // only present on `live` objects produced by the fixed
+  // _liveClassificationFromD() (V4.10.0E onward); hand-constructed test
+  // fixtures that predate this task safely degrade to `liveReady` itself
+  // for the authoritative/legacy readiness fields below (a reasonable
+  // fallback, since such fixtures were always meant to represent "the
+  // live decision" at the time they were written) and to `null`
+  // (not-applicable) for genuinely new distinctions like evaluationKnown.
+  const _legacyReady = (live && (live.legacyReady === true || live.legacyReady === false)) ? live.legacyReady : null;
+  const _evaluationKnown = shadowExecutable !== null;
+  const _authoritativeReady = (live && (live.authoritativeReady === true || live.authoritativeReady === false)) ? live.authoritativeReady : liveReady;
+  const _authoritativeSource = (live && live.authoritativeSource) || 'legacy_fallback';
+
+  // legacyEvaluationAgreement — the MIGRATION comparison (what V4.10.0D
+  // changed), never conflated with authoritative agreement. null/not-
+  // applicable whenever Evaluation is unknown, or the `live` fixture
+  // predates this task (no legacyReady field to compare).
+  const legacyEvaluationAgreement = (shadowExecutable === null || _legacyReady === null)
+    ? null : (_legacyReady === shadowExecutable);
+
+  // legacyMigrationDifference — a distinct, explicitly-migration-scoped
+  // enum, never labeled as a live/authoritative disagreement. Only
+  // populated when the comparison is genuinely eligible (both sides
+  // known) and they differ.
+  let legacyMigrationDifference = null;
+  if (legacyEvaluationAgreement === false) {
+    legacyMigrationDifference = _legacyReady ? 'legacy_ready_evaluation_not_ready' : 'legacy_not_ready_evaluation_ready';
+  }
+
+  // authoritativeDecisionAgreement / authoritativeDisagreementType — clear
+  // aliases making explicit that this axis is authoritative-vs-Evaluation
+  // (the same underlying decisionAgreement/disagreementType computation
+  // above, since live.tradeReady already equals authoritativeReady) —
+  // scoped to the decision/tradeReady axis only (never conflated with the
+  // still-legacy-driven High Conviction axis). A non-null value here,
+  // while evaluationKnown is true, indicates a genuine technical defect
+  // (production and Evaluation should never disagree when Evaluation is
+  // authoritative and known) rather than an expected migration artifact.
+  const authoritativeDecisionAgreement = decisionAgreement;
+  let authoritativeDisagreementType = null;
+  if (decisionAgreement === false) {
+    authoritativeDisagreementType = liveReady ? 'authoritative_ready_evaluation_not_ready' : 'evaluation_ready_authoritative_not_ready';
+  }
 
   return {
     live, shadow,
@@ -5274,6 +5384,15 @@ function _shadowCompare(shadow, live) {
     // gracefully; every place it is surfaced in diagnostics is relabeled
     // "Decision agreement" so it can never be mistaken for label equality.
     agreement: decisionAgreement,
+
+    // TDAS V4.10.0E — additive comparison contract.
+    authoritative: { ready: _authoritativeReady, source: _authoritativeSource },
+    legacy: { ready: _legacyReady !== null ? _legacyReady : liveReady },
+    evaluation: { ready: shadowExecutable, known: _evaluationKnown },
+    authoritativeDecisionAgreement,
+    legacyEvaluationAgreement,
+    authoritativeDisagreementType,
+    legacyMigrationDifference,
   };
 }
 
@@ -5291,6 +5410,11 @@ function _buildShadowCensus(entries) {
   let overallAgreementCount = 0, overallDisagreementCount = 0, overallAgreementEligibleCount = 0;
   let liveReadyCount = 0, shadowReadyCount = 0, liveHighConvictionCount = 0, shadowHighConvictionCount = 0;
   const cases = { liveReadyShadowNotReady: [], shadowReadyLiveNotReady: [], liveHighShadowNotHigh: [], shadowHighLiveNotHigh: [] };
+  // TDAS V4.10.0E — Diagnostic Alignment: additive census counters. None
+  // of the counters/fields above this point are touched or removed.
+  let legacyReadyCount = 0, evaluationFallbackCount = 0;
+  let legacyEvaluationAgreementCount = 0, legacyEvaluationDisagreementCount = 0, legacyEvaluationAgreementEligibleCount = 0;
+  const migrationDifferenceTypes = { legacy_ready_evaluation_not_ready: 0, legacy_not_ready_evaluation_ready: 0 };
 
   list.forEach(function(e) {
     const symbol = e.symbol, tf = e.tf, comparison = e.comparison;
@@ -5323,6 +5447,21 @@ function _buildShadowCensus(entries) {
     if (shadow.executable === true) shadowReadyCount++;
     if (live.highConviction) liveHighConvictionCount++;
     if (shadow.classification === 'high_conviction_candidate') shadowHighConvictionCount++;
+
+    // TDAS V4.10.0E — Diagnostic Alignment: legacy/evaluation migration
+    // comparison, and Stage-0/fallback tracking. Counted separately from
+    // (never mixed into) the authoritative decisionAgreement counters
+    // above — a fallback case is neither agreement nor disagreement.
+    const _legacyReady = comparison.legacy ? comparison.legacy.ready : null;
+    if (_legacyReady) legacyReadyCount++;
+    if (comparison.authoritative && comparison.authoritative.source === 'legacy_fallback') evaluationFallbackCount++;
+    if (comparison.legacyEvaluationAgreement !== null) {
+      legacyEvaluationAgreementEligibleCount++;
+      if (comparison.legacyEvaluationAgreement) legacyEvaluationAgreementCount++; else legacyEvaluationDisagreementCount++;
+    }
+    if (comparison.legacyMigrationDifference && migrationDifferenceTypes.hasOwnProperty(comparison.legacyMigrationDifference)) {
+      migrationDifferenceTypes[comparison.legacyMigrationDifference]++;
+    }
 
     const compactCase = {
       symbol: symbol, timeframe: tf,
@@ -5367,6 +5506,21 @@ function _buildShadowCensus(entries) {
     liveReadyCount: liveReadyCount, shadowReadyCount: shadowReadyCount,
     liveHighConvictionCount: liveHighConvictionCount, shadowHighConvictionCount: shadowHighConvictionCount,
     cases: cases,
+
+    // TDAS V4.10.0E — Diagnostic Alignment: additive fields only, nothing
+    // above this point is renamed or removed. authoritativeReadyCount and
+    // evaluationReadyCount are clarity aliases of the pre-existing
+    // liveReadyCount/shadowReadyCount (same underlying counts — liveReady
+    // now genuinely means authoritative, and shadowReadyCount already
+    // meant "Evaluation says ready").
+    authoritativeReadyCount: liveReadyCount,
+    evaluationReadyCount: shadowReadyCount,
+    legacyReadyCount: legacyReadyCount,
+    evaluationFallbackCount: evaluationFallbackCount,
+
+    legacyEvaluationAgreementCount, legacyEvaluationDisagreementCount, legacyEvaluationAgreementEligibleCount,
+    legacyEvaluationAgreementRate: rate(legacyEvaluationAgreementCount, legacyEvaluationAgreementEligibleCount),
+    migrationDifferenceTypes: migrationDifferenceTypes,
   };
 }
 
@@ -5423,14 +5577,33 @@ function _refreshShadowFromCurrentEvidence(d, options) {
   // authoritativeClassification together; no separate refresh topology is
   // introduced. See buildAuthoritativeClassification()'s own header
   // comment for the adapter contract and fallback semantics.
+  //
+  // TDAS V4.10.0E — Diagnostic Alignment. authoritativeClassification is
+  // now computed FIRST (before _liveClassificationFromD()) and passed
+  // through explicitly, rather than being assigned to d only at the end
+  // of this block. Root-cause fix for the confirmed V4.10.0D activation
+  // defect: _liveClassificationFromD() previously read d.authoritativeClassification
+  // at a moment it had not yet been (re)assigned for THIS evidence build
+  // (either absent on a brand-new scan object, or one generation stale on
+  // a rebuild) — so its own internal call to _buildScannerAdvisory()
+  // silently fell back to the legacy verdict every time, making Full
+  // Analysis/census diagnostics permanently report the pre-activation
+  // legacy result as "live" even after Evaluation became authoritative in
+  // production. Production behaviour itself was never affected (renderCard()
+  // builds its own advisory after calcPair() has already fully returned,
+  // by which time d.authoritativeClassification is correctly set) — this
+  // was a diagnostics-only staleness bug, fixed here by ordering alone;
+  // buildAuthoritativeClassification()'s own logic and contract are
+  // completely unchanged.
   if (d.evidence && d._shadowBuiltFromEvidence !== d.evidence) {
     const shadowEvaluation = _shadowEvaluate(d.evidence);
-    const live = _liveClassificationFromD(d);
+    const authoritativeClassification = buildAuthoritativeClassification(d, shadowEvaluation);
+    const live = _liveClassificationFromD(d, authoritativeClassification);
     const shadowComparison = _shadowCompare(shadowEvaluation, live);
     d.shadowEvaluation = shadowEvaluation;
     d.shadowComparison = shadowComparison;
     d._shadowBuiltFromEvidence = d.evidence;
-    d.authoritativeClassification = buildAuthoritativeClassification(d, shadowEvaluation);
+    d.authoritativeClassification = authoritativeClassification;
     return true;
   }
   return false;
@@ -12075,17 +12248,19 @@ function buildShadowEvaluationDiagnosticHtml(d) {
     const snap = se.evidenceSnapshot || {};
     const setupPathLabelMap = { four_h_led: '4H-led', direct_four_h: 'Direct 4H', standalone_one_h: 'Standalone 1H' };
     const setupPathLabel = setupPathLabelMap[snap.setupPath] || 'Unknown';
-    // TDAS V4.9.6 — disagreementType is now reserved for genuine Trade
-    // Ready / conviction-tier differences only; classification_difference
-    // is never a value of this field anymore (see classificationDiffLabel
-    // below instead, driven by the separate classificationDifference
-    // boolean). The map entry is left in place only as a harmless fallback
-    // for any pre-V4.9.6 cached comparison object still in memory.
+    // TDAS V4.10.0E — Diagnostic Alignment. disagreementType's internal
+    // enum string values are UNCHANGED (see _shadowCompare()'s own header
+    // comment) — only the DISPLAY text below is corrected, replacing the
+    // confirmed-misleading "Live ready, shadow not ready" phrasing (which
+    // was accurate before V4.10.0D activation, when "live" genuinely meant
+    // the legacy verdict, but became wrong once live.tradeReady started
+    // meaning the authoritative production result) with accurate
+    // Authoritative/Evaluation wording.
     const disagreementLabelMap = {
-      none: 'None', live_ready_shadow_not_ready: 'Live ready, shadow not ready',
-      shadow_ready_live_not_ready: 'Shadow ready, live not ready',
-      live_high_shadow_not_high: 'Live High Conviction, shadow not',
-      shadow_high_live_not_high: 'Shadow High Conviction, live not',
+      none: 'None', live_ready_shadow_not_ready: 'Authoritative ready, Evaluation not ready',
+      shadow_ready_live_not_ready: 'Evaluation ready, Authoritative not ready',
+      live_high_shadow_not_high: 'Legacy High Conviction, Evaluation not',
+      shadow_high_live_not_high: 'Evaluation High Conviction, Legacy not',
       classification_difference: 'Classification difference',
     };
     const disagreementLabel = sc ? (disagreementLabelMap[sc.disagreementType] || 'Unknown') : dash;
@@ -12093,6 +12268,21 @@ function buildShadowEvaluationDiagnosticHtml(d) {
     const decisionAgreementLabel = sc ? agreeLabel(sc.decisionAgreement) : dash;
     const hcAgreementLabel = sc ? agreeLabel(sc.highConvictionAgreement) : dash;
     const classificationDiffLabel = sc ? (sc.classificationDifference ? 'Yes (labels not directly comparable)' : 'No') : dash;
+
+    // TDAS V4.10.0E — Diagnostic Alignment: the three distinct readiness
+    // meanings, unambiguous per the V4.10.0D activation. "Authoritative"
+    // is the actual production decision; "Legacy" and "Evaluation" are
+    // the two inputs it currently chooses between.
+    const migrationDiffLabelMap = {
+      legacy_ready_evaluation_not_ready: 'Legacy ready / Evaluation not ready',
+      legacy_not_ready_evaluation_ready: 'Legacy not ready / Evaluation ready',
+    };
+    const authoritativeReadyLabel = sc ? yn(sc.authoritative.ready) : dash;
+    const authoritativeSourceLabel = sc ? (sc.authoritative.source === 'evaluation_engine' ? 'Evaluation Engine' : 'Legacy Fallback') : dash;
+    const evaluationReadyLabel = sc ? yn(sc.evaluation.ready) : dash;
+    const legacyReadyLabel = sc ? yn(sc.legacy.ready) : dash;
+    const legacyEvalAgreementLabel = sc ? agreeLabel(sc.legacyEvaluationAgreement) : dash;
+    const migrationDiffLabel = sc ? (sc.legacyMigrationDifference ? (migrationDiffLabelMap[sc.legacyMigrationDifference] || 'Unknown') : 'None') : dash;
 
     // TDAS V4.9.10 — verdict block: Stage/Classification/Executable shown
     // prominently first, per the required hierarchy. Same three values,
@@ -12111,9 +12301,22 @@ function buildShadowEvaluationDiagnosticHtml(d) {
     const _seLists = _apStackedRow('Blockers', se.blockers)
       + _apStackedRow('Cautions', se.cautions)
       + _apStackedRow('Supports', se.supports);
-    // Agreement block.
-    const _seAgreement = '<div class="ap-row"><span>Decision agreement</span><span>' + decisionAgreementLabel + '</span></div>'
-      + '<div class="ap-row"><span>High Conviction agreement</span><span>' + hcAgreementLabel + '</span></div>'
+    // TDAS V4.10.0E — Diagnostic Alignment: corrected agreement block.
+    // "Decision agreement"/"Actionable disagreement" retain their
+    // original row labels (still accurate — they now correctly measure
+    // Authoritative-vs-Evaluation agreement, the axis production actually
+    // uses) but the new Authoritative/Legacy/Evaluation rows above them
+    // make that unambiguous, and "High Conviction agreement" is relabeled
+    // "Legacy High Conviction agreement" since High Conviction has not
+    // been migrated (still legacy-vs-shadow-candidate only).
+    const _seAgreement = '<div class="ap-row"><span>Authoritative ready</span><span>' + authoritativeReadyLabel + '</span></div>'
+      + '<div class="ap-row"><span>Authoritative source</span><span>' + authoritativeSourceLabel + '</span></div>'
+      + '<div class="ap-row"><span>Evaluation ready</span><span>' + evaluationReadyLabel + '</span></div>'
+      + '<div class="ap-row"><span>Decision agreement</span><span>' + decisionAgreementLabel + '</span></div>'
+      + '<div class="ap-row"><span>Legacy ready</span><span>' + legacyReadyLabel + '</span></div>'
+      + '<div class="ap-row"><span>Legacy vs Evaluation agreement</span><span>' + legacyEvalAgreementLabel + '</span></div>'
+      + '<div class="ap-row"><span>Legacy migration difference</span><span>' + migrationDiffLabel + '</span></div>'
+      + '<div class="ap-row"><span>Legacy High Conviction agreement</span><span>' + hcAgreementLabel + '</span></div>'
       + '<div class="ap-row"><span>Classification difference</span><span>' + classificationDiffLabel + '</span></div>'
       + '<div class="ap-row"><span>Actionable disagreement</span><span>' + disagreementLabel + '</span></div>';
 
@@ -12160,11 +12363,29 @@ function buildShadowCensusDiagnosticHtml() {
     const hcStr = fmtRate(c.highConvictionAgreementRate, c.highConvictionAgreementCount, c.highConvictionAgreementEligibleCount);
     const classStr = fmtRate(c.classificationAgreementRate, c.classificationAgreementCount, c.classificationAgreementEligibleCount);
     const overallStr = fmtRate(c.overallAgreementRate, c.overallAgreementCount, c.overallAgreementEligibleCount);
+    // TDAS V4.10.0E — Diagnostic Alignment: the census's own migration
+    // agreement rate (legacy vs Evaluation, distinct from the decision
+    // rate above, which is now authoritative vs Evaluation).
+    const legacyEvalStr = fmtRate(c.legacyEvaluationAgreementRate, c.legacyEvaluationAgreementCount, c.legacyEvaluationAgreementEligibleCount);
+    const migrationDiffStr = ((c.migrationDifferenceTypes && (c.migrationDifferenceTypes.legacy_ready_evaluation_not_ready || c.migrationDifferenceTypes.legacy_not_ready_evaluation_ready))
+      ? ('Legacy ready/Eval not: ' + (c.migrationDifferenceTypes.legacy_ready_evaluation_not_ready || 0) + ' \u00b7 Legacy not/Eval ready: ' + (c.migrationDifferenceTypes.legacy_not_ready_evaluation_ready || 0))
+      : 'None');
     const _censusRows = '<div class="ap-row"><span>Total Evaluated</span><span>' + c.total + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Stage Distribution</span><span class="ap-census-pills">' + stagePills + '</span></div>'
-      + '<div class="ap-row"><span>Live vs Shadow Ready</span><span>' + c.liveReadyCount + ' vs ' + c.shadowReadyCount + '</span></div>'
-      + '<div class="ap-row"><span>Live vs Shadow High Conviction</span><span>' + c.liveHighConvictionCount + ' vs ' + c.shadowHighConvictionCount + '</span></div>'
+      // TDAS V4.10.0E — Diagnostic Alignment: "Live vs Shadow Ready"
+      // (confirmed misleading post-activation — see this file's own
+      // header comment) replaced with three unambiguous counts.
+      // authoritativeReadyCount/evaluationReadyCount are additive aliases
+      // of the pre-existing liveReadyCount/shadowReadyCount fields — same
+      // underlying numbers, corrected labels only.
+      + '<div class="ap-row"><span>Authoritative ready</span><span>' + c.authoritativeReadyCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Evaluation ready</span><span>' + c.evaluationReadyCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Legacy ready</span><span>' + c.legacyReadyCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Evaluation fallback (Stage 0 / unknown)</span><span>' + c.evaluationFallbackCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Legacy vs Shadow High Conviction</span><span>' + c.liveHighConvictionCount + ' vs ' + c.shadowHighConvictionCount + '</span></div>'
       + '<div class="ap-row"><span>Decision agreement</span><span>' + decisionStr + '</span></div>'
+      + '<div class="ap-row"><span>Legacy vs Evaluation agreement</span><span>' + legacyEvalStr + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>Legacy migration differences</span><span style="font-size:11px;text-align:right;">' + migrationDiffStr + '</span></div>'
       + '<div class="ap-row"><span>High Conviction agreement</span><span>' + hcStr + '</span></div>'
       + '<div class="ap-row"><span>Classification agreement</span><span>' + classStr + '</span></div>'
       + '<div class="ap-row"><span>Overall decision agreement</span><span>' + overallStr + '</span></div>'
@@ -12469,14 +12690,33 @@ function _buildFullAnalysisCopyText(d, symbol) {
     listRows('Cautions', se.cautions);
     listRows('Supports', se.supports);
     if (sc) {
+      // TDAS V4.10.0E — Diagnostic Alignment: Authoritative/Legacy/
+      // Evaluation shown as three distinct, unambiguous values before the
+      // agreement rows (see buildShadowEvaluationDiagnosticHtml()'s own
+      // header comment for the full V4.10.0D-activation root-cause note).
+      row('Authoritative ready', yn(sc.authoritative.ready));
+      row('Authoritative source', sc.authoritative.source === 'evaluation_engine' ? 'Evaluation Engine' : 'Legacy Fallback');
+      row('Evaluation ready', yn(sc.evaluation.ready));
       row('Decision agreement', yn(sc.decisionAgreement));
-      row('High Conviction agreement', yn(sc.highConvictionAgreement));
+      row('Legacy ready', yn(sc.legacy.ready));
+      row('Legacy vs Evaluation agreement', yn(sc.legacyEvaluationAgreement));
+      const migrationDiffLabelMap = {
+        legacy_ready_evaluation_not_ready: 'Legacy ready / Evaluation not ready',
+        legacy_not_ready_evaluation_ready: 'Legacy not ready / Evaluation ready',
+      };
+      row('Legacy migration difference', sc.legacyMigrationDifference ? (migrationDiffLabelMap[sc.legacyMigrationDifference] || 'Unknown') : 'None');
+      row('Legacy High Conviction agreement', yn(sc.highConvictionAgreement));
       row('Classification difference', sc.classificationDifference ? 'Yes' : 'No');
+      // TDAS V4.10.0E — disagreementType's internal enum values are
+      // unchanged; only the display text is corrected (was "Live ready,
+      // shadow not ready" — confirmed misleading post-V4.10.0D activation,
+      // since live.tradeReady now genuinely means the authoritative
+      // production result, not the legacy verdict).
       const disagreementLabelMap = {
-        none: 'None', live_ready_shadow_not_ready: 'Live ready, shadow not ready',
-        shadow_ready_live_not_ready: 'Shadow ready, live not ready',
-        live_high_shadow_not_high: 'Live High Conviction, shadow not',
-        shadow_high_live_not_high: 'Shadow High Conviction, live not',
+        none: 'None', live_ready_shadow_not_ready: 'Authoritative ready, Evaluation not ready',
+        shadow_ready_live_not_ready: 'Evaluation ready, Authoritative not ready',
+        live_high_shadow_not_high: 'Legacy High Conviction, Evaluation not',
+        shadow_high_live_not_high: 'Evaluation High Conviction, Legacy not',
       };
       row('Actionable disagreement', disagreementLabelMap[sc.disagreementType] || 'None');
     }
@@ -12492,12 +12732,26 @@ function _buildFullAnalysisCopyText(d, symbol) {
     const stageStr = Object.keys(census.byStage).sort(function(a, b) { return Number(a) - Number(b); })
       .map(function(k) { return 'S' + k + ':' + census.byStage[k]; }).join(', ') || 'None';
     row('Stage distribution', stageStr);
-    row('Live vs shadow ready', census.liveReadyCount + ' vs ' + census.shadowReadyCount);
+    // TDAS V4.10.0E — Diagnostic Alignment: "Live vs shadow ready"
+    // (confirmed misleading post-activation) replaced with three
+    // unambiguous counts. authoritativeReadyCount/evaluationReadyCount
+    // are additive aliases of the pre-existing liveReadyCount/
+    // shadowReadyCount fields — same underlying numbers, corrected labels.
+    row('Authoritative ready', census.authoritativeReadyCount + ' / ' + census.total);
+    row('Evaluation ready', census.evaluationReadyCount + ' / ' + census.total);
+    row('Legacy ready', census.legacyReadyCount + ' / ' + census.total);
+    row('Evaluation fallback (Stage 0 / unknown)', census.evaluationFallbackCount + ' / ' + census.total);
     function fmtCensusRate(rateVal, agreeCount, eligibleCount) {
       if (rateVal == null) return 'Not directly comparable';
       return (Math.round(rateVal * 1000) / 10) + '% (' + agreeCount + '/' + eligibleCount + ')';
     }
     row('Decision agreement', fmtCensusRate(census.decisionAgreementRate, census.decisionAgreementCount, census.decisionAgreementEligibleCount));
+    row('Legacy vs Evaluation agreement', fmtCensusRate(census.legacyEvaluationAgreementRate, census.legacyEvaluationAgreementCount, census.legacyEvaluationAgreementEligibleCount));
+    const migrationTypes = census.migrationDifferenceTypes || {};
+    const migrationStr = (migrationTypes.legacy_ready_evaluation_not_ready || migrationTypes.legacy_not_ready_evaluation_ready)
+      ? ('legacy_ready_evaluation_not_ready:' + (migrationTypes.legacy_ready_evaluation_not_ready || 0) + ', legacy_not_ready_evaluation_ready:' + (migrationTypes.legacy_not_ready_evaluation_ready || 0))
+      : 'None';
+    row('Legacy migration differences', migrationStr);
     row('High Conviction agreement', fmtCensusRate(census.highConvictionAgreementRate, census.highConvictionAgreementCount, census.highConvictionAgreementEligibleCount));
     row('Overall decision agreement', fmtCensusRate(census.overallAgreementRate, census.overallAgreementCount, census.overallAgreementEligibleCount));
     const disagreementStr = Object.keys(census.disagreementTypes || {})
