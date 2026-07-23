@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.0B';
+const APP_BUILD = 'V4.10.0D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5137,10 +5137,14 @@ function _shadowEvaluate(ev) {
 // ║  — it only ever reads the already-computed rawEvaluation object and,     ║
 // ║  in the fallback branch, calls the already-existing legacy formula.      ║
 // ║                                                                          ║
-// ║  FOUNDATION ONLY: nothing in the live system reads this object's         ║
-// ║  tradeReady field yet. Scanner Trade Ready remains fully driven by       ║
-// ║  _buildScannerAdvisory()'s own (legacy) computation regardless of what   ║
-// ║  this function returns. DIAG.evaluationEngineLive stays false.          ║
+// ║  TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. Superseded    ║
+// ║  the prior "foundation only" note: _buildScannerAdvisory()'s own         ║
+// ║  tradeReady gate now DOES read this object's tradeReady/tradeReadyKnown  ║
+// ║  fields whenever DIAG.evaluationEngineLive is true (the delivered        ║
+// ║  default as of this build) AND tradeReadyKnown is true — see that       ║
+// ║  function's own header comment for the exact policy. Unknown/Stage-0     ║
+// ║  results (tradeReadyKnown:false) still always fall back to the legacy    ║
+// ║  verdict this function itself computes above — never coerced to false.   ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 function buildAuthoritativeClassification(d, rawEvaluation) {
   const ev = (d && d.evaluation) || null;
@@ -6633,13 +6637,39 @@ function _buildScannerAdvisory(d) {
   // comment, defined just above this function) so it can be reused as the
   // safe fallback verdict inside buildAuthoritativeClassification().
   // Byte-for-byte identical inputs/thresholds/output to before this
-  // extraction — this call site's own behaviour is unchanged. The
-  // Evaluation Engine is NOT wired in here: scanner Trade Ready remains
-  // fully legacy-driven in this build regardless of
-  // DIAG.evaluationEngineLive.
+  // extraction.
+  //
+  // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. The legacy
+  // verdict is still computed unconditionally (it remains the fallback for
+  // every unknown/Stage-0/malformed case below), but when
+  // DIAG.evaluationEngineLive is true AND d.authoritativeClassification
+  // reports a genuinely KNOWN Evaluation result (tradeReadyKnown===true —
+  // i.e. Stage 1+ with a resolved executable boolean, never Stage 0), that
+  // known Evaluation verdict is now authoritative for the scanner Trade
+  // Ready gate instead of the legacy formula. This can move tradeReady in
+  // EITHER direction relative to legacy (Evaluation true overriding a
+  // legacy false, or Evaluation false overriding a legacy true — both
+  // directions are intentional per the V4.10.0C activation-readiness
+  // audit's own validated real-world cases). Unknown Evaluation
+  // (tradeReadyKnown===false, including Stage 0, missing/malformed
+  // authoritativeClassification, or the flag being false) is NEVER
+  // coerced to false here — it always falls through to the exact same
+  // legacy verdict this scanner used before this task. Nothing else in
+  // this function changes: action/headline/detail, warnings, supporting,
+  // blocking are all still driven by ev exactly as before — only this one
+  // boolean's source can now differ.
   const _legacyTradeReadyVerdict = _buildLegacyTradeReadyVerdict(d, ev);
-  const tradeReady = _legacyTradeReadyVerdict.tradeReady;
-  const _tradeReadyBlockedReasons = _legacyTradeReadyVerdict.tradeReadyBlockedReasons;
+  const _ac = d.authoritativeClassification;
+  const _evaluationEngineKnown = !!(DIAG.evaluationEngineLive === true && _ac && _ac.tradeReadyKnown === true);
+  const tradeReady = _evaluationEngineKnown ? _ac.tradeReady : _legacyTradeReadyVerdict.tradeReady;
+  // Blocked-reasons projection: when the Evaluation Engine is authoritative
+  // for this card, reuse its own already-computed blockers/cautions
+  // verbatim (direct pass-through only — no new wording, no
+  // reinterpretation) so the checklist never blanks out; otherwise the
+  // legacy reasons array is used exactly as before.
+  const _tradeReadyBlockedReasons = _evaluationEngineKnown
+    ? ((_ac.rawEvaluation && ((_ac.rawEvaluation.blockers || []).concat(_ac.rawEvaluation.cautions || []))) || [])
+    : _legacyTradeReadyVerdict.tradeReadyBlockedReasons;
   return {
     mode: 'scanner',
     action, headline,
@@ -8513,7 +8543,7 @@ const DIAG = {
   binanceFuturesSwitchValidation: false, // BINANCE FUTURES SWITCH VALIDATION (XRP+SOL 4H) — validated, off for now
   dataSourceAudit:           false,  // [DataSource] concise klines/ticker source confirmation — off for production
   marketEvidence:            true,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log — ENABLED for live shadow observation ahead of Phase C
-  evaluationEngineLive:      false, // TDAS V4.10.0B — future flag-gated source swap for scanner Trade Ready (Evaluation Engine vs legacy). Foundation only in this build: authoritativeClassification is computed and attached everywhere, but no live consumer reads this flag yet, and scanner Trade Ready remains fully legacy-driven. Do not flip in this build.
+  evaluationEngineLive:      true, // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. ACTIVE: scanner Trade Ready is now authoritative from the Stage 0-10 Evaluation Engine whenever d.authoritativeClassification.tradeReadyKnown is true (see _buildScannerAdvisory()'s own header comment for the exact policy and fallback). Rollback: set back to false to instantly restore the pre-V4.10.0D legacy-only behaviour — no other change required.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -10322,10 +10352,13 @@ async function calcPair(symbol,tf){
   // evidence was just built on the lines above, so there is nothing to
   // rebuild here — only the shadow/adapter build step runs.
   //
-  // FOUNDATION ONLY: nothing reads _result.authoritativeClassification for
-  // live behaviour yet. DIAG.evaluationEngineLive stays false, and scanner
-  // Trade Ready remains driven by _buildScannerAdvisory()'s own (legacy)
-  // computation regardless of this attachment.
+  // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. Superseded
+  // the prior "foundation only" note: _result.authoritativeClassification
+  // is now read live by _buildScannerAdvisory()'s tradeReady gate whenever
+  // DIAG.evaluationEngineLive is true (the delivered default as of this
+  // build) and the result is genuinely known — see that function's own
+  // header comment for the exact policy and the mandatory Stage-0/unknown
+  // fallback to the legacy verdict.
   if (typeof _refreshShadowFromCurrentEvidence === 'function') {
     _refreshShadowFromCurrentEvidence(_result, { symbol });
   }
