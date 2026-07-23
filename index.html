@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.0E';
+const APP_BUILD = 'V4.10.1B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5145,6 +5145,36 @@ function _shadowEvaluate(ev) {
 // ║  function's own header comment for the exact policy. Unknown/Stage-0     ║
 // ║  results (tradeReadyKnown:false) still always fall back to the legacy    ║
 // ║  verdict this function itself computes above — never coerced to false.   ║
+// ║                                                                          ║
+// ║  TDAS V4.10.1B — High Conviction Adapter Foundation. Adds three new,     ║
+// ║  purely additive fields — highConviction / highConvictionKnown /         ║
+// ║  highConvictionSource — per the V4.10.1A audit's recommended contract.   ║
+// ║  FOUNDATION ONLY: no production consumer reads these fields in this      ║
+// ║  build (DIAG.highConvictionEngineLive stays false); d.highConviction,    ║
+// ║  sortScore(), the pair-label star, Advisory, Journal/Sheets and          ║
+// ║  Confluence all remain fully legacy-driven, untouched.                   ║
+// ║                                                                          ║
+// ║  Deliberate asymmetry vs Trade Ready: Trade Ready's Stage-0/unknown      ║
+// ║  fallback reuses the legacy verdict (a genuine, if imperfect, decision   ║
+// ║  already exists). High Conviction's Stage-0/unknown case WITHHOLDS the   ║
+// ║  verdict instead — highConviction:false, highConvictionKnown:false,      ║
+// ║  highConvictionSource:'evaluation_unknown' — and never reads              ║
+// ║  d.highConviction as a fallback. Per the V4.10.1A audit: legacy HC can   ║
+// ║  grant HC to standalone 1H, ignores 200MA chop and ADX rollover, and     ║
+// ║  can survive an Evaluation hard block — none of that is a safe stand-in  ║
+// ║  for an optional premium classification, so incomplete evidence          ║
+// ║  withholds HC rather than fabricating it from a formula already known    ║
+// ║  to disagree with doctrine. The legacy d.highConviction value remains    ║
+// ║  fully intact and separately readable everywhere it always was — this    ║
+// ║  function only ever reads it (indirectly, via _legacy above, for         ║
+// ║  tradeReady) and never for highConviction.                              ║
+// ║                                                                          ║
+// ║  Candidate source rule: highConviction is derived ONLY from               ║
+// ║  rawEvaluation.classification === 'high_conviction_candidate' — the      ║
+// ║  same test highConvictionCandidate already uses — never from             ║
+// ║  rawEvaluation.highConvictionEligible, which the V4.10.1A audit          ║
+// ║  confirmed means only "this path is theoretically HC-capable" (true at   ║
+// ║  Stages 4, 5, 6, 9 and 10 for four_h_led), not an HC verdict.            ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
 function buildAuthoritativeClassification(d, rawEvaluation) {
   const ev = (d && d.evaluation) || null;
@@ -5152,33 +5182,48 @@ function buildAuthoritativeClassification(d, rawEvaluation) {
   const _modelVersion = (rawEvaluation && rawEvaluation.modelVersion) || SHADOW_MODEL_VERSION;
 
   if (rawEvaluation && rawEvaluation.executable === true) {
+    const _isCandidate = rawEvaluation.classification === 'high_conviction_candidate';
     return {
       source: 'evaluation_engine',
       rawEvaluation,
       tradeReady: true,
       tradeReadyKnown: true,
-      highConvictionCandidate: rawEvaluation.classification === 'high_conviction_candidate',
+      highConvictionCandidate: _isCandidate,
+      highConviction: _isCandidate,
+      highConvictionKnown: true,
+      highConvictionSource: 'evaluation_engine',
       modelVersion: _modelVersion,
     };
   }
   if (rawEvaluation && rawEvaluation.executable === false) {
+    const _isCandidate = rawEvaluation.classification === 'high_conviction_candidate';
     return {
       source: 'evaluation_engine',
       rawEvaluation,
       tradeReady: false,
       tradeReadyKnown: true,
-      highConvictionCandidate: rawEvaluation.classification === 'high_conviction_candidate',
+      highConvictionCandidate: _isCandidate,
+      highConviction: _isCandidate,
+      highConvictionKnown: true,
+      highConvictionSource: 'evaluation_engine',
       modelVersion: _modelVersion,
     };
   }
   // executable === null (Stage 0 — genuinely unknown), or rawEvaluation
-  // absent/malformed. Never interpreted as a false verdict.
+  // absent/malformed. tradeReady never interpreted as a false verdict
+  // (falls back to the legacy formula, unchanged from V4.10.0B/0D).
+  // highConviction, by deliberate contrast, is WITHHELD rather than
+  // falling back to d.highConviction — see this function's own header
+  // comment for the full rationale.
   return {
     source: 'legacy_fallback',
     rawEvaluation: rawEvaluation || null,
     tradeReady: _legacy.tradeReady,
     tradeReadyKnown: false,
     highConvictionCandidate: false,
+    highConviction: false,
+    highConvictionKnown: false,
+    highConvictionSource: 'evaluation_unknown',
     modelVersion: _modelVersion,
   };
 }
@@ -8717,6 +8762,7 @@ const DIAG = {
   dataSourceAudit:           false,  // [DataSource] concise klines/ticker source confirmation — off for production
   marketEvidence:            true,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log — ENABLED for live shadow observation ahead of Phase C
   evaluationEngineLive:      true, // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. ACTIVE: scanner Trade Ready is now authoritative from the Stage 0-10 Evaluation Engine whenever d.authoritativeClassification.tradeReadyKnown is true (see _buildScannerAdvisory()'s own header comment for the exact policy and fallback). Rollback: set back to false to instantly restore the pre-V4.10.0D legacy-only behaviour — no other change required.
+  highConvictionEngineLive:  false, // TDAS V4.10.1B — High Conviction Adapter Foundation. Dormant: d.authoritativeClassification now carries highConviction/highConvictionKnown/highConvictionSource, but no production consumer reads this flag or those fields yet. Separate release control from evaluationEngineLive by design — Trade Ready and High Conviction activate independently. Do not flip in this build.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
