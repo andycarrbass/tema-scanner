@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.13';
+const APP_BUILD = 'V4.10.0B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5102,6 +5102,83 @@ function _shadowEvaluate(ev) {
   return finalize(0, 'unknown', 'unknown', null, null);
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.0B — Authoritative Classification Adapter Foundation         ║
+// ║                                                                          ║
+// ║  buildAuthoritativeClassification(d, rawEvaluation) translates an        ║
+// ║  already-computed Stage 0-10 result (rawEvaluation — the exact object    ║
+// ║  _shadowEvaluate() returns; never re-run or duplicated here) into the    ║
+// ║  canonical adapter contract:                                            ║
+// ║                                                                          ║
+// ║    { source, rawEvaluation, tradeReady, tradeReadyKnown,                 ║
+// ║      highConvictionCandidate, modelVersion }                            ║
+// ║                                                                          ║
+// ║  Semantics (per V4.10.0A audit, Section 10/11):                         ║
+// ║    executable === true  -> tradeReady:true,  tradeReadyKnown:true,       ║
+// ║                             source:'evaluation_engine'                  ║
+// ║    executable === false -> tradeReady:false, tradeReadyKnown:true,       ║
+// ║                             source:'evaluation_engine'                  ║
+// ║    executable === null, or rawEvaluation missing/malformed ->            ║
+// ║                             tradeReadyKnown:false, source:'legacy_fallback',
+// ║                             tradeReady falls back to the byte-identical  ║
+// ║                             legacy formula (_buildLegacyTradeReadyVerdict)║
+// ║                             — genuinely UNKNOWN Evaluation state is      ║
+// ║                             never interpreted as a false verdict; the    ║
+// ║                             fallback only fills in a safe value for a    ║
+// ║                             future consumer, with provenance explicit.   ║
+// ║                                                                          ║
+// ║  highConvictionCandidate is diagnostic/future-facing only — it is NOT    ║
+// ║  connected to d.highConviction, sorting, cards, Advisory or persistence  ║
+// ║  in this build.                                                         ║
+// ║                                                                          ║
+// ║  Pure: no DOM access, no mutation of d, no global-state writes, no       ║
+// ║  Journal writes, no rendering, no async work. Does not duplicate Stage   ║
+// ║  0-10 rules and does not reconstruct classification from raw TA fields   ║
+// ║  — it only ever reads the already-computed rawEvaluation object and,     ║
+// ║  in the fallback branch, calls the already-existing legacy formula.      ║
+// ║                                                                          ║
+// ║  FOUNDATION ONLY: nothing in the live system reads this object's         ║
+// ║  tradeReady field yet. Scanner Trade Ready remains fully driven by       ║
+// ║  _buildScannerAdvisory()'s own (legacy) computation regardless of what   ║
+// ║  this function returns. DIAG.evaluationEngineLive stays false.          ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function buildAuthoritativeClassification(d, rawEvaluation) {
+  const ev = (d && d.evaluation) || null;
+  const _legacy = _buildLegacyTradeReadyVerdict(d, ev);
+  const _modelVersion = (rawEvaluation && rawEvaluation.modelVersion) || SHADOW_MODEL_VERSION;
+
+  if (rawEvaluation && rawEvaluation.executable === true) {
+    return {
+      source: 'evaluation_engine',
+      rawEvaluation,
+      tradeReady: true,
+      tradeReadyKnown: true,
+      highConvictionCandidate: rawEvaluation.classification === 'high_conviction_candidate',
+      modelVersion: _modelVersion,
+    };
+  }
+  if (rawEvaluation && rawEvaluation.executable === false) {
+    return {
+      source: 'evaluation_engine',
+      rawEvaluation,
+      tradeReady: false,
+      tradeReadyKnown: true,
+      highConvictionCandidate: rawEvaluation.classification === 'high_conviction_candidate',
+      modelVersion: _modelVersion,
+    };
+  }
+  // executable === null (Stage 0 — genuinely unknown), or rawEvaluation
+  // absent/malformed. Never interpreted as a false verdict.
+  return {
+    source: 'legacy_fallback',
+    rawEvaluation: rawEvaluation || null,
+    tradeReady: _legacy.tradeReady,
+    tradeReadyKnown: false,
+    highConvictionCandidate: false,
+    modelVersion: _modelVersion,
+  };
+}
+
 // TDAS V4.9.5 T6 — canonical live classification, for comparison metadata
 // only (never a shadow-classifier input). Reuses the existing production
 // _buildScannerAdvisory(d).tradeReady boolean, d.highConviction boolean
@@ -5333,6 +5410,15 @@ function _refreshShadowFromCurrentEvidence(d, options) {
 
   // Step 2 — rebuild shadow evaluation/comparison only when the evidence
   // object shadow was built from has genuinely changed (reference check).
+  //
+  // TDAS V4.10.0B — Authoritative Classification Adapter Foundation.
+  // buildAuthoritativeClassification() is built here too, from this SAME
+  // shadowEvaluation result — _shadowEvaluate() is never called a second
+  // time for the same evidence build. This remains the single authorised
+  // seam that (re)builds shadowEvaluation/shadowComparison/
+  // authoritativeClassification together; no separate refresh topology is
+  // introduced. See buildAuthoritativeClassification()'s own header
+  // comment for the adapter contract and fallback semantics.
   if (d.evidence && d._shadowBuiltFromEvidence !== d.evidence) {
     const shadowEvaluation = _shadowEvaluate(d.evidence);
     const live = _liveClassificationFromD(d);
@@ -5340,6 +5426,7 @@ function _refreshShadowFromCurrentEvidence(d, options) {
     d.shadowEvaluation = shadowEvaluation;
     d.shadowComparison = shadowComparison;
     d._shadowBuiltFromEvidence = d.evidence;
+    d.authoritativeClassification = buildAuthoritativeClassification(d, shadowEvaluation);
     return true;
   }
   return false;
@@ -6371,6 +6458,64 @@ function _reconcileHtfWarningWording(rawWarnings, d, dirWord){
   return rawWarnings.map(w => w === LEGACY_HTF_NEUTRAL_TEXT ? replacement : w);
 }
 
+// TDAS V4.10.0B — Authoritative Classification Adapter Foundation.
+//
+// _buildLegacyTradeReadyVerdict(d, ev) is a byte-for-byte extraction of
+// the tradeReady V1 (Phase 2) formula that used to live inline in
+// _buildScannerAdvisory() below — same fields, same thresholds, same
+// output, not recalibrated in any way. It exists so the identical
+// formula can be reused as the safe fallback verdict inside
+// buildAuthoritativeClassification() (see its own header comment) without
+// duplicating the logic in two places. _buildScannerAdvisory() itself now
+// calls this helper instead of computing the formula inline — its own
+// tradeReady output is therefore unchanged.
+//
+// Guards against ev being null/neutral/no-setup defensively (the
+// broader adapter can invoke this for any calcPair() result, including
+// neutral-signal scans, where _buildScannerAdvisory() itself would have
+// already returned null before ever reaching this formula) — matches the
+// same "nothing to advise" semantics _buildScannerAdvisory() already
+// applies at its own top, just expressed as tradeReady:false here rather
+// than a null advisory object.
+function _buildLegacyTradeReadyVerdict(d, ev) {
+  if (!ev || ev.tradeBias === 'NEUTRAL' || ev.actionBias === ACTION_BIAS.NO_SETUP) {
+    return { tradeReady: false, tradeReadyBlockedReasons: [] };
+  }
+  const dir = ev.tradeBias === 'LONG' ? 'LONG' : 'SHORT';
+  const _tradeReadyActions = [
+    ACTION_BIAS.CONSIDER_LONG, ACTION_BIAS.CONSIDER_SHORT,
+    ACTION_BIAS.STRONG_LONG,   ACTION_BIAS.STRONG_SHORT,
+  ];
+  // confirmCount is available on ev (evaluateSetup now exposes it — additive
+  // metadata only, calculation unchanged). Falls back to setupQuality if it
+  // were ever absent, per the original task's fallback instruction.
+  const _confirmCountOk = (ev.confirmCount != null)
+    ? ev.confirmCount >= 3
+    : (ev.setupQuality === 'MODERATE' || ev.setupQuality === 'HIGH');
+  // Advisory Calibration Phase 2 — two additional tradeReady-only gates.
+  // Uses only existing fields (d.states.utBot.direction, ev.score) — no
+  // new indicator calculation, no change to how either value is computed.
+  const _st = (d && d.states) || {};
+  const _utBot = _st.utBot || null;
+  // UT direction opposes the trade if: LONG with bearish UT, or SHORT with bullish UT.
+  const _utOpposes = _utBot ? (dir === 'LONG' ? _utBot.direction === -1 : _utBot.direction === 1) : false;
+  // Weak-score gate — 45 matches the existing counter-regime WATCH threshold
+  // used elsewhere in _buildScannerAdvisory, kept consistent rather than a new number.
+  const _scoreOk = ev.score != null ? ev.score >= 45 : true;
+
+  const _tradeReadyBlockedReasons = [];
+  if (_utOpposes) _tradeReadyBlockedReasons.push('UT opposes direction');
+  if (!_scoreOk)   _tradeReadyBlockedReasons.push('Score below action threshold');
+
+  const tradeReady = _tradeReadyActions.indexOf(ev.actionBias) !== -1
+    && (ev.blockers || []).length === 0
+    && _confirmCountOk
+    && !_utOpposes
+    && _scoreOk;
+
+  return { tradeReady, tradeReadyBlockedReasons: _tradeReadyBlockedReasons };
+}
+
 function _buildScannerAdvisory(d) {
   const ev = d.evaluation;
   if (!ev || ev.tradeBias === 'NEUTRAL' || ev.actionBias === ACTION_BIAS.NO_SETUP) {
@@ -6482,41 +6627,19 @@ function _buildScannerAdvisory(d) {
   // can never accidentally make a regime-opposed setup tradeReady: its
   // ev.actionBias is still AVOID underneath regardless of what the card
   // headline shows.
-  const _tradeReadyActions = [
-    ACTION_BIAS.CONSIDER_LONG, ACTION_BIAS.CONSIDER_SHORT,
-    ACTION_BIAS.STRONG_LONG,   ACTION_BIAS.STRONG_SHORT,
-  ];
-  // confirmCount is available on ev (evaluateSetup now exposes it — additive
-  // metadata only, calculation unchanged). Falls back to setupQuality if it
-  // were ever absent, per the task's fallback instruction.
-  const _confirmCountOk = (ev.confirmCount != null)
-    ? ev.confirmCount >= 3
-    : (ev.setupQuality === 'MODERATE' || ev.setupQuality === 'HIGH');
-
-  // Advisory Calibration Phase 2 — two additional tradeReady-only gates.
-  // Neither changes the displayed headline/action (a CONSIDER SHORT with
-  // bullish UT still shows as CONSIDER SHORT) — they only prevent the
-  // TRADE READY button from appearing on a setup with an internal conflict
-  // or a very weak score. Uses only existing fields (d.states.utBot.direction,
-  // ev.score) — no new indicator calculation, no change to how either value
-  // is computed.
-  const _st = (d && d.states) || {};
-  const _utBot = _st.utBot || null;
-  // UT direction opposes the trade if: LONG with bearish UT, or SHORT with bullish UT.
-  const _utOpposes = _utBot ? (dir === 'LONG' ? _utBot.direction === -1 : _utBot.direction === 1) : false;
-  // Weak-score gate — 45 matches the existing counter-regime WATCH threshold
-  // used elsewhere in this same function, kept consistent rather than a new number.
-  const _scoreOk = ev.score != null ? ev.score >= 45 : true;
-
-  const _tradeReadyBlockedReasons = [];
-  if (_utOpposes) _tradeReadyBlockedReasons.push('UT opposes direction');
-  if (!_scoreOk)   _tradeReadyBlockedReasons.push('Score below action threshold');
-
-  const tradeReady = _tradeReadyActions.indexOf(ev.actionBias) !== -1
-    && (ev.blockers || []).length === 0
-    && _confirmCountOk
-    && !_utOpposes
-    && _scoreOk;
+  //
+  // TDAS V4.10.0B — the formula itself now lives in the extracted
+  // _buildLegacyTradeReadyVerdict(d, ev) helper (see its own header
+  // comment, defined just above this function) so it can be reused as the
+  // safe fallback verdict inside buildAuthoritativeClassification().
+  // Byte-for-byte identical inputs/thresholds/output to before this
+  // extraction — this call site's own behaviour is unchanged. The
+  // Evaluation Engine is NOT wired in here: scanner Trade Ready remains
+  // fully legacy-driven in this build regardless of
+  // DIAG.evaluationEngineLive.
+  const _legacyTradeReadyVerdict = _buildLegacyTradeReadyVerdict(d, ev);
+  const tradeReady = _legacyTradeReadyVerdict.tradeReady;
+  const _tradeReadyBlockedReasons = _legacyTradeReadyVerdict.tradeReadyBlockedReasons;
   return {
     mode: 'scanner',
     action, headline,
@@ -8390,6 +8513,7 @@ const DIAG = {
   binanceFuturesSwitchValidation: false, // BINANCE FUTURES SWITCH VALIDATION (XRP+SOL 4H) — validated, off for now
   dataSourceAudit:           false,  // [DataSource] concise klines/ticker source confirmation — off for production
   marketEvidence:            true,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log — ENABLED for live shadow observation ahead of Phase C
+  evaluationEngineLive:      false, // TDAS V4.10.0B — future flag-gated source swap for scanner Trade Ready (Evaluation Engine vs legacy). Foundation only in this build: authoritativeClassification is computed and attached everywhere, but no live consumer reads this flag yet, and scanner Trade Ready remains fully legacy-driven. Do not flip in this build.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -10184,6 +10308,27 @@ async function calcPair(symbol,tf){
   // via a background driver in between calcPair() calls. See that call
   // site's own comment for the full root-cause explanation.
   _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
+  // TDAS V4.10.0B — Authoritative Classification Adapter Foundation.
+  // Attaches _result.authoritativeClassification (per the V4.10.0A audit's
+  // recommended seam) for EVERY calcPair() caller — including
+  // _tdSignalRefresh(), which previously received no shadow diagnostics at
+  // all (see the audit's D-9 finding). Calls the existing, single
+  // authorised _refreshShadowFromCurrentEvidence() helper directly rather
+  // than re-implementing its logic, so _shadowEvaluate() is invoked
+  // exactly once for this evidence build — that one call also produces
+  // _result.shadowEvaluation/_result.shadowComparison (unchanged shape,
+  // just attached here instead of only via runScan()'s later, now-no-op
+  // call to the same helper). rebuildEvidence is intentionally omitted:
+  // evidence was just built on the lines above, so there is nothing to
+  // rebuild here — only the shadow/adapter build step runs.
+  //
+  // FOUNDATION ONLY: nothing reads _result.authoritativeClassification for
+  // live behaviour yet. DIAG.evaluationEngineLive stays false, and scanner
+  // Trade Ready remains driven by _buildScannerAdvisory()'s own (legacy)
+  // computation regardless of this attachment.
+  if (typeof _refreshShadowFromCurrentEvidence === 'function') {
+    _refreshShadowFromCurrentEvidence(_result, { symbol });
+  }
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
   _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
