@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.9.11';
+const APP_BUILD = 'V4.9.12';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -13204,8 +13204,9 @@ function openAnalysisPanel(symbol){
       : (_advisory.action === 'HOLD' || (_advisory.action && _advisory.action.indexOf('CONSIDER') === 0)) ? 'var(--green-text)'
       : 'var(--text2)';
     _advisoryHtml = _apSectionWrap('TDAS Advisory',
-      '<div class="ap-row"><span style="font-size:16px;font-weight:700;color:' + _advColor + ';">' + _advisory.headline + '</span>'
-      + (_advisory.readyLabel ? '<span style="font-size:11px;font-weight:700;color:var(--green-text);background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.25);padding:2px 8px;border-radius:99px;">' + _advisory.readyLabel + '</span>' : '') + '</div>'
+      '<div class="ap-row" style="flex-wrap:wrap;">'
+      + '<span style="font-size:16px;font-weight:700;color:' + _advColor + ';">' + _advisory.headline + '</span>'
+      + (_advisory.readyLabel ? '<span style="font-size:11px;font-weight:700;color:var(--green-text);background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.25);padding:2px 8px;border-radius:99px;white-space:nowrap;flex-shrink:0;">' + _advisory.readyLabel + '</span>' : '') + '</div>'
       + (_advisory.detail ? '<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--text2);font-size:13px;">' + _advisory.detail + '</span></div>' : '')
       + (_advisory.supporting && _advisory.supporting.length ? _apStackedRow('Supporting', _advisory.supporting) : '')
       + (_advisory.warnings && _advisory.warnings.length ? _apStackedRow('Warnings', _advisory.warnings) : '')
