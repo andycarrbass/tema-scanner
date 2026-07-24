@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.1B';
+const APP_BUILD = 'V4.10.1D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5061,6 +5061,109 @@ function _shadowEvaluate(ev) {
       supports.push('1H ADX executable');
       supports.push('1H trigger ready');
       if (executionExtensionObj.state === 'elevated') (executionExtensionObj.reasons || []).forEach(function(r) { cautions.push(r); });
+
+      // ── TDAS V4.10.1D — Strict 1H-Origin High Conviction Route ─────────
+      // Revised doctrine: a standalone_one_h setup that already clears
+      // ordinary Stage 7 Trade Ready (the gate above — HC is a PROMOTION
+      // from an otherwise-valid Stage 7 result, never a bypass around it)
+      // may reach Stage 10 only when the 1H setup AND the adjacent 4H
+      // evidence are both fully, directionally confirmed — mirroring the
+      // existing four_h_led Stage 10 conjunction's own strictness, applied
+      // symmetrically to both timeframes. setupPath remains
+      // 'standalone_one_h' throughout (diagnostics distinguish the route
+      // via the 'Strict 1H setup with fully confirmed 4H alignment'
+      // support string, not a renamed path). Every field below is an
+      // already-existing canonical MarketEvidence property — no new
+      // technical calculation, no invented proxy for any field found
+      // absent (none were: see the V4.10.1D delivery report's evidence
+      // audit).
+      //
+      // 1H-side additions beyond the Stage-7 gate already passed:
+      //   - setupRegimeConfirmed (excludes transitional, unlike Stage 3's
+      //     own confirmed-OR-transitional admission) — "fully confirmed",
+      //     not merely non-opposing.
+      //   - setup MA200 slope and TEMA92/MA200 relation directionally
+      //     confirmed (mirrors four_h_led Stage 10's own setup-side terms
+      //     exactly).
+      //   - setup TEMA direction (comp.temaStructure.direction) aligned.
+      //   - setupUtOpp.state === 'aligned' exactly (no transitional
+      //     opposition tolerated, unlike ordinary Stage 7 which only
+      //     excludes opposing_hard/opposing_transitional but tolerates
+      //     e.g. 'unknown').
+      //   - !setupAdxSlope.highRollingOver (Stage 7 has no slope term at
+      //     all; HC requires it).
+      //   - executionExtension.state === 'neutral' exactly — a
+      //     deliberate strictness choice beyond Stage 7 (which only
+      //     cautions on 'elevated', never blocks it) and beyond
+      //     four_h_led Stage 10 (which does not gate on extension at
+      //     all): doctrine explicitly calls out "exceptionally clean"/
+      //     "climactic extension must not become HC" for this specific
+      //     new route, and 'elevated' is a genuine (if lesser) extension
+      //     warning — 'chasing'/'climactic' can never reach this branch
+      //     at all, since _timingStateFromInputs() already routes
+      //     stageSixEligible-true results to Stage 6 before timingState
+      //     can read 'ready'.
+      //
+      // 4H-side (comp.adjacentAdxState / comp.temaStructure.adjacentDirection
+      // / comp.utDirection.adjacentDirection / comp.ma200RegimeInputs.adjacent
+      // — all already-existing canonical fields):
+      //   - adjacentRegimeConfirmed (confirmed_bullish/confirmed_bearish
+      //     only, direction-matched) — not merely non-opposing.
+      //   - adjacent MA200 slope and TEMA92/MA200 relation directionally
+      //     confirmed (same strictness as the setup side and as
+      //     four_h_led Stage 10's own setup-side terms).
+      //   - adjacent TEMA direction (comp.temaStructure.adjacentDirection)
+      //     and adjacent UT direction (comp.utDirection.adjacentDirection)
+      //     both directionally aligned. Note: unlike the setup/oneH sides,
+      //     no adjacent UT *opposition-state* object exists in canonical
+      //     evidence (only setup and oneH carry the richer aligned/
+      //     opposing_transitional/opposing_hard classification) — the
+      //     doctrine's own wording ("4H UT direction aligned") already
+      //     asks for exactly the direction comparison that IS available,
+      //     so no proxy was needed here.
+      //   - adjacent ADX >= 25 and not rolling over (comp.adjacentAdxState
+      //     — the same field the V4.10.1A audit noted existed but was
+      //     unused; now consumed for the first time).
+      //   - adjacent chop not 'chop' (comp.ma200RegimeInputs.adjacent.chop
+      //     — confirmed present in canonical evidence, contrary to an
+      //     initial concern raised during the pre-implementation audit).
+      //   - counterHtf !== true (the same existing local variable
+      //     four_h_led Stage 10 already reuses — no new counter-HTF
+      //     calculation).
+      const adjacentAdxObj = comp.adjacentAdxState || { value: null, state: 'unknown', slope: { highRollingOver: false } };
+      const adjacentAdxVal = adjacentAdxObj.value;
+      const adjacentAdxSlopeObj = adjacentAdxObj.slope || { highRollingOver: false };
+      const adjacentChopState = (adjacentRegimeObj.chop && adjacentRegimeObj.chop.state) || 'unknown';
+      const adjacentUtDirection = (comp.utDirection && comp.utDirection.adjacentDirection) || 'unknown';
+      const adjacentTemaDirection = (comp.temaStructure && comp.temaStructure.adjacentDirection) || 'unknown';
+      const adjacentMa200SlopeState = (adjacentRegimeObj.slope && adjacentRegimeObj.slope.state) || 'unknown';
+      const adjacentTema92Relation = adjacentRegimeObj.tema92Relation || 'unknown';
+      const adjacentRegimeConfirmed = (direction === 'long' && adjacentRegime === 'confirmed_bullish') || (direction === 'short' && adjacentRegime === 'confirmed_bearish');
+
+      const strictOneHOriginHcEligible = (
+        // 1H side — beyond the Stage-7 gate already satisfied above.
+        setupRegimeConfirmed &&
+        ((direction === 'long' && setupMa200Slope === 'rising') || (direction === 'short' && setupMa200Slope === 'falling')) &&
+        ((direction === 'long' && setupTema92Relation === 'above') || (direction === 'short' && setupTema92Relation === 'below')) &&
+        ((direction === 'long' && setupTemaDir === 'bullish') || (direction === 'short' && setupTemaDir === 'bearish')) &&
+        setupUtOpp.state === 'aligned' &&
+        !setupAdxSlope.highRollingOver &&
+        executionExtensionObj.state === 'neutral' &&
+        // 4H side — fully, directionally confirmed (never merely non-opposing).
+        adjacentRegimeConfirmed &&
+        ((direction === 'long' && adjacentMa200SlopeState === 'rising') || (direction === 'short' && adjacentMa200SlopeState === 'falling')) &&
+        ((direction === 'long' && adjacentTema92Relation === 'above') || (direction === 'short' && adjacentTema92Relation === 'below')) &&
+        ((direction === 'long' && adjacentTemaDirection === 'bullish') || (direction === 'short' && adjacentTemaDirection === 'bearish')) &&
+        ((direction === 'long' && adjacentUtDirection === 'bullish') || (direction === 'short' && adjacentUtDirection === 'bearish')) &&
+        adjacentAdxVal != null && adjacentAdxVal >= 25 && !adjacentAdxSlopeObj.highRollingOver &&
+        adjacentChopState !== 'chop' &&
+        counterHtf !== true
+      );
+
+      if (strictOneHOriginHcEligible) {
+        supports.push('Strict 1H setup with fully confirmed 4H alignment');
+        return finalize(10, 'high_conviction', 'high_conviction_candidate', true, true);
+      }
       return finalize(7, 'standalone_one_h_ready', 'trade_ready', true, false);
     }
     if (timingState === 'early_trigger') {
@@ -5278,6 +5381,42 @@ function _liveClassificationFromD(d, authoritativeClassification) {
   const authoritativeReady = authoritativeKnown ? _ac.tradeReady : legacyReady;
   const authoritativeSource = authoritativeKnown ? 'evaluation_engine' : 'legacy_fallback';
 
+  // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation:
+  // additive HC diagnostics. Mirrors _buildScannerAdvisory()'s own
+  // source-selection formula independently — never calls that function
+  // (the V4.10.0E audit's own root-cause lesson for Trade Ready applies
+  // identically here: calling it here would risk reading a
+  // d.authoritativeClassification that has not yet been assigned for the
+  // current evidence build).
+  //
+  //   legacyStoredHighConviction — d.highConviction, unchanged meaning.
+  //   legacyDisplayHighConviction — what the legacy formula alone would
+  //     have shown (ev.highProbability && !RSI cap), gated on the SAME
+  //     actionBias===STRONG_* structural precondition production itself
+  //     requires before this branch is ever reachable — a fixture whose
+  //     actionBias never reaches STRONG could not display legacy HC
+  //     regardless of highProbability, and this mirrors that honestly.
+  //   authoritativeHighConviction/-Known/-Source — the adapter's own HC
+  //     verdict, read through (never recomputed).
+  //   displayedHighConviction/-Source — the ACTUAL production presentation
+  //     decision for this scan result, given the current flag state.
+  const _dirWord = ev.tradeBias === 'LONG' ? 'LONG' : (ev.tradeBias === 'SHORT' ? 'SHORT' : null);
+  const _sfx = _dirWord === 'LONG' ? '_LONG' : (_dirWord === 'SHORT' ? '_SHORT' : null);
+  const _isStrongBias = !!(_sfx && ev.actionBias === ACTION_BIAS['STRONG' + _sfx]);
+  const _rsiCappedForHc = (_dirWord && typeof _isRsiStretchedCap === 'function') ? _isRsiStretchedCap(_dirWord, d) : false;
+  const legacyStoredHighConviction = !!(d && d.highConviction);
+  const legacyDisplayHighConviction = _isStrongBias && ev.highProbability === true && !_rsiCappedForHc;
+
+  const authoritativeHcKnown = !!(_ac && _ac.highConvictionKnown === true);
+  const authoritativeHighConviction = authoritativeHcKnown ? (_ac.highConviction === true) : false;
+  const authoritativeHighConvictionSource = authoritativeHcKnown ? (_ac.highConvictionSource || 'evaluation_engine') : 'evaluation_unknown';
+
+  const highConvictionEngineLive = !!(typeof DIAG !== 'undefined' && DIAG.highConvictionEngineLive === true);
+  const displayedHighConviction = highConvictionEngineLive ? (authoritativeHcKnown && authoritativeHighConviction === true) : legacyDisplayHighConviction;
+  const displayedHighConvictionSource = highConvictionEngineLive
+    ? (authoritativeHcKnown ? 'evaluation_engine' : 'evaluation_engine_withheld')
+    : 'legacy_display';
+
   return {
     classification,
     tradeReady: authoritativeReady,
@@ -5287,6 +5426,13 @@ function _liveClassificationFromD(d, authoritativeClassification) {
     authoritativeReady,
     authoritativeSource,
     highConviction: !!(d && d.highConviction),
+    legacyStoredHighConviction,
+    legacyDisplayHighConviction,
+    authoritativeHighConviction,
+    authoritativeHighConvictionKnown: authoritativeHcKnown,
+    authoritativeHighConvictionSource,
+    displayedHighConviction,
+    displayedHighConvictionSource,
     score: (ev.score != null) ? ev.score : null,
     confirms: (ev.confirmCount != null) ? ev.confirmCount : null,
   };
@@ -5418,6 +5564,42 @@ function _shadowCompare(shadow, live) {
     authoritativeDisagreementType = liveReady ? 'authoritative_ready_evaluation_not_ready' : 'evaluation_ready_authoritative_not_ready';
   }
 
+  // ── TDAS V4.10.1C — Authoritative High Conviction Presentation
+  // Activation: additive HC comparison contract. Distinct from the
+  // existing (legacy-stored-vs-shadow) highConvictionAgreement above,
+  // which is UNCHANGED and remains labelled "Legacy High Conviction
+  // agreement" in diagnostics. These new fields compare the NEWLY
+  // authoritative HC decision against the same Stage-10 candidate signal,
+  // plus retain both legacy comparisons (stored and display) as separate,
+  // clearly-scoped migration diagnostics.
+  const _authHc = (live && (live.authoritativeHighConviction === true || live.authoritativeHighConviction === false)) ? live.authoritativeHighConviction : null;
+  const _authHcKnown = !!(live && live.authoritativeHighConvictionKnown === true);
+  const _legacyStoredHc = (live && (live.legacyStoredHighConviction === true || live.legacyStoredHighConviction === false)) ? live.legacyStoredHighConviction : liveHigh;
+  const _legacyDisplayHc = (live && (live.legacyDisplayHighConviction === true || live.legacyDisplayHighConviction === false)) ? live.legacyDisplayHighConviction : null;
+  const _displayedHc = (live && (live.displayedHighConviction === true || live.displayedHighConviction === false)) ? live.displayedHighConviction : null;
+
+  // authoritativeHcAgreement — authoritative vs Evaluation candidate. Only
+  // eligible when BOTH the shadow candidate signal is known (shadow not
+  // Stage 0) AND the adapter's own HC verdict is known. Since the
+  // authoritative field is derived FROM the same Stage-10 test, a false
+  // value here (while both sides are known) signals a genuine defect, not
+  // an expected migration difference.
+  const authoritativeHcAgreement = (shadowHighConvictionUnknown || !_authHcKnown) ? null : (_authHc === shadowHigh);
+
+  // legacyStoredHcAgreement / legacyDisplayHcAgreement — MIGRATION
+  // comparisons, eligible only when the Evaluation candidate is known.
+  const legacyStoredHcAgreement = shadowHighConvictionUnknown ? null : (_legacyStoredHc === shadowHigh);
+  const legacyDisplayHcAgreement = (shadowHighConvictionUnknown || _legacyDisplayHc === null) ? null : (_legacyDisplayHc === shadowHigh);
+
+  let legacyStoredHcMigrationDifference = null;
+  if (legacyStoredHcAgreement === false) {
+    legacyStoredHcMigrationDifference = _legacyStoredHc ? 'legacy_stored_hc_authoritative_not_hc' : 'legacy_stored_not_hc_authoritative_hc';
+  }
+  let legacyDisplayHcMigrationDifference = null;
+  if (legacyDisplayHcAgreement === false) {
+    legacyDisplayHcMigrationDifference = _legacyDisplayHc ? 'legacy_display_hc_authoritative_not_hc' : 'legacy_display_not_hc_authoritative_hc';
+  }
+
   return {
     live, shadow,
     decisionAgreement, highConvictionAgreement, classificationAgreement, overallAgreement,
@@ -5438,6 +5620,18 @@ function _shadowCompare(shadow, live) {
     legacyEvaluationAgreement,
     authoritativeDisagreementType,
     legacyMigrationDifference,
+
+    // TDAS V4.10.1C — additive HC comparison contract.
+    authoritativeHc: { value: _authHc, known: _authHcKnown },
+    evaluationHc: { candidate: shadowHigh, known: !shadowHighConvictionUnknown },
+    legacyStoredHc: _legacyStoredHc,
+    legacyDisplayHc: _legacyDisplayHc,
+    displayedHc: _displayedHc,
+    authoritativeHcAgreement,
+    legacyStoredHcAgreement,
+    legacyDisplayHcAgreement,
+    legacyStoredHcMigrationDifference,
+    legacyDisplayHcMigrationDifference,
   };
 }
 
@@ -5460,6 +5654,16 @@ function _buildShadowCensus(entries) {
   let legacyReadyCount = 0, evaluationFallbackCount = 0;
   let legacyEvaluationAgreementCount = 0, legacyEvaluationDisagreementCount = 0, legacyEvaluationAgreementEligibleCount = 0;
   const migrationDifferenceTypes = { legacy_ready_evaluation_not_ready: 0, legacy_not_ready_evaluation_ready: 0 };
+  // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation:
+  // additive HC census counters.
+  let displayedAuthoritativeHcCount = 0, evaluationHcCandidateCount = 0, legacyStoredHcCount = 0, legacyDisplayHcCount = 0, evaluationHcUnknownCount = 0;
+  let authoritativeHcAgreementCount = 0, authoritativeHcDisagreementCount = 0, authoritativeHcAgreementEligibleCount = 0;
+  let legacyStoredHcAgreementCount = 0, legacyStoredHcDisagreementCount = 0, legacyStoredHcAgreementEligibleCount = 0;
+  let legacyDisplayHcAgreementCount = 0, legacyDisplayHcDisagreementCount = 0, legacyDisplayHcAgreementEligibleCount = 0;
+  const hcMigrationDifferenceTypes = {
+    legacy_stored_hc_authoritative_not_hc: 0, legacy_stored_not_hc_authoritative_hc: 0,
+    legacy_display_hc_authoritative_not_hc: 0, legacy_display_not_hc_authoritative_hc: 0,
+  };
 
   list.forEach(function(e) {
     const symbol = e.symbol, tf = e.tf, comparison = e.comparison;
@@ -5506,6 +5710,32 @@ function _buildShadowCensus(entries) {
     }
     if (comparison.legacyMigrationDifference && migrationDifferenceTypes.hasOwnProperty(comparison.legacyMigrationDifference)) {
       migrationDifferenceTypes[comparison.legacyMigrationDifference]++;
+    }
+
+    // TDAS V4.10.1C — Authoritative High Conviction Presentation
+    // Activation: additive HC census tallies.
+    if (comparison.displayedHc === true) displayedAuthoritativeHcCount++;
+    if (comparison.evaluationHc && comparison.evaluationHc.candidate === true) evaluationHcCandidateCount++;
+    if (comparison.evaluationHc && !comparison.evaluationHc.known) evaluationHcUnknownCount++;
+    if (comparison.legacyStoredHc === true) legacyStoredHcCount++;
+    if (comparison.legacyDisplayHc === true) legacyDisplayHcCount++;
+    if (comparison.authoritativeHcAgreement !== null) {
+      authoritativeHcAgreementEligibleCount++;
+      if (comparison.authoritativeHcAgreement) authoritativeHcAgreementCount++; else authoritativeHcDisagreementCount++;
+    }
+    if (comparison.legacyStoredHcAgreement !== null) {
+      legacyStoredHcAgreementEligibleCount++;
+      if (comparison.legacyStoredHcAgreement) legacyStoredHcAgreementCount++; else legacyStoredHcDisagreementCount++;
+    }
+    if (comparison.legacyDisplayHcAgreement !== null) {
+      legacyDisplayHcAgreementEligibleCount++;
+      if (comparison.legacyDisplayHcAgreement) legacyDisplayHcAgreementCount++; else legacyDisplayHcDisagreementCount++;
+    }
+    if (comparison.legacyStoredHcMigrationDifference && hcMigrationDifferenceTypes.hasOwnProperty(comparison.legacyStoredHcMigrationDifference)) {
+      hcMigrationDifferenceTypes[comparison.legacyStoredHcMigrationDifference]++;
+    }
+    if (comparison.legacyDisplayHcMigrationDifference && hcMigrationDifferenceTypes.hasOwnProperty(comparison.legacyDisplayHcMigrationDifference)) {
+      hcMigrationDifferenceTypes[comparison.legacyDisplayHcMigrationDifference]++;
     }
 
     const compactCase = {
@@ -5566,6 +5796,22 @@ function _buildShadowCensus(entries) {
     legacyEvaluationAgreementCount, legacyEvaluationDisagreementCount, legacyEvaluationAgreementEligibleCount,
     legacyEvaluationAgreementRate: rate(legacyEvaluationAgreementCount, legacyEvaluationAgreementEligibleCount),
     migrationDifferenceTypes: migrationDifferenceTypes,
+
+    // TDAS V4.10.1C — Authoritative High Conviction Presentation
+    // Activation: additive HC fields only, nothing above this point is
+    // renamed or removed.
+    displayedAuthoritativeHcCount, evaluationHcCandidateCount, legacyStoredHcCount, legacyDisplayHcCount, evaluationHcUnknownCount,
+
+    authoritativeHcAgreementCount, authoritativeHcDisagreementCount, authoritativeHcAgreementEligibleCount,
+    authoritativeHcAgreementRate: rate(authoritativeHcAgreementCount, authoritativeHcAgreementEligibleCount),
+
+    legacyStoredHcAgreementCount, legacyStoredHcDisagreementCount, legacyStoredHcAgreementEligibleCount,
+    legacyStoredHcAgreementRate: rate(legacyStoredHcAgreementCount, legacyStoredHcAgreementEligibleCount),
+
+    legacyDisplayHcAgreementCount, legacyDisplayHcDisagreementCount, legacyDisplayHcAgreementEligibleCount,
+    legacyDisplayHcAgreementRate: rate(legacyDisplayHcAgreementCount, legacyDisplayHcAgreementEligibleCount),
+
+    hcMigrationDifferenceTypes: hcMigrationDifferenceTypes,
   };
 }
 
@@ -6747,7 +6993,47 @@ function _buildScannerAdvisory(d) {
   const sfx = dir === 'LONG' ? '_LONG' : '_SHORT';
 
   let action, headline, next, detail;
-  if (ev.actionBias === ACTION_BIAS.AVOID) {
+
+  // TDAS V4.10.1C Correction — Authoritative HC Promotion Bypasses Legacy
+  // ActionBias Gate. Confirmed defect: the original V4.10.1C delivery
+  // evaluated authoritative HC only inside the legacy STRONG_* branch
+  // below, so a genuine Stage 10 candidate whose legacy actionBias never
+  // reached STRONG (e.g. CONSIDER_LONG) could show Authoritative HC: Yes /
+  // Authoritative Trade Ready: Yes / Displayed Advisory: CONSIDER — a
+  // second, unintended approval gate from the legacy score engine. Stage
+  // 10 already encodes every condition the doctrine requires (confirmed
+  // 4H regime, valid 1H trigger, ADX>=25 and not rolling over, UT aligned,
+  // no chop, no counter-HTF) — it must not need legacy re-confirmation.
+  //
+  // This bypass is evaluated FIRST, before any ev.actionBias branch, and
+  // depends on nothing but the adapter contract: no ev.actionBias, no
+  // ev.highProbability, no d.highConviction, no _isRsiStretchedCap(), no
+  // highConvictionCandidate, no rawEvaluation.highConvictionEligible.
+  // Direction comes from the same canonical `dir` this function already
+  // uses everywhere else — no second direction engine.
+  //
+  // When the flag is false, this condition is always false (the `&&`
+  // short-circuits on DIAG.highConvictionEngineLine==='true' — see
+  // below), so flag-off behaviour is untouched: control falls straight
+  // through to the unmodified legacy ev.actionBias chain, including the
+  // STRONG_* branch's own legacy-only HC rule (now simplified — see its
+  // own comment below — to remove the now-redundant authoritative check
+  // that used to live there and never fall back to legacy once the flag
+  // is on).
+  const _acForHc = d.authoritativeClassification;
+  const _authoritativeDisplayHighConviction = !!(
+    DIAG.highConvictionEngineLive === true &&
+    _acForHc && _acForHc.highConvictionKnown === true && _acForHc.highConviction === true
+  );
+
+  if (_authoritativeDisplayHighConviction) {
+    action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
+    next = 'Consider entry if position size and risk are acceptable.';
+    // Identical content-construction rule to the legacy HC branch below —
+    // wording/guidance/evidence-detail logic is unchanged, only the
+    // reachability of this branch is corrected.
+    detail = _buildScannerEvidenceDetail(d, dir) || ((ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : ''));
+  } else if (ev.actionBias === ACTION_BIAS.AVOID) {
     // Counter-regime WATCH exception (presentation only — does not touch
     // evaluateSetup/actionBias/scoring). A meaningful counter-regime setup
     // whose ONLY real problem is regime opposition is worth monitoring, not
@@ -6806,7 +7092,34 @@ function _buildScannerAdvisory(d) {
     // both branches below. Direction/signal itself is unaffected; this only
     // gates the HIGH CONVICTION promotion, same as the highProbability cap.
     const _rsiCapped = _isRsiStretchedCap(dir, d);
-    if (ev.highProbability === true && !_rsiCapped) {
+    // TDAS V4.10.1C — Authoritative High Conviction Presentation
+    // Activation. The legacy promotion rule (ev.highProbability===true &&
+    // !_rsiCapped) is preserved verbatim as _legacyDisplayHighConviction —
+    // this remains the exact rollback path when the flag is false. When
+    // DIAG.highConvictionEngineLive is true, the presentation decision
+    // comes ONLY from d.authoritativeClassification.highConviction (never
+    // highConvictionCandidate, never rawEvaluation.highConvictionEligible,
+    // never d.highConviction), and ONLY when highConvictionKnown is
+    // genuinely true — Stage 0/unknown always withholds HC here (fails
+    // closed, never falls back to any legacy signal). _isRsiStretchedCap()
+    // itself is untouched and still gates the legacy path; with the flag
+    // on it is simply not consulted for the presentation decision, since
+    // the Evaluation Engine's own Stage 10 conditions already incorporate
+    // timing/extension logic before HC can be reached (see
+    // buildAuthoritativeClassification()'s own header comment).
+    //
+    // TDAS V4.10.1C Correction — this branch is only reached when either
+    // (a) the flag is false (full V4.10.1B legacy rollback, using
+    // _legacyDisplayHighConviction exactly as before), or (b) the flag is
+    // true but the top-level bypass above already determined authoritative
+    // HC is false/unknown for this setup — in that case there is
+    // deliberately NO legacy fallback here (per spec: "Flag on,
+    // authoritative HC false or unknown -> No HC promotion... No legacy
+    // fallback"), so _displayHighConviction is forced false rather than
+    // re-checking the legacy rule.
+    const _legacyDisplayHighConviction = (ev.highProbability === true && !_rsiCapped);
+    const _displayHighConviction = (DIAG.highConvictionEngineLive === true) ? false : _legacyDisplayHighConviction;
+    if (_displayHighConviction) {
       action = 'HIGH_CONVICTION' + sfx; headline = '⭐ HIGH CONVICTION ' + dir;
       next = 'Consider entry if position size and risk are acceptable.';
       // TDAS V4.8 Phase D — prefer the evidence-driven interpretive
@@ -8762,7 +9075,7 @@ const DIAG = {
   dataSourceAudit:           false,  // [DataSource] concise klines/ticker source confirmation — off for production
   marketEvidence:            true,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log — ENABLED for live shadow observation ahead of Phase C
   evaluationEngineLive:      true, // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. ACTIVE: scanner Trade Ready is now authoritative from the Stage 0-10 Evaluation Engine whenever d.authoritativeClassification.tradeReadyKnown is true (see _buildScannerAdvisory()'s own header comment for the exact policy and fallback). Rollback: set back to false to instantly restore the pre-V4.10.0D legacy-only behaviour — no other change required.
-  highConvictionEngineLive:  false, // TDAS V4.10.1B — High Conviction Adapter Foundation. Dormant: d.authoritativeClassification now carries highConviction/highConvictionKnown/highConvictionSource, but no production consumer reads this flag or those fields yet. Separate release control from evaluationEngineLive by design — Trade Ready and High Conviction activate independently. Do not flip in this build.
+  highConvictionEngineLive:  true, // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation. ACTIVE: the large scanner Advisory HIGH CONVICTION headline/action is now authoritative from d.authoritativeClassification.highConviction whenever highConvictionKnown is true (see _buildScannerAdvisory()'s own STRONG-branch comment for the exact policy). Stage 0/unknown withholds HC (fails closed — never falls back to legacy). Trade Ready, sorting, the pair-label star, persistence, and Confluence remain fully legacy-driven, untouched. Rollback: set back to false to instantly restore the pre-V4.10.1C legacy display behaviour — no other change required.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -12330,6 +12643,18 @@ function buildShadowEvaluationDiagnosticHtml(d) {
     const legacyEvalAgreementLabel = sc ? agreeLabel(sc.legacyEvaluationAgreement) : dash;
     const migrationDiffLabel = sc ? (sc.legacyMigrationDifference ? (migrationDiffLabelMap[sc.legacyMigrationDifference] || 'Unknown') : 'None') : dash;
 
+    // TDAS V4.10.1C — Authoritative High Conviction Presentation
+    // Activation: the four distinct HC meanings, unambiguous per the
+    // activation. "Authoritative" is the adapter's own verdict;
+    // "Displayed" is what the card actually shows right now (depends on
+    // the flag); "Legacy stored"/"Legacy display" are the two pre-
+    // activation representations, retained for migration comparison.
+    const authoritativeHcLabel = sc ? (sc.authoritativeHc.known ? yn(sc.authoritativeHc.value) : 'Unknown') : dash;
+    const authoritativeHcSourceLabel = (d.authoritativeClassification && d.authoritativeClassification.highConvictionSource) || (sc && sc.authoritativeHc.known ? 'evaluation_engine' : 'evaluation_unknown');
+    const legacyStoredHcLabel = sc ? yn(sc.legacyStoredHc) : dash;
+    const legacyDisplayHcLabel = sc ? yn(sc.legacyDisplayHc) : dash;
+    const displayedHcLabel = sc ? yn(sc.displayedHc) : dash;
+
     // TDAS V4.9.10 — verdict block: Stage/Classification/Executable shown
     // prominently first, per the required hierarchy. Same three values,
     // same wording — only the visual weight changes.
@@ -12362,6 +12687,11 @@ function buildShadowEvaluationDiagnosticHtml(d) {
       + '<div class="ap-row"><span>Legacy ready</span><span>' + legacyReadyLabel + '</span></div>'
       + '<div class="ap-row"><span>Legacy vs Evaluation agreement</span><span>' + legacyEvalAgreementLabel + '</span></div>'
       + '<div class="ap-row"><span>Legacy migration difference</span><span>' + migrationDiffLabel + '</span></div>'
+      + '<div class="ap-row"><span>Authoritative High Conviction</span><span>' + authoritativeHcLabel + '</span></div>'
+      + '<div class="ap-row"><span>Authoritative HC source</span><span>' + authoritativeHcSourceLabel + '</span></div>'
+      + '<div class="ap-row"><span>Displayed High Conviction</span><span>' + displayedHcLabel + '</span></div>'
+      + '<div class="ap-row"><span>Legacy stored High Conviction</span><span>' + legacyStoredHcLabel + '</span></div>'
+      + '<div class="ap-row"><span>Legacy display High Conviction</span><span>' + legacyDisplayHcLabel + '</span></div>'
       + '<div class="ap-row"><span>Legacy High Conviction agreement</span><span>' + hcAgreementLabel + '</span></div>'
       + '<div class="ap-row"><span>Classification difference</span><span>' + classificationDiffLabel + '</span></div>'
       + '<div class="ap-row"><span>Actionable disagreement</span><span>' + disagreementLabel + '</span></div>';
@@ -12416,6 +12746,23 @@ function buildShadowCensusDiagnosticHtml() {
     const migrationDiffStr = ((c.migrationDifferenceTypes && (c.migrationDifferenceTypes.legacy_ready_evaluation_not_ready || c.migrationDifferenceTypes.legacy_not_ready_evaluation_ready))
       ? ('Legacy ready/Eval not: ' + (c.migrationDifferenceTypes.legacy_ready_evaluation_not_ready || 0) + ' \u00b7 Legacy not/Eval ready: ' + (c.migrationDifferenceTypes.legacy_not_ready_evaluation_ready || 0))
       : 'None');
+    // TDAS V4.10.1C — Authoritative High Conviction Presentation
+    // Activation: additive HC census strings. authoritativeHcStr should
+    // normally read ~100% for known cases, since the displayed value is
+    // now derived directly from the same Stage-10 test — a persistent gap
+    // here would indicate a genuine defect, not an expected migration
+    // artifact.
+    const authoritativeHcStr = fmtRate(c.authoritativeHcAgreementRate, c.authoritativeHcAgreementCount, c.authoritativeHcAgreementEligibleCount);
+    const legacyStoredHcStr = fmtRate(c.legacyStoredHcAgreementRate, c.legacyStoredHcAgreementCount, c.legacyStoredHcAgreementEligibleCount);
+    const legacyDisplayHcStr = fmtRate(c.legacyDisplayHcAgreementRate, c.legacyDisplayHcAgreementCount, c.legacyDisplayHcAgreementEligibleCount);
+    const hcMigrationTypes = c.hcMigrationDifferenceTypes || {};
+    const hcMigrationDiffStr = (hcMigrationTypes.legacy_stored_hc_authoritative_not_hc || hcMigrationTypes.legacy_stored_not_hc_authoritative_hc
+      || hcMigrationTypes.legacy_display_hc_authoritative_not_hc || hcMigrationTypes.legacy_display_not_hc_authoritative_hc)
+      ? ('Stored HC/Auth not: ' + (hcMigrationTypes.legacy_stored_hc_authoritative_not_hc || 0)
+        + ' \u00b7 Stored not/Auth HC: ' + (hcMigrationTypes.legacy_stored_not_hc_authoritative_hc || 0)
+        + ' \u00b7 Display HC/Auth not: ' + (hcMigrationTypes.legacy_display_hc_authoritative_not_hc || 0)
+        + ' \u00b7 Display not/Auth HC: ' + (hcMigrationTypes.legacy_display_not_hc_authoritative_hc || 0))
+      : 'None';
     const _censusRows = '<div class="ap-row"><span>Total Evaluated</span><span>' + c.total + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Stage Distribution</span><span class="ap-census-pills">' + stagePills + '</span></div>'
       // TDAS V4.10.0E — Diagnostic Alignment: "Live vs Shadow Ready"
@@ -12428,11 +12775,25 @@ function buildShadowCensusDiagnosticHtml() {
       + '<div class="ap-row"><span>Evaluation ready</span><span>' + c.evaluationReadyCount + ' / ' + c.total + '</span></div>'
       + '<div class="ap-row"><span>Legacy ready</span><span>' + c.legacyReadyCount + ' / ' + c.total + '</span></div>'
       + '<div class="ap-row"><span>Evaluation fallback (Stage 0 / unknown)</span><span>' + c.evaluationFallbackCount + ' / ' + c.total + '</span></div>'
+      // TDAS V4.10.1C — Authoritative High Conviction Presentation
+      // Activation: four distinct HC counts replace the old two-way
+      // "Legacy vs Shadow High Conviction" line (retained below,
+      // unchanged, for backward reference) with unambiguous authoritative/
+      // displayed/legacy-stored/legacy-display breakdowns.
+      + '<div class="ap-row"><span>Displayed authoritative HC</span><span>' + c.displayedAuthoritativeHcCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Evaluation HC candidate</span><span>' + c.evaluationHcCandidateCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Legacy stored HC</span><span>' + c.legacyStoredHcCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Legacy display HC</span><span>' + c.legacyDisplayHcCount + ' / ' + c.total + '</span></div>'
+      + '<div class="ap-row"><span>Evaluation HC unknown</span><span>' + c.evaluationHcUnknownCount + ' / ' + c.total + '</span></div>'
       + '<div class="ap-row"><span>Legacy vs Shadow High Conviction</span><span>' + c.liveHighConvictionCount + ' vs ' + c.shadowHighConvictionCount + '</span></div>'
       + '<div class="ap-row"><span>Decision agreement</span><span>' + decisionStr + '</span></div>'
       + '<div class="ap-row"><span>Legacy vs Evaluation agreement</span><span>' + legacyEvalStr + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Legacy migration differences</span><span style="font-size:11px;text-align:right;">' + migrationDiffStr + '</span></div>'
-      + '<div class="ap-row"><span>High Conviction agreement</span><span>' + hcStr + '</span></div>'
+      + '<div class="ap-row"><span>Authoritative HC agreement</span><span>' + authoritativeHcStr + '</span></div>'
+      + '<div class="ap-row"><span>Legacy stored HC agreement</span><span>' + legacyStoredHcStr + '</span></div>'
+      + '<div class="ap-row"><span>Legacy display HC agreement</span><span>' + legacyDisplayHcStr + '</span></div>'
+      + '<div class="ap-row" style="align-items:flex-start;"><span>HC migration differences</span><span style="font-size:11px;text-align:right;">' + hcMigrationDiffStr + '</span></div>'
+      + '<div class="ap-row"><span>Legacy High Conviction agreement</span><span>' + hcStr + '</span></div>'
       + '<div class="ap-row"><span>Classification agreement</span><span>' + classStr + '</span></div>'
       + '<div class="ap-row"><span>Overall decision agreement</span><span>' + overallStr + '</span></div>'
       + '<div class="ap-row" style="align-items:flex-start;"><span>Disagreement Types</span><span style="font-size:11px;text-align:right;">' + disagreementStr + '</span></div>'
@@ -12798,7 +13159,21 @@ function _buildFullAnalysisCopyText(d, symbol) {
       ? ('legacy_ready_evaluation_not_ready:' + (migrationTypes.legacy_ready_evaluation_not_ready || 0) + ', legacy_not_ready_evaluation_ready:' + (migrationTypes.legacy_not_ready_evaluation_ready || 0))
       : 'None';
     row('Legacy migration differences', migrationStr);
-    row('High Conviction agreement', fmtCensusRate(census.highConvictionAgreementRate, census.highConvictionAgreementCount, census.highConvictionAgreementEligibleCount));
+    // TDAS V4.10.1C — Authoritative High Conviction Presentation
+    // Activation: additive HC census rows.
+    row('Displayed authoritative HC', census.displayedAuthoritativeHcCount + ' / ' + census.total);
+    row('Evaluation HC candidate', census.evaluationHcCandidateCount + ' / ' + census.total);
+    row('Legacy stored HC', census.legacyStoredHcCount + ' / ' + census.total);
+    row('Legacy display HC', census.legacyDisplayHcCount + ' / ' + census.total);
+    row('Evaluation HC unknown', census.evaluationHcUnknownCount + ' / ' + census.total);
+    row('Authoritative HC agreement', fmtCensusRate(census.authoritativeHcAgreementRate, census.authoritativeHcAgreementCount, census.authoritativeHcAgreementEligibleCount));
+    row('Legacy stored HC agreement', fmtCensusRate(census.legacyStoredHcAgreementRate, census.legacyStoredHcAgreementCount, census.legacyStoredHcAgreementEligibleCount));
+    row('Legacy display HC agreement', fmtCensusRate(census.legacyDisplayHcAgreementRate, census.legacyDisplayHcAgreementCount, census.legacyDisplayHcAgreementEligibleCount));
+    const hcMigrationTypes = census.hcMigrationDifferenceTypes || {};
+    const hcMigrationStr = Object.keys(hcMigrationTypes).filter(function(k) { return hcMigrationTypes[k] > 0; })
+      .map(function(k) { return k + ':' + hcMigrationTypes[k]; }).join(', ') || 'None';
+    row('HC migration differences', hcMigrationStr);
+    row('Legacy High Conviction agreement', fmtCensusRate(census.highConvictionAgreementRate, census.highConvictionAgreementCount, census.highConvictionAgreementEligibleCount));
     row('Overall decision agreement', fmtCensusRate(census.overallAgreementRate, census.overallAgreementCount, census.overallAgreementEligibleCount));
     const disagreementStr = Object.keys(census.disagreementTypes || {})
       .filter(function(k) { return k !== 'none'; })
@@ -12818,7 +13193,33 @@ function _buildFullAnalysisCopyText(d, symbol) {
     row('Setup quality', d.evaluation.setupQuality);
   }
   row('HTF alignment', d.htfAlign);
-  row('High Conviction (live)', yn(!!d.highConviction));
+  // TDAS V4.10.1C — Authoritative High Conviction Presentation
+  // Activation. "High Conviction (live)" was confirmed misleading post-
+  // activation (it read d.highConviction, the legacy stored value, which
+  // is no longer what "live"/displayed HC means) — relabelled accurately,
+  // and three new rows added distinguishing the authoritative Evaluation
+  // verdict from what is actually displayed. Mirrors
+  // _buildScannerAdvisory()'s own source-selection formula (see that
+  // function's own header comment) for the displayed-HC rows — read-only
+  // here, never recomputing Stage 0-10 rules.
+  row('Legacy stored High Conviction', yn(!!d.highConviction));
+  {
+    const _acSummary = d.authoritativeClassification || null;
+    const _hcKnownSummary = !!(_acSummary && _acSummary.highConvictionKnown === true);
+    row('Authoritative High Conviction', _hcKnownSummary ? yn(_acSummary.highConviction) : 'Unknown');
+    row('Authoritative HC source', _acSummary ? (_acSummary.highConvictionSource || 'evaluation_unknown') : 'evaluation_unknown');
+    const _evSummary = d.evaluation || {};
+    const _dirWordSummary = _evSummary.tradeBias === 'LONG' ? 'LONG' : (_evSummary.tradeBias === 'SHORT' ? 'SHORT' : null);
+    const _sfxSummary = _dirWordSummary === 'LONG' ? '_LONG' : (_dirWordSummary === 'SHORT' ? '_SHORT' : null);
+    const _isStrongSummary = !!(_sfxSummary && _evSummary.actionBias === ACTION_BIAS['STRONG' + _sfxSummary]);
+    const _rsiCappedSummary = (_dirWordSummary && typeof _isRsiStretchedCap === 'function') ? _isRsiStretchedCap(_dirWordSummary, d) : false;
+    const _legacyDisplaySummary = _isStrongSummary && _evSummary.highProbability === true && !_rsiCappedSummary;
+    const _hcEngineLiveSummary = (typeof DIAG !== 'undefined' && DIAG.highConvictionEngineLive === true);
+    const _displayedSummary = _hcEngineLiveSummary ? (_hcKnownSummary && _acSummary.highConviction === true) : _legacyDisplaySummary;
+    const _displayedSourceSummary = _hcEngineLiveSummary ? (_hcKnownSummary ? 'Evaluation Engine' : 'Evaluation Engine \u2014 withheld') : 'Legacy display';
+    row('Displayed High Conviction', yn(_displayedSummary));
+    row('Displayed HC source', _displayedSourceSummary);
+  }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────
   heading('LIFECYCLE');
