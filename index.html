@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.1D';
+const APP_BUILD = 'V4.10.2B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9076,6 +9076,7 @@ const DIAG = {
   marketEvidence:            true,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log — ENABLED for live shadow observation ahead of Phase C
   evaluationEngineLive:      true, // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. ACTIVE: scanner Trade Ready is now authoritative from the Stage 0-10 Evaluation Engine whenever d.authoritativeClassification.tradeReadyKnown is true (see _buildScannerAdvisory()'s own header comment for the exact policy and fallback). Rollback: set back to false to instantly restore the pre-V4.10.0D legacy-only behaviour — no other change required.
   highConvictionEngineLive:  true, // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation. ACTIVE: the large scanner Advisory HIGH CONVICTION headline/action is now authoritative from d.authoritativeClassification.highConviction whenever highConvictionKnown is true (see _buildScannerAdvisory()'s own STRONG-branch comment for the exact policy). Stage 0/unknown withholds HC (fails closed — never falls back to legacy). Trade Ready, sorting, the pair-label star, persistence, and Confluence remain fully legacy-driven, untouched. Rollback: set back to false to instantly restore the pre-V4.10.1C legacy display behaviour — no other change required.
+  confluenceEngineLive:      false, // TDAS V4.10.2B — Confluence Action Adapter Foundation. Dormant: buildConfluenceActionModel() exists and can be called directly (by tests), but no production consumer reads this flag or the model yet. renderConfCard()/openConfluenceModal() remain fully legacy-driven — the unsafe unconditional Take Trade button is intentionally NOT fixed in this build (see the V4.10.2A audit). Do not flip in this build.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -16862,6 +16863,184 @@ function _updateConfluenceBadge(setups){
     countEl.textContent = '';
     if(tabBtn) tabBtn.style.color = '';
   }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.2B — Confluence Action Adapter Foundation                    ║
+// ║                                                                          ║
+// ║  buildConfluenceActionModel(h1, h4, sym) is a PURE function that         ║
+// ║  translates the two already-populated calcPair() results Confluence     ║
+// ║  already holds (h1 = 1H, standalone_one_h by construction; h4 = 4H,      ║
+// ║  four_h_led or direct_four_h by construction — see                       ║
+// ║  _setupPathFromValues()) into a canonical alignment/entry/action model.  ║
+// ║                                                                          ║
+// ║  No DOM access, no fetches, no globals written, h1/h4 never mutated, no  ║
+// ║  Journal/persistence access, no modal/render call, no Evaluation         ║
+// ║  classifier call, no calcPair() call. Deterministic for identical        ║
+// ║  inputs. Does not read the Journal (active-trade/active-watch overrides  ║
+// ║  remain the render layer's job, unchanged, outside this model).          ║
+// ║                                                                          ║
+// ║  FOUNDATION ONLY: nothing in the live system calls this function yet.    ║
+// ║  DIAG.confluenceEngineLive stays false; renderConfCard()/                ║
+// ║  openConfluenceModal() are completely unmodified by this task.           ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Option C entry-authority selection (V4.10.2A audit, Section 10).
+//   h4 authoritatively ready              -> h4 (4H-led preference, also
+//                                             covers "both ready")
+//   only h1 authoritatively ready         -> h1
+//   h4 known (non-ready) [h1 known or not]-> h4 (4H-led default)
+//   h1 known (non-ready), h4 unknown      -> h1
+//   neither known                         -> unknown
+function _confSelectEntrySource(h1, h4) {
+  const h1Ac = (h1 && h1.authoritativeClassification) || null;
+  const h4Ac = (h4 && h4.authoritativeClassification) || null;
+  const h1Known = !!(h1Ac && h1Ac.tradeReadyKnown === true);
+  const h4Known = !!(h4Ac && h4Ac.tradeReadyKnown === true);
+  const h1Ready = h1Known && h1Ac.tradeReady === true;
+  const h4Ready = h4Known && h4Ac.tradeReady === true;
+
+  if (h4Ready) return { tf: '4h', ac: h4Ac };
+  if (h1Ready) return { tf: '1h', ac: h1Ac };
+  if (h4Known) return { tf: '4h', ac: h4Ac };
+  if (h1Known) return { tf: '1h', ac: h1Ac };
+  return { tf: 'unknown', ac: null };
+}
+
+function buildConfluenceActionModel(h1, h4, sym) {
+  const h1Signal = (h1 && h1.signal) || null;
+  const h4Signal = (h4 && h4.signal) || null;
+
+  // ── Alignment — preserves current Confluence semantics exactly ─────────
+  // aligned:  both non-neutral and equal (the existing qualifying test)
+  // opposed:  both non-neutral and different
+  // partial:  exactly one side is neutral/directional (mixed evidence)
+  // unknown:  either signal missing, or both neutral (no directional
+  //           evidence on either side)
+  let alignState = 'unknown', alignConfirmed = false;
+  if (h1Signal == null || h4Signal == null) {
+    alignState = 'unknown';
+  } else if (h1Signal === 'neutral' && h4Signal === 'neutral') {
+    alignState = 'unknown';
+  } else if (h1Signal !== 'neutral' && h4Signal !== 'neutral' && h1Signal === h4Signal) {
+    alignState = 'aligned'; alignConfirmed = true;
+  } else if (h1Signal !== 'neutral' && h4Signal !== 'neutral' && h1Signal !== h4Signal) {
+    alignState = 'opposed';
+  } else {
+    alignState = 'partial';
+  }
+  const alignLabelMap = { aligned: '1H + 4H Aligned', opposed: '1H + 4H Opposed', partial: 'Partial Alignment', unknown: 'Alignment Unknown' };
+
+  // Existing score formula, byte-identical — described here as alignment/
+  // directional strength, never entry quality.
+  const h1Score = (h1 && typeof h1.score === 'number') ? h1.score : null;
+  const h4Score = (h4 && typeof h4.score === 'number') ? h4.score : null;
+  const alignScore = (h1Score != null && h4Score != null) ? Math.min(100, Math.round((h1Score + h4Score) / 2 + 5)) : null;
+
+  // ── Entry authority (Option C) ──────────────────────────────────────────
+  const selection = _confSelectEntrySource(h1, h4);
+  const ac = selection.ac;
+  const rawEval = (ac && ac.rawEvaluation) || null;
+
+  const readyKnown = !!(ac && ac.tradeReadyKnown === true);
+  const ready = readyKnown && ac.tradeReady === true;
+  const hcKnown = !!(ac && ac.highConvictionKnown === true);
+  const hc = hcKnown && ac.highConviction === true;
+
+  const stage = (rawEval && typeof rawEval.stage === 'number') ? rawEval.stage : null;
+  const stageKey = (rawEval && rawEval.stageKey) || 'unknown';
+  const classification = (rawEval && rawEval.classification) || 'unknown';
+  const blockers = (rawEval && rawEval.blockers) || [];
+  const cautions = (rawEval && rawEval.cautions) || [];
+  const supports = (rawEval && rawEval.supports) || [];
+  const reasonsArr = (rawEval && rawEval.reasons) || [];
+  const setupPath = (rawEval && rawEval.evidenceSnapshot && rawEval.evidenceSnapshot.setupPath) || 'unknown';
+  const evalDirection = (rawEval && rawEval.evidenceSnapshot && rawEval.evidenceSnapshot.direction) || null;
+
+  // direction: prefer the selected authoritative source's own resolved
+  // direction (the actual trade direction under evaluation); falls back to
+  // the shared aligned signal when no authoritative source was selected.
+  const direction = (evalDirection === 'long' || evalDirection === 'short')
+    ? evalDirection
+    : (alignState === 'aligned' ? h1Signal : 'unknown');
+
+  // ── Suggested action — Stage 0-10 mapping, fail-closed throughout ──────
+  let actionType = 'unknown', premium = false, actionSource = 'evaluation_unknown';
+  let label = 'Evaluation unavailable', reason = '';
+  let entryLabel = 'Entry: unknown';
+  const alignmentLabel = (direction === 'short')
+    ? ('Bearish alignment: ' + (alignConfirmed ? 'confirmed' : 'not confirmed'))
+    : (direction === 'long')
+      ? ('Bullish alignment: ' + (alignConfirmed ? 'confirmed' : 'not confirmed'))
+      : ('Alignment: ' + (alignConfirmed ? 'confirmed' : 'not confirmed'));
+
+  if (!readyKnown) {
+    // Stage 0 / missing / malformed adapter — never a legacy fallback for
+    // Confluence actionability, per the V4.10.2A audit's fail-closed rule.
+    actionType = 'unknown'; actionSource = 'evaluation_unknown';
+    label = 'Evaluation unavailable'; entryLabel = 'Entry: unknown';
+  } else {
+    actionSource = 'evaluation_engine';
+    if (stage === 1 || stage === 2) {
+      actionType = 'avoid'; label = 'Avoid'; entryLabel = 'Entry: blocked';
+      reason = blockers[0] || cautions[0] || '';
+    } else if (stage === 3 || stage === 4 || stage === 5) {
+      actionType = 'watch'; label = 'Watch'; entryLabel = 'Entry: developing';
+      reason = cautions[0] || reasonsArr[0] || '';
+    } else if (stage === 6) {
+      entryLabel = 'Entry: not optimal';
+      reason = cautions[0] || reasonsArr[0] || '';
+      if (direction === 'short') { actionType = 'wait_for_oversold_reset'; label = 'Wait for oversold reset'; }
+      else if (direction === 'long') { actionType = 'wait_for_overbought_reset'; label = 'Wait for overbought reset'; }
+      else { actionType = 'watch'; label = 'Watch'; }
+    } else if (stage >= 7 && stage <= 10) {
+      // Actionability follows authoritativeReady exclusively — a Stage
+      // 7-10 number never grants take_trade by itself. A stage that looks
+      // ready while the adapter says otherwise is a malformed/inconsistent
+      // input and fails closed (also structurally covers "HC true but
+      // ready false", since that combination can never reach this branch
+      // with ready===true — see the V4.10.2B delivery report's Section AA
+      // proof).
+      if (ready) {
+        actionType = 'take_trade';
+        premium = !!(stage === 10 && hcKnown && hc);
+        label = premium ? 'High Conviction \u2014 Take Trade' : 'Take Trade';
+        entryLabel = premium ? 'Entry: High Conviction' : 'Entry: ready';
+        reason = supports[0] || reasonsArr[0] || '';
+      } else {
+        actionType = 'unknown'; label = 'Evaluation inconsistent'; entryLabel = 'Entry: unknown';
+        reason = 'Authoritative Trade Ready contradicts Evaluation stage';
+      }
+    } else {
+      actionType = 'unknown'; label = 'Evaluation unavailable'; entryLabel = 'Entry: unknown';
+    }
+  }
+
+  return {
+    symbol: sym || null,
+    direction,
+    alignment: {
+      state: alignState, confirmed: alignConfirmed,
+      score: alignScore, oneHourScore: h1Score, fourHourScore: h4Score,
+      label: alignLabelMap[alignState],
+    },
+    entry: {
+      sourceTimeframe: selection.tf,
+      setupPath,
+      authoritativeReady: ready,
+      authoritativeReadyKnown: readyKnown,
+      authoritativeHighConviction: hc,
+      authoritativeHighConvictionKnown: hcKnown,
+      evaluationStage: stage,
+      evaluationStageKey: stageKey,
+      evaluationClassification: classification,
+      blockers: blockers.slice(), cautions: cautions.slice(), supports: supports.slice(),
+    },
+    action: {
+      type: actionType, premium, source: actionSource,
+      label, alignmentLabel, entryLabel, reason,
+    },
+  };
 }
 
 // Evaluate confluence from existing currentScanData (no new fetches).
