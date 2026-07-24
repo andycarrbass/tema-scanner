@@ -1664,7 +1664,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.2B';
+const APP_BUILD = 'V4.10.2C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9076,7 +9076,7 @@ const DIAG = {
   marketEvidence:            true,  // TDAS V4.8 Phase B — Market Evidence diagnostic block (Full Analysis) + shadow disagreement console log — ENABLED for live shadow observation ahead of Phase C
   evaluationEngineLive:      true, // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. ACTIVE: scanner Trade Ready is now authoritative from the Stage 0-10 Evaluation Engine whenever d.authoritativeClassification.tradeReadyKnown is true (see _buildScannerAdvisory()'s own header comment for the exact policy and fallback). Rollback: set back to false to instantly restore the pre-V4.10.0D legacy-only behaviour — no other change required.
   highConvictionEngineLive:  true, // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation. ACTIVE: the large scanner Advisory HIGH CONVICTION headline/action is now authoritative from d.authoritativeClassification.highConviction whenever highConvictionKnown is true (see _buildScannerAdvisory()'s own STRONG-branch comment for the exact policy). Stage 0/unknown withholds HC (fails closed — never falls back to legacy). Trade Ready, sorting, the pair-label star, persistence, and Confluence remain fully legacy-driven, untouched. Rollback: set back to false to instantly restore the pre-V4.10.1C legacy display behaviour — no other change required.
-  confluenceEngineLive:      false, // TDAS V4.10.2B — Confluence Action Adapter Foundation. Dormant: buildConfluenceActionModel() exists and can be called directly (by tests), but no production consumer reads this flag or the model yet. renderConfCard()/openConfluenceModal() remain fully legacy-driven — the unsafe unconditional Take Trade button is intentionally NOT fixed in this build (see the V4.10.2A audit). Do not flip in this build.
+  confluenceEngineLive:      true, // TDAS V4.10.2C — Confluence Action Activation. ACTIVE: renderConfCard() now derives card wording/buttons from buildConfluenceActionModel(), and openConfluenceModal() independently rechecks the same model fresh at click time before allowing decision==='took' to proceed — two-layer enforcement, since the render layer can be stale (see the V4.10.2A audit's F-1 finding). Watch (decision==='watching') remains ungated in every Stage. Card population (the legacy HC qualifying filter), the alignment score, persistence, and active-trade/active-watch overrides are all unchanged. Rollback: set back to false to instantly restore the exact V4.10.2B legacy card/handler behaviour — no other change required.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -14543,6 +14543,26 @@ function openConfluenceModal(sym, decision){
   const h4   = data && data['4h'];
   if(!h1){ console.warn('[Confluence Action] no 1H data for', sym); return; }
 
+  // TDAS V4.10.2C — Confluence Action Activation: click-time enforcement.
+  // Only decision==='took' is gated — Watch remains available in every
+  // Stage, per doctrine, with no new gate. Rederives buildConfluenceActionModel()
+  // FRESH from confScanData at the moment of the click — never trusts
+  // rendered DOM state, cached button attributes, or the card's original
+  // render-time verdict, since the card can be stale (Confluence only
+  // repaints on its own scan cycle, not on every scanner refresh — see the
+  // V4.10.2A audit's F-1 finding). This is the only place a click can ever
+  // be rejected; the render layer's button choice is advisory, this gate
+  // is authoritative. No legacy HC fallback: fails closed on any state
+  // other than a genuinely known, authoritatively-ready take_trade verdict.
+  if (DIAG.confluenceEngineLive === true && decision === 'took') {
+    const _model = (typeof buildConfluenceActionModel === 'function') ? buildConfluenceActionModel(h1, h4, sym) : null;
+    const _eligible = !!(_model && _model.entry.authoritativeReadyKnown === true && _model.entry.authoritativeReady === true && _model.action.type === 'take_trade');
+    if (!_eligible) {
+      alert(_confluenceRejectionMessage(_model));
+      return;
+    }
+  }
+
   // Merge into currentScanData — standard modal reads this
   if(!currentScanData[sym]) currentScanData[sym] = {};
   Object.assign(currentScanData[sym], h1, {
@@ -17186,6 +17206,87 @@ function confCountdown(tf){
   return '<span style="font-size:11px;color:'+(urgent?'var(--amber-text)':'var(--text3)')+';">'+tf.toUpperCase()+' '+m+':'+String(s).padStart(2,'0')+'</span>';
 }
 
+// ── TDAS V4.10.2C — Confluence Action Activation: render helpers ─────────
+// Pure, presentation-only. Each reads ONLY buildConfluenceActionModel()'s
+// own output fields — neither reproduces Stage-number logic nor branches
+// on evaluationStage directly, so there is exactly one place (the model
+// itself) that knows what each Stage means.
+
+// Compact "alignment / entry / action" section, shown only when
+// DIAG.confluenceEngineLive is true and no active trade/watch overrides.
+function _confEntryStateHtml(model) {
+  if (!model) return '';
+  const a = model.action || {};
+  const alignColor = (model.alignment && model.alignment.confirmed) ? 'var(--green-text)' : 'var(--text3)';
+  let html = '<div style="margin-bottom:10px;padding:8px 10px;background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius-sm);">';
+  html += '<div style="font-size:12px;font-weight:600;color:'+alignColor+';margin-bottom:2px;">'+(a.alignmentLabel||'')+'</div>';
+  html += '<div style="font-size:12px;color:var(--text2);margin-bottom:2px;">'+(a.entryLabel||'')+'</div>';
+  html += '<div style="font-size:13px;font-weight:700;color:var(--text);">Action: '+(a.label||'')+'</div>';
+  if (a.reason) html += '<div style="font-size:11px;color:var(--text3);margin-top:4px;">'+a.reason+'</div>';
+  html += '</div>';
+  return html;
+}
+
+// Action buttons, driven entirely by model.action.type. Watch is always
+// present and always calls the unchanged openConfluenceModal(sym,
+// 'watching') path. Only 'take_trade' ever renders a control that can
+// call openConfluenceModal(sym, 'took') — every other type renders a
+// non-committing, disabled informational control (per doctrine: Wait for
+// Reset/Avoid/Watch/Evaluation-unavailable must never open the paper-
+// trade modal).
+function _confActionButtonsHtml(sym, model) {
+  const type = model && model.action && model.action.type;
+  const watchBtn = '<button class="card-btn" onclick="openConfluenceModal(\''+sym+'\',\'watching\')">👁 Watch</button>';
+  const signal = (model && model.direction) || '';
+
+  if (type === 'take_trade') {
+    const premium = !!(model.action && model.action.premium);
+    const takeLabel = premium ? '⭐ High Conviction — Take Trade' : '✓ Take Trade';
+    return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+      + watchBtn
+      + '<button class="card-btn primary-'+signal+'" onclick="openConfluenceModal(\''+sym+'\',\'took\')">'+takeLabel+'</button>'
+      + '</div>';
+  }
+  if (type === 'wait_for_oversold_reset' || type === 'wait_for_overbought_reset') {
+    const resetLabel = type === 'wait_for_oversold_reset' ? '⏸ Wait for oversold reset' : '⏸ Wait for overbought reset';
+    return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+      + watchBtn
+      + '<button class="card-btn" disabled style="opacity:0.55;cursor:default;">'+resetLabel+'</button>'
+      + '</div>';
+  }
+  if (type === 'avoid') {
+    return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+      + watchBtn
+      + '<button class="card-btn" disabled style="opacity:0.55;cursor:default;">⚠ Avoid</button>'
+      + '</div>';
+  }
+  if (type === 'watch') {
+    const classLabelMap = { developing: 'Developing', awaiting_trigger: 'Awaiting Trigger', early_trigger: 'Early Trigger' };
+    const secondary = (model.entry && classLabelMap[model.entry.evaluationClassification]) || 'Developing';
+    return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+      + watchBtn
+      + '<button class="card-btn" disabled style="opacity:0.55;cursor:default;">'+secondary+'</button>'
+      + '</div>';
+  }
+  // 'unknown' or any unrecognised type — fail closed to informational only.
+  return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+    + watchBtn
+    + '<button class="card-btn" disabled style="opacity:0.55;cursor:default;">Evaluation unavailable</button>'
+    + '</div>';
+}
+
+// User-facing rejection message for the openConfluenceModal() click-time
+// enforcement gate — mirrors the model's own action.type, never invents a
+// new classification.
+function _confluenceRejectionMessage(model) {
+  const type = model && model.action && model.action.type;
+  if (type === 'wait_for_oversold_reset') return 'Entry is not ready. Wait for oversold reset.';
+  if (type === 'wait_for_overbought_reset') return 'Entry is not ready. Wait for overbought reset.';
+  if (type === 'watch') return 'Entry is not ready yet. Keep this setup on Watch.';
+  if (type === 'avoid') return 'This setup is not currently executable.';
+  return 'Entry evaluation is currently unavailable.';
+}
+
 function renderConfCard(obj){
   const sym=obj.sym, h1=obj.h1, h4=obj.h4;
   const label=(LABELS[sym]||sym).replace('/USDT','');
@@ -17270,10 +17371,21 @@ function renderConfCard(obj){
 
   // Actions
   let actionHtml;
+  let entryStateHtml = '';
   if(activeTrade){
     actionHtml = '<button class="card-btn status-active" onclick="focusTradeDeskCard(\''+sym+'\')" style="width:100%;">🟢 Trade Active → Trade Desk</button>';
   } else if(activeWatch){
     actionHtml = '<button class="card-btn status-watching" onclick="focusTradeDeskCard(\''+sym+'\')" style="width:100%;">🟡 Watching → Trade Desk</button>';
+  } else if (typeof DIAG !== 'undefined' && DIAG.confluenceEngineLive === true) {
+    // TDAS V4.10.2C — Confluence Action Activation. Card wording/buttons
+    // now follow the single authoritative buildConfluenceActionModel()
+    // result. Flag-off path (the final `else` below) remains the exact,
+    // untouched V4.10.2B/legacy markup — this branch only exists in
+    // addition to it, never replacing it, so the flag is a genuine
+    // instant rollback.
+    const _confModel = (typeof buildConfluenceActionModel === 'function') ? buildConfluenceActionModel(h1, h4, sym) : null;
+    entryStateHtml = _confEntryStateHtml(_confModel);
+    actionHtml = _confActionButtonsHtml(sym, _confModel);
   } else {
     actionHtml =
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
@@ -17304,6 +17416,8 @@ function renderConfCard(obj){
     +persistenceHtml+signalAgeHtml
     // L5 — Confirmed badge
     +'<div style="font-size:12px;font-weight:700;color:var(--amber-text);margin-bottom:10px;padding:5px 8px;background:rgba(217,167,68,0.08);border:1px solid rgba(217,167,68,0.25);border-radius:var(--radius-sm);display:inline-block;">⭐ Multi-Timeframe Confirmed</div>'
+    // L5b — TDAS V4.10.2C authoritative entry-state section (empty string, hence no markup change, when the flag is off)
+    +entryStateHtml
     +(activeHtml?'<br>'+activeHtml:'')
     // Actions
     +'<div style="margin-top:8px;">'+actionHtml+'</div>'
