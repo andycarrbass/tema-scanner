@@ -1667,7 +1667,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.2D';
+const APP_BUILD = 'V4.10.3B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9080,6 +9080,7 @@ const DIAG = {
   evaluationEngineLive:      true, // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. ACTIVE: scanner Trade Ready is now authoritative from the Stage 0-10 Evaluation Engine whenever d.authoritativeClassification.tradeReadyKnown is true (see _buildScannerAdvisory()'s own header comment for the exact policy and fallback). Rollback: set back to false to instantly restore the pre-V4.10.0D legacy-only behaviour — no other change required.
   highConvictionEngineLive:  true, // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation. ACTIVE: the large scanner Advisory HIGH CONVICTION headline/action is now authoritative from d.authoritativeClassification.highConviction whenever highConvictionKnown is true (see _buildScannerAdvisory()'s own STRONG-branch comment for the exact policy). Stage 0/unknown withholds HC (fails closed — never falls back to legacy). Trade Ready, sorting, the pair-label star, persistence, and Confluence remain fully legacy-driven, untouched. Rollback: set back to false to instantly restore the pre-V4.10.1C legacy display behaviour — no other change required.
   confluenceEngineLive:      true, // TDAS V4.10.2C — Confluence Action Activation. ACTIVE: renderConfCard() now derives card wording/buttons from buildConfluenceActionModel(), and openConfluenceModal() independently rechecks the same model fresh at click time before allowing decision==='took' to proceed — two-layer enforcement, since the render layer can be stale (see the V4.10.2A audit's F-1 finding). Watch (decision==='watching') remains ungated in every Stage. Card population (the legacy HC qualifying filter), the alignment score, persistence, and active-trade/active-watch overrides are all unchanged. Rollback: set back to false to instantly restore the exact V4.10.2B legacy card/handler behaviour — no other change required.
+  scannerSortEngineLive:     false, // TDAS V4.10.3B — Dormant Authoritative Sort-Key Foundation. Dormant: buildAuthoritativeSortKey()/compareAuthoritativeSortKeys() exist and are callable directly (by tests), but no production consumer reads this flag or the new function. The legacy sortScore() nested inside runScan() and its indexed.sort() call site are completely unmodified — live Scanner order remains fully legacy-driven (see the V4.10.3A audit for the confirmed defect this future migration will fix). Do not flip in this build.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -16925,6 +16926,203 @@ function _updateConfluenceBadge(setups){
 // ║  DIAG.confluenceEngineLive stays false; renderConfCard()/                ║
 // ║  openConfluenceModal() are completely unmodified by this task.           ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.3B — Dormant Authoritative Sort-Key Foundation               ║
+// ║                                                                          ║
+// ║  buildAuthoritativeSortKey(d, context) is a PURE function that converts  ║
+// ║  an already-evaluated Scanner result into a deterministic authoritative  ║
+// ║  sort key. No DOM access, no fetches, no calcPair()/classifier calls, no ║
+// ║  globals written, d/context never mutated, no Journal search (Journal   ║
+// ║  state must be resolved by the caller and supplied via                  ║
+// ║  context.hasOpenTrade/context.isActiveWatch). Deterministic for         ║
+// ║  identical inputs. Reads only d.authoritativeClassification and its own ║
+// ║  rawEvaluation — never legacy d.highConviction, d.score, d.confirmCount, ║
+// ║  d.setupQuality, or d.evaluation.highProbability (per the V4.10.3A       ║
+// ║  audit's explicit settled decision: legacy score/HC must never          ║
+// ║  influence authoritative sort placement).                               ║
+// ║                                                                          ║
+// ║  FOUNDATION ONLY: nothing in the live system calls this function yet.    ║
+// ║  DIAG.scannerSortEngineLive stays false; the legacy sortScore() nested   ║
+// ║  inside runScan() and its indexed.sort() call site are completely       ║
+// ║  unmodified by this task — live Scanner order is untouched.             ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Settled bucket table (V4.10.3A audit) — lower number = higher priority.
+const SCANNER_SORT_BUCKETS = {
+  active_trade:                   { bucket: 0,  userLabel: 'Trade Active' },
+  active_watch:                   { bucket: 1,  userLabel: 'Watching' },
+  high_conviction:                { bucket: 2,  userLabel: '\u2b50 High Conviction' },
+  trade_ready_one_h_plus_four_h:  { bucket: 3,  userLabel: 'Trade Ready \u2014 1H + 4H' },
+  trade_ready_four_h_only:        { bucket: 4,  userLabel: 'Trade Ready \u2014 4H only' },
+  trade_ready_one_h_only:         { bucket: 5,  userLabel: 'Trade Ready \u2014 1H only' },
+  entry_not_optimal:              { bucket: 6,  userLabel: 'Setup valid \u2014 entry not optimal' },
+  early_trigger:                  { bucket: 7,  userLabel: 'Early trigger' },
+  awaiting_trigger:                { bucket: 8,  userLabel: 'Awaiting trigger' },
+  developing:                     { bucket: 9,  userLabel: 'Developing' },
+  counter_structure:              { bucket: 10, userLabel: 'Counter-structure' },
+  blocked:                        { bucket: 11, userLabel: 'Blocked' },
+  unknown:                        { bucket: 12, userLabel: 'Evaluation unavailable' },
+};
+
+// setupPath -> Trade Ready bucketKey, and the Stage each is normally
+// expected to pair with (a consistency check only — the authoritative
+// setup path, not the raw Stage number, is what determines the bucket).
+const _SORT_TRADE_READY_PATH_MAP = {
+  four_h_led:       { bucketKey: 'trade_ready_one_h_plus_four_h', expectedStage: 9 },
+  direct_four_h:    { bucketKey: 'trade_ready_four_h_only',       expectedStage: 8 },
+  standalone_one_h: { bucketKey: 'trade_ready_one_h_only',        expectedStage: 7 },
+};
+
+// Non-ready Stage -> bucketKey. Only consulted when authoritativeReadyKnown
+// is true and authoritativeReady is false (a genuine, known negative
+// verdict) — Stage 0/unknown/malformed never reach this map (they resolve
+// to 'unknown' directly, before this table is consulted).
+const _SORT_NON_READY_STAGE_MAP = {
+  6: 'entry_not_optimal',
+  5: 'early_trigger',
+  4: 'awaiting_trigger',
+  3: 'developing',
+  2: 'counter_structure',
+  1: 'blocked',
+};
+
+function _sortKeyUnknown(stage, setupPath, symbol, source) {
+  const b = SCANNER_SORT_BUCKETS.unknown;
+  return {
+    bucket: b.bucket, bucketKey: 'unknown', userLabel: b.userLabel,
+    stage: (typeof stage === 'number' && stage >= 0 && stage <= 10) ? stage : null,
+    setupPath: setupPath || 'unknown',
+    authoritativeReady: false, authoritativeReadyKnown: false,
+    authoritativeHighConviction: false, authoritativeHighConvictionKnown: false,
+    context: { hasOpenTrade: false, isActiveWatch: false },
+    tieBreak: { symbol: String(symbol || '') },
+    source: source || 'evaluation_unknown',
+  };
+}
+
+function buildAuthoritativeSortKey(d, context) {
+  const ctx = context || {};
+  const hasOpenTrade = ctx.hasOpenTrade === true;
+  const isActiveWatch = ctx.isActiveWatch === true;
+  const symbol = String(ctx.symbol || (d && d.symbol) || '');
+
+  const ac = (d && d.authoritativeClassification) || null;
+  const rawEval = (ac && ac.rawEvaluation) || null;
+  const stage = (rawEval && typeof rawEval.stage === 'number') ? rawEval.stage : null;
+  const setupPath = (rawEval && rawEval.evidenceSnapshot && rawEval.evidenceSnapshot.setupPath) || 'unknown';
+
+  const readyKnown = !!(ac && ac.tradeReadyKnown === true);
+  const ready = readyKnown && ac.tradeReady === true;
+  const hcKnown = !!(ac && ac.highConvictionKnown === true);
+  const hc = hcKnown && ac.highConviction === true;
+
+  // TDAS V4.10.3B — active-trade/active-watch context overrides entry
+  // quality entirely, even when Evaluation is unknown or malformed, since
+  // these buckets represent user/position state rather than fresh-entry
+  // quality (V4.10.3A audit, Section 8 — explicitly documented here per
+  // the task's own instruction). Active trade wins if both are true.
+  if (hasOpenTrade) {
+    const b = SCANNER_SORT_BUCKETS.active_trade;
+    return {
+      bucket: b.bucket, bucketKey: 'active_trade', userLabel: b.userLabel,
+      stage, setupPath,
+      authoritativeReady: ready, authoritativeReadyKnown: readyKnown,
+      authoritativeHighConviction: hc, authoritativeHighConvictionKnown: hcKnown,
+      context: { hasOpenTrade: true, isActiveWatch: isActiveWatch },
+      tieBreak: { symbol },
+      source: readyKnown ? 'evaluation_engine' : 'evaluation_unknown',
+    };
+  }
+  if (isActiveWatch) {
+    const b = SCANNER_SORT_BUCKETS.active_watch;
+    return {
+      bucket: b.bucket, bucketKey: 'active_watch', userLabel: b.userLabel,
+      stage, setupPath,
+      authoritativeReady: ready, authoritativeReadyKnown: readyKnown,
+      authoritativeHighConviction: hc, authoritativeHighConvictionKnown: hcKnown,
+      context: { hasOpenTrade: false, isActiveWatch: true },
+      tieBreak: { symbol },
+      source: readyKnown ? 'evaluation_engine' : 'evaluation_unknown',
+    };
+  }
+
+  // No genuine Evaluation known at all (Stage 0 / missing / malformed
+  // adapter) -> fail closed to 'unknown', the lowest-priority bucket.
+  // Never guessed from a partially-present rawEvaluation.
+  if (!readyKnown) {
+    return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+  }
+
+  // ── High Conviction — adapter boolean is authority, Stage 10 is a
+  // consistency check only. Any contradiction fails closed to unknown,
+  // never falls back to a lower (but still "known") bucket, and never
+  // trusts legacy HC. ──────────────────────────────────────────────────
+  if (hc) {
+    const consistent = hcKnown && ready && readyKnown && stage === 10 &&
+      (setupPath === 'four_h_led' || setupPath === 'standalone_one_h');
+    if (!consistent) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    const b = SCANNER_SORT_BUCKETS.high_conviction;
+    return {
+      bucket: b.bucket, bucketKey: 'high_conviction', userLabel: b.userLabel,
+      stage, setupPath,
+      authoritativeReady: true, authoritativeReadyKnown: true,
+      authoritativeHighConviction: true, authoritativeHighConvictionKnown: true,
+      context: { hasOpenTrade: false, isActiveWatch: false },
+      tieBreak: { symbol },
+      source: 'evaluation_engine',
+    };
+  }
+  // HC known-true was already handled above; a Stage 10 result that is
+  // NOT flagged HC-true (or a stage/hc mismatch already routed to
+  // 'unknown' above) never falls through to the Trade Ready branch below
+  // as if it were an ordinary Stage 9/8/7 — Stage 10 is exclusively
+  // resolved by the HC branch, consistent or not.
+  if (stage === 10) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+
+  // ── Trade Ready — setup path determines the bucket, never raw Stage
+  // alone. Malformed Stage/path pairings fail closed. ────────────────────
+  if (ready) {
+    const pathEntry = _SORT_TRADE_READY_PATH_MAP[setupPath];
+    if (!pathEntry || stage !== pathEntry.expectedStage) {
+      return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    }
+    const b = SCANNER_SORT_BUCKETS[pathEntry.bucketKey];
+    return {
+      bucket: b.bucket, bucketKey: pathEntry.bucketKey, userLabel: b.userLabel,
+      stage, setupPath,
+      authoritativeReady: true, authoritativeReadyKnown: true,
+      authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
+      context: { hasOpenTrade: false, isActiveWatch: false },
+      tieBreak: { symbol },
+      source: 'evaluation_engine',
+    };
+  }
+
+  // ── Non-ready, known Stage — descending Stage order (Section 10 of the
+  // V4.10.3A audit: Stage 5 ranks above Stage 4, matching raw Stage
+  // number directly; no further reordering needed within Stages 0-6). ──
+  const nonReadyKey = (stage != null) ? _SORT_NON_READY_STAGE_MAP[stage] : undefined;
+  if (!nonReadyKey) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+  const nb = SCANNER_SORT_BUCKETS[nonReadyKey];
+  return {
+    bucket: nb.bucket, bucketKey: nonReadyKey, userLabel: nb.userLabel,
+    stage, setupPath,
+    authoritativeReady: false, authoritativeReadyKnown: true,
+    authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
+    context: { hasOpenTrade: false, isActiveWatch: false },
+    tieBreak: { symbol },
+    source: 'evaluation_engine',
+  };
+}
+
+// Dormant pure comparator — not wired to indexed.sort() in this release.
+// Exists only so tests can verify bucket-then-symbol ordering without
+// duplicating the logic themselves.
+function compareAuthoritativeSortKeys(a, b) {
+  if (a.bucket !== b.bucket) return a.bucket - b.bucket;
+  return a.tieBreak.symbol.localeCompare(b.tieBreak.symbol);
+}
 
 // Option C entry-authority selection (V4.10.2A audit, Section 10).
 //   h4 authoritatively ready              -> h4 (4H-led preference, also
