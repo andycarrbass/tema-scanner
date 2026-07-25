@@ -1667,7 +1667,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3B';
+const APP_BUILD = 'V4.10.3C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -17124,6 +17124,204 @@ function compareAuthoritativeSortKeys(a, b) {
   return a.tieBreak.symbol.localeCompare(b.tieBreak.symbol);
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.3C — Shadow Scanner Order Census                              ║
+// ║  Diagnostic-only. Computes the current legacy Scanner order and the       ║
+// ║  proposed authoritative order side by side, from independent COPIES of    ║
+// ║  the completed scan results, for every completed Scanner cycle. Never     ║
+// ║  mutates the live `indexed` array, never influences the live sort, never  ║
+// ║  activates anything. DIAG.scannerSortEngineLive remains false. See the    ║
+// ║  call site inside runScan() for exactly where this runs and why           ║
+// ║  authoritative data (d.authoritativeClassification) is guaranteed fresh   ║
+// ║  at that point (V4.10.3A audit, Section 6/7 — re-confirmed unchanged).    ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Legacy tier labels, matching the nested sortScore() return values exactly
+// (5=active trade, 4=active watch, 3=legacy High Conviction, 2=non-neutral
+// signal, 1=neutral, 0=no genuine scan result at all).
+const _LEGACY_SORT_TIER_LABELS = {
+  5: 'active_trade', 4: 'active_watch', 3: 'high_conviction', 2: 'signal', 1: 'neutral', 0: 'error',
+};
+
+// Frozen diagnostic mirror of the live nested sortScore() inside
+// runScan()'s indexed.sort() comparator. This is a DUPLICATE, not a
+// refactor — the live sortScore() is byte-identical and untouched by this
+// task (see test_v4103c's own freeze assertion). This mirror exists solely
+// so the shadow census can compute the legacy order without reaching into
+// runScan()'s private nested function. If the live sortScore() is ever
+// intentionally changed, this mirror must be updated to match.
+function _legacySortTierMirror(v, sym, journalList) {
+  const list = journalList || [];
+  if (!v) return 0;
+  const hasOpenTrade = list.some(function(j){ return !j.deleted && j.symbol === sym && j.decision === 'took' && !j.outcome; });
+  const watching     = list.some(function(j){ return j.symbol === sym && isActiveWatch(j); });
+  if (hasOpenTrade)     return 5;
+  if (watching)         return 4;
+  if (v.highConviction) return 3;
+  if (v.signal !== 'neutral') return 2;
+  return 1;
+}
+
+// Bucket keys the V4.10.3A audit identifies as "ready" outcomes (High
+// Conviction or any Trade Ready variant) — used only for the
+// authoritativeTradeReadyBuried diagnostic below.
+const _SORT_READY_BUCKET_KEYS = [
+  'high_conviction', 'trade_ready_one_h_plus_four_h', 'trade_ready_four_h_only', 'trade_ready_one_h_only',
+];
+
+// buildScannerSortShadowCensus(indexed, journalList)
+//
+// Pure with respect to its inputs: never mutates `indexed`, never mutates
+// any {r,sym} element or its underlying scan-result object, never calls
+// calcPair()/renderCard()/any DOM API, never touches DIAG.scannerSortEngineLive.
+// Operates entirely on independent array copies (legacyCopy/authoritativeCopy).
+//
+// Position convention: 1-based (documented per the task brief — easier to
+// inspect than 0-based internal indices).
+// delta = legacyPosition - authoritativePosition.
+//   positive delta -> authoritative promotion (moved to a better/lower position)
+//   negative delta -> authoritative demotion
+//   zero            -> unchanged
+function buildScannerSortShadowCensus(indexed, journalList) {
+  const list = journalList || (typeof journal !== 'undefined' ? journal : []);
+  const source = indexed || [];
+
+  // Independent copies — sorting these never reorders or mutates `indexed`.
+  const legacyCopy = source.slice();
+  const authoritativeCopy = source.slice();
+
+  // ── Legacy order — frozen mirror of the live comparator, same tie-break.
+  legacyCopy.sort(function(a, b) {
+    const av = a.r.status === 'fulfilled' ? a.r.value : null;
+    const bv = b.r.status === 'fulfilled' ? b.r.value : null;
+    const aScore = _legacySortTierMirror(av, a.sym, list);
+    const bScore = _legacySortTierMirror(bv, b.sym, list);
+    if (bScore !== aScore) return bScore - aScore;
+    return a.sym.localeCompare(b.sym);
+  });
+  const legacyPositionBySymbol = {};
+  legacyCopy.forEach(function(item, i) { legacyPositionBySymbol[item.sym] = i + 1; });
+
+  // ── Authoritative order — the existing V4.10.3B dormant adapter only;
+  // no new classification logic is introduced here. Context (hasOpenTrade/
+  // isActiveWatch) is resolved once per symbol from the same Journal
+  // predicates the live comparator itself uses.
+  function contextFor(sym) {
+    return {
+      symbol: sym,
+      hasOpenTrade: list.some(function(j){ return !j.deleted && j.symbol === sym && j.decision === 'took' && !j.outcome; }),
+      isActiveWatch: list.some(function(j){ return j.symbol === sym && isActiveWatch(j); }),
+    };
+  }
+  const authKeyed = authoritativeCopy.map(function(item) {
+    const v = item.r.status === 'fulfilled' ? item.r.value : null;
+    const ctx = contextFor(item.sym);
+    const key = buildAuthoritativeSortKey(v || {}, ctx);
+    return { r: item.r, sym: item.sym, key: key, ctx: ctx };
+  });
+  authKeyed.sort(function(a, b) { return compareAuthoritativeSortKeys(a.key, b.key); });
+
+  const records = [];
+  const stageCounts = {};
+  const legacyTierCounts = {};
+  const authoritativeBucketCounts = {};
+  let cardsMoved = 0, cardsUnchanged = 0, promotedCount = 0, demotedCount = 0;
+  let largestAbsolutePositionDelta = 0;
+  let legacyHcPromotedIncorrectlyCount = 0, authoritativeTradeReadyBuriedCount = 0;
+  let activeTradeAgreementCount = 0, activeTradeDisagreementCount = 0;
+  let activeWatchAgreementCount = 0, activeWatchDisagreementCount = 0;
+  let malformedOrUnknownCount = 0;
+
+  authKeyed.forEach(function(entry, i) {
+    const r = entry.r, sym = entry.sym, key = entry.key, ctx = entry.ctx;
+    const v = r.status === 'fulfilled' ? r.value : null;
+    const authoritativePosition = i + 1;
+    const legacyPosition = legacyPositionBySymbol[sym];
+    const legacyTier = _legacySortTierMirror(v, sym, list);
+    const legacyTierKey = _LEGACY_SORT_TIER_LABELS[legacyTier] || 'error';
+
+    const delta = legacyPosition - authoritativePosition;
+    const moved = delta !== 0;
+    const direction = delta > 0 ? 'promoted' : (delta < 0 ? 'demoted' : 'unchanged');
+
+    if (moved) cardsMoved++; else cardsUnchanged++;
+    if (delta > 0) promotedCount++;
+    if (delta < 0) demotedCount++;
+    if (Math.abs(delta) > largestAbsolutePositionDelta) largestAbsolutePositionDelta = Math.abs(delta);
+
+    const stageKey = (key.stage === null || typeof key.stage === 'undefined') ? 'null' : String(key.stage);
+    stageCounts[stageKey] = (stageCounts[stageKey] || 0) + 1;
+    legacyTierCounts[legacyTierKey] = (legacyTierCounts[legacyTierKey] || 0) + 1;
+    authoritativeBucketCounts[key.bucketKey] = (authoritativeBucketCounts[key.bucketKey] || 0) + 1;
+
+    // DOGE-style inversion: legacy grants the HC tier purely from
+    // v.highConviction, but the authoritative result is not High Conviction.
+    const legacyHcPromotedIncorrectly = legacyTier === 3 && key.bucketKey !== 'high_conviction';
+    if (legacyHcPromotedIncorrectly) legacyHcPromotedIncorrectlyCount++;
+
+    // Authoritative High Conviction / Trade Ready card that legacy never
+    // recognised as anything more than an ordinary non-neutral/neutral card.
+    const authoritativeTradeReadyBuried = _SORT_READY_BUCKET_KEYS.indexOf(key.bucketKey) !== -1 && (legacyTier === 2 || legacyTier === 1);
+    if (authoritativeTradeReadyBuried) authoritativeTradeReadyBuriedCount++;
+
+    // Active trade/Watch precedence agreement — only meaningful (non-null)
+    // when the context condition actually applies to this symbol. Within-
+    // group alphabetical variation among multiple active trades/Watches is
+    // never treated as a disagreement here, since both orders already use
+    // the identical symbol tie-break.
+    let activeTradeAgreement = null;
+    if (ctx.hasOpenTrade) {
+      activeTradeAgreement = (legacyTier === 5 && key.bucketKey === 'active_trade');
+      if (activeTradeAgreement) activeTradeAgreementCount++; else activeTradeDisagreementCount++;
+    }
+    let activeWatchAgreement = null;
+    if (ctx.isActiveWatch && !ctx.hasOpenTrade) {
+      activeWatchAgreement = (legacyTier === 4 && key.bucketKey === 'active_watch');
+      if (activeWatchAgreement) activeWatchAgreementCount++; else activeWatchDisagreementCount++;
+    }
+
+    const malformedOrUnknown = key.bucketKey === 'unknown';
+    if (malformedOrUnknown) malformedOrUnknownCount++;
+
+    records.push({
+      symbol: sym,
+      legacy: {
+        position: legacyPosition, tier: legacyTier, tierKey: legacyTierKey,
+        legacyHighConviction: !!(v && v.highConviction), signal: (v && v.signal) || null,
+      },
+      authoritative: {
+        position: authoritativePosition, bucket: key.bucket, bucketKey: key.bucketKey, userLabel: key.userLabel,
+        stage: key.stage, setupPath: key.setupPath,
+        authoritativeReady: key.authoritativeReady, authoritativeHighConviction: key.authoritativeHighConviction,
+        source: key.source,
+      },
+      delta: delta, moved: moved, direction: direction,
+      context: { hasOpenTrade: ctx.hasOpenTrade, isActiveWatch: ctx.isActiveWatch },
+      flags: {
+        legacyHcPromotedIncorrectly: legacyHcPromotedIncorrectly,
+        authoritativeTradeReadyBuried: authoritativeTradeReadyBuried,
+        activeTradeAgreement: activeTradeAgreement,
+        activeWatchAgreement: activeWatchAgreement,
+        malformedOrUnknown: malformedOrUnknown,
+      },
+    });
+  });
+
+  return {
+    totalCards: authKeyed.length,
+    cardsMoved: cardsMoved, cardsUnchanged: cardsUnchanged,
+    promotedCount: promotedCount, demotedCount: demotedCount,
+    largestAbsolutePositionDelta: largestAbsolutePositionDelta,
+    legacyHcPromotedIncorrectly: legacyHcPromotedIncorrectlyCount,
+    authoritativeTradeReadyBuried: authoritativeTradeReadyBuriedCount,
+    activeTradeAgreementCount: activeTradeAgreementCount, activeTradeDisagreementCount: activeTradeDisagreementCount,
+    activeWatchAgreementCount: activeWatchAgreementCount, activeWatchDisagreementCount: activeWatchDisagreementCount,
+    malformedOrUnknownCount: malformedOrUnknownCount,
+    stageCounts: stageCounts, legacyTierCounts: legacyTierCounts, authoritativeBucketCounts: authoritativeBucketCounts,
+    records: records,
+  };
+}
+
 // Option C entry-authority selection (V4.10.2A audit, Section 10).
 //   h4 authoritatively ready              -> h4 (4H-led preference, also
 //                                             covers "both ready")
@@ -18034,6 +18232,12 @@ let _scanGeneration = 0;  // incremented on every runScan() call; used to discar
 // scratch on every runScan() call (see below); never persisted, never sent
 // over the network, never accumulated across scans.
 let _shadowCensus = null;
+// TDAS V4.10.3C — Shadow Scanner Order Census. Diagnostic-only, rebuilt
+// fresh every completed Scanner cycle (see runScan()'s own call site).
+// Inspect from the browser DevTools console by evaluating the bare
+// identifier `_scannerSortShadowCensus`, exactly like the existing
+// `_shadowCensus` diagnostic above.
+let _scannerSortShadowCensus = null;
 
 // TDAS V4.5 Task 2 re-fix — root cause of "Failed to load" cards appearing
 // from auto-refresh (both the original mobile report and the desktop
@@ -18123,6 +18327,29 @@ async function runScan(auto){
     _shadowCensus = null;
   }
   const indexed = results.map((r,i) => ({r, sym: PAIRS[i]}));
+
+  // TDAS V4.10.3C — Shadow Scanner Order Census. Diagnostic-only: runs
+  // AFTER the stale-generation guard above has already passed (so this
+  // scan is confirmed current) and after d.authoritativeClassification has
+  // already been (re)built for every fulfilled result by
+  // _refreshShadowFromCurrentEvidence() a few lines above — authoritative
+  // data is guaranteed fresh here (V4.10.3A audit, Section 6/7). Runs
+  // BEFORE the live legacy sort below, but reads only independent COPIES
+  // of `indexed` (see buildScannerSortShadowCensus()'s own header comment)
+  // — it never reorders or mutates `indexed` itself, and the live sort
+  // immediately below is completely unaffected either way. No further
+  // `await` occurs between the generation-guard check above and this call,
+  // so a stale generation can never overwrite a newer census here.
+  // Failure is fully isolated: on error, the previous valid census (if
+  // any) is left in place, and neither Scanner rendering nor the live sort
+  // are affected. DIAG.scannerSortEngineLive remains false throughout —
+  // nothing here reads or activates it.
+  try {
+    _scannerSortShadowCensus = buildScannerSortShadowCensus(indexed, journal);
+  } catch (e) {
+    if (DEBUG_MODE) console.warn('[V4.10.3C Shadow Census] build failed (non-fatal, diagnostic only)', e);
+  }
+
   indexed.sort((a, b) => {
     const av = a.r.status==='fulfilled' ? a.r.value : null;
     const bv = b.r.status==='fulfilled' ? b.r.value : null;
