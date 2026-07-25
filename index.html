@@ -1667,7 +1667,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3C2';
+const APP_BUILD = 'V4.10.3D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9080,7 +9080,7 @@ const DIAG = {
   evaluationEngineLive:      true, // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. ACTIVE: scanner Trade Ready is now authoritative from the Stage 0-10 Evaluation Engine whenever d.authoritativeClassification.tradeReadyKnown is true (see _buildScannerAdvisory()'s own header comment for the exact policy and fallback). Rollback: set back to false to instantly restore the pre-V4.10.0D legacy-only behaviour — no other change required.
   highConvictionEngineLive:  true, // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation. ACTIVE: the large scanner Advisory HIGH CONVICTION headline/action is now authoritative from d.authoritativeClassification.highConviction whenever highConvictionKnown is true (see _buildScannerAdvisory()'s own STRONG-branch comment for the exact policy). Stage 0/unknown withholds HC (fails closed — never falls back to legacy). Trade Ready, sorting, the pair-label star, persistence, and Confluence remain fully legacy-driven, untouched. Rollback: set back to false to instantly restore the pre-V4.10.1C legacy display behaviour — no other change required.
   confluenceEngineLive:      true, // TDAS V4.10.2C — Confluence Action Activation. ACTIVE: renderConfCard() now derives card wording/buttons from buildConfluenceActionModel(), and openConfluenceModal() independently rechecks the same model fresh at click time before allowing decision==='took' to proceed — two-layer enforcement, since the render layer can be stale (see the V4.10.2A audit's F-1 finding). Watch (decision==='watching') remains ungated in every Stage. Card population (the legacy HC qualifying filter), the alignment score, persistence, and active-trade/active-watch overrides are all unchanged. Rollback: set back to false to instantly restore the exact V4.10.2B legacy card/handler behaviour — no other change required.
-  scannerSortEngineLive:     false, // TDAS V4.10.3B — Dormant Authoritative Sort-Key Foundation. Dormant: buildAuthoritativeSortKey()/compareAuthoritativeSortKeys() exist and are callable directly (by tests), but no production consumer reads this flag or the new function. The legacy sortScore() nested inside runScan() and its indexed.sort() call site are completely unmodified — live Scanner order remains fully legacy-driven (see the V4.10.3A audit for the confirmed defect this future migration will fix). Do not flip in this build.
+  scannerSortEngineLive:     true, // TDAS V4.10.3D — Authoritative Scanner Sorting Activation. ACTIVE: the live indexed.sort() comparator inside runScan() now sorts by buildAuthoritativeSortKey()/compareAuthoritativeSortKeys() (V4.10.3B) via the shared _resolveAuthoritativeSortContext() helper, validated live in shadow form since V4.10.3C/C2 (see those audits for the confirmed SUI/BNB-style corrections this activation applies). The nested legacy sortScore() and its full tier logic remain completely unmodified as the rollback path. Rollback: set back to false to instantly restore the exact V4.10.3C2 legacy-only Scanner order — no other change required.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -17163,6 +17163,23 @@ function _authoritativeClassificationIsMalformed(d) {
   return !nonReadyKey;
 }
 
+// TDAS V4.10.3D — shared, read-only Journal context resolver. Reuses the
+// exact same predicates the legacy sortScore() has always used inline
+// (untouched, byte-identical, kept as the rollback path). Used by BOTH the
+// live authoritative comparator (only when DIAG.scannerSortEngineLive is
+// true) and buildScannerSortShadowCensus(), so the two can never diverge on
+// hasOpenTrade/isActiveWatch for the same symbol. Does not change Journal
+// semantics or active-trade/Watch precedence — purely deduplicates the same
+// two `journal.some(...)` reads that previously existed in three places.
+function _resolveAuthoritativeSortContext(sym, journalList) {
+  const list = journalList || (typeof journal !== 'undefined' ? journal : []);
+  return {
+    symbol: sym,
+    hasOpenTrade: list.some(function(j){ return !j.deleted && j.symbol === sym && j.decision === 'took' && !j.outcome; }),
+    isActiveWatch: list.some(function(j){ return j.symbol === sym && isActiveWatch(j); }),
+  };
+}
+
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║  TDAS V4.10.3C — Shadow Scanner Order Census                              ║
 // ║  Diagnostic-only. Computes the current legacy Scanner order and the       ║
@@ -17246,11 +17263,7 @@ function buildScannerSortShadowCensus(indexed, journalList) {
   // isActiveWatch) is resolved once per symbol from the same Journal
   // predicates the live comparator itself uses.
   function contextFor(sym) {
-    return {
-      symbol: sym,
-      hasOpenTrade: list.some(function(j){ return !j.deleted && j.symbol === sym && j.decision === 'took' && !j.outcome; }),
-      isActiveWatch: list.some(function(j){ return j.symbol === sym && isActiveWatch(j); }),
-    };
+    return _resolveAuthoritativeSortContext(sym, list);
   }
   const authKeyed = authoritativeCopy.map(function(item) {
     const v = item.r.status === 'fulfilled' ? item.r.value : null;
@@ -18405,7 +18418,29 @@ async function runScan(auto){
     if (DEBUG_MODE) console.warn('[V4.10.3C Shadow Census] build failed (non-fatal, diagnostic only)', e);
   }
 
+  // TDAS V4.10.3D — Authoritative Scanner Sorting Activation. Controlled
+  // exclusively by DIAG.scannerSortEngineLive. When true, both operands are
+  // resolved through the existing, tested buildAuthoritativeSortKey()/
+  // compareAuthoritativeSortKeys() (V4.10.3B) using the shared context
+  // resolver above — no new classification logic, no re-derivation of
+  // Stage/setup-path. When false, behaviour is byte-identical to V4.10.3C2:
+  // the nested legacy sortScore() below is completely unmodified and
+  // remains the exact rollback path. No try/catch wraps the authoritative
+  // branch: buildAuthoritativeSortKey() is already fail-closed for
+  // malformed/unavailable data (routes to the last bucket, never throws),
+  // so masking genuine unexpected errors here would only hide real defects
+  // behind a silent legacy fallback — see this task's own delivery report
+  // for the rationale. Rollback: set the flag back to false to instantly
+  // restore the exact V4.10.3C2 legacy-only behaviour — no other change
+  // required.
   indexed.sort((a, b) => {
+    if (DIAG.scannerSortEngineLive) {
+      const aValue = a.r.status === 'fulfilled' ? a.r.value : null;
+      const bValue = b.r.status === 'fulfilled' ? b.r.value : null;
+      const aKey = buildAuthoritativeSortKey(aValue || {}, _resolveAuthoritativeSortContext(a.sym, journal));
+      const bKey = buildAuthoritativeSortKey(bValue || {}, _resolveAuthoritativeSortContext(b.sym, journal));
+      return compareAuthoritativeSortKeys(aKey, bKey);
+    }
     const av = a.r.status==='fulfilled' ? a.r.value : null;
     const bv = b.r.status==='fulfilled' ? b.r.value : null;
     function sortScore(v, sym){
