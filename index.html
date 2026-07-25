@@ -1667,7 +1667,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3C';
+const APP_BUILD = 'V4.10.3C2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -17124,6 +17124,45 @@ function compareAuthoritativeSortKeys(a, b) {
   return a.tieBreak.symbol.localeCompare(b.tieBreak.symbol);
 }
 
+// TDAS V4.10.3C2 — small, read-only diagnostic helper. Does NOT alter
+// buildAuthoritativeSortKey()/compareAuthoritativeSortKeys() and introduces
+// no second classifier — it only re-derives the same simple field reads
+// already at the top of buildAuthoritativeSortKey() (never its branching
+// doctrine) to distinguish WHY a record fell to the 'unknown' bucket:
+// genuinely insufficient evidence (tradeReadyKnown false — NOT malformed)
+// vs a genuinely contradictory/structurally invalid classification
+// (tradeReadyKnown true but internally inconsistent). Reuses the existing
+// _SORT_TRADE_READY_PATH_MAP / _SORT_NON_READY_STAGE_MAP lookup tables
+// read-only; never redefines or diverges from them. Only ever meaningful
+// for records whose bucketKey is already 'unknown' — callers should gate
+// on that themselves (see buildScannerSortShadowCensus()'s own call site).
+function _authoritativeClassificationIsMalformed(d) {
+  const ac = (d && d.authoritativeClassification) || null;
+  const rawEval = (ac && ac.rawEvaluation) || null;
+  const stage = (rawEval && typeof rawEval.stage === 'number') ? rawEval.stage : null;
+  const setupPath = (rawEval && rawEval.evidenceSnapshot && rawEval.evidenceSnapshot.setupPath) || 'unknown';
+
+  const readyKnown = !!(ac && ac.tradeReadyKnown === true);
+  if (!readyKnown) return false; // insufficient evidence — unavailable, not malformed
+
+  const ready = readyKnown && ac.tradeReady === true;
+  const hcKnown = !!(ac && ac.highConvictionKnown === true);
+  const hc = hcKnown && ac.highConviction === true;
+
+  if (hc) {
+    const consistent = hcKnown && ready && readyKnown && stage === 10 &&
+      (setupPath === 'four_h_led' || setupPath === 'standalone_one_h');
+    return !consistent;
+  }
+  if (stage === 10) return true; // Stage 10 without HC is a doctrine-invalid combination
+  if (ready) {
+    const pathEntry = _SORT_TRADE_READY_PATH_MAP[setupPath];
+    return !pathEntry || stage !== pathEntry.expectedStage;
+  }
+  const nonReadyKey = (stage != null) ? _SORT_NON_READY_STAGE_MAP[stage] : undefined;
+  return !nonReadyKey;
+}
+
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║  TDAS V4.10.3C — Shadow Scanner Order Census                              ║
 // ║  Diagnostic-only. Computes the current legacy Scanner order and the       ║
@@ -17230,7 +17269,7 @@ function buildScannerSortShadowCensus(indexed, journalList) {
   let legacyHcPromotedIncorrectlyCount = 0, authoritativeTradeReadyBuriedCount = 0;
   let activeTradeAgreementCount = 0, activeTradeDisagreementCount = 0;
   let activeWatchAgreementCount = 0, activeWatchDisagreementCount = 0;
-  let malformedOrUnknownCount = 0;
+  let legacyNeutralCount = 0, evaluationUnavailableCount = 0, malformedClassificationCount = 0;
 
   authKeyed.forEach(function(entry, i) {
     const r = entry.r, sym = entry.sym, key = entry.key, ctx = entry.ctx;
@@ -17280,8 +17319,20 @@ function buildScannerSortShadowCensus(indexed, journalList) {
       if (activeWatchAgreement) activeWatchAgreementCount++; else activeWatchDisagreementCount++;
     }
 
-    const malformedOrUnknown = key.bucketKey === 'unknown';
-    if (malformedOrUnknown) malformedOrUnknownCount++;
+    // TDAS V4.10.3C2 — Scanner Census Language Refinement. These three
+    // dimensions are intentionally distinct (not mutually exclusive):
+    // legacyNeutral is a Scanner-layer fact only (never infers anything
+    // about Evaluation completeness); evaluationUnavailable is exactly the
+    // existing 'unknown' bucket outcome (unchanged fail-closed contract);
+    // malformedClassification narrows evaluationUnavailable further, to
+    // genuinely contradictory/structurally invalid classification data
+    // only — ordinary missing evidence is unavailable but never malformed.
+    const legacyNeutral = !!(v && v.signal === 'neutral');
+    const evaluationUnavailable = key.bucketKey === 'unknown';
+    const malformedClassification = evaluationUnavailable && _authoritativeClassificationIsMalformed(v);
+    if (legacyNeutral) legacyNeutralCount++;
+    if (evaluationUnavailable) evaluationUnavailableCount++;
+    if (malformedClassification) malformedClassificationCount++;
 
     records.push({
       symbol: sym,
@@ -17298,11 +17349,13 @@ function buildScannerSortShadowCensus(indexed, journalList) {
       delta: delta, moved: moved, direction: direction,
       context: { hasOpenTrade: ctx.hasOpenTrade, isActiveWatch: ctx.isActiveWatch },
       flags: {
+        legacyNeutral: legacyNeutral,
+        evaluationUnavailable: evaluationUnavailable,
+        malformedClassification: malformedClassification,
         legacyHcPromotedIncorrectly: legacyHcPromotedIncorrectly,
         authoritativeTradeReadyBuried: authoritativeTradeReadyBuried,
         activeTradeAgreement: activeTradeAgreement,
         activeWatchAgreement: activeWatchAgreement,
-        malformedOrUnknown: malformedOrUnknown,
       },
     });
   });
@@ -17316,7 +17369,9 @@ function buildScannerSortShadowCensus(indexed, journalList) {
     authoritativeTradeReadyBuried: authoritativeTradeReadyBuriedCount,
     activeTradeAgreementCount: activeTradeAgreementCount, activeTradeDisagreementCount: activeTradeDisagreementCount,
     activeWatchAgreementCount: activeWatchAgreementCount, activeWatchDisagreementCount: activeWatchDisagreementCount,
-    malformedOrUnknownCount: malformedOrUnknownCount,
+    legacyNeutralCount: legacyNeutralCount,
+    evaluationUnavailableCount: evaluationUnavailableCount,
+    malformedClassificationCount: malformedClassificationCount,
     stageCounts: stageCounts, legacyTierCounts: legacyTierCounts, authoritativeBucketCounts: authoritativeBucketCounts,
     records: records,
   };
