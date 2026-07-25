@@ -1151,10 +1151,13 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 /* TDAS V4.6.5 — Watch progress container (Task 2). Same subtle-panel
    family as .tdas-checklist-box/.tdas-status-block (transparent
    background, thin border, var(--radius-sm)) — the text colour/weight
-   (condColor/condWeight, passed inline by renderWatchCard) and the
-   ⭐ Full confluence suffix are completely unchanged from before; only the
-   wording ("WATCH PROGRESS N/5" instead of "N/5 conditions met") and the
-   container are new. */
+   (condColor/condWeight, passed inline by renderWatchCard) are
+   unchanged from before; only the wording ("WATCH PROGRESS N/5" instead
+   of "N/5 conditions met") and the container are new. The full-conditions
+   suffix text itself was later corrected in V4.10.2D (from the misleading
+   "⭐ Full confluence" — a gold star should mean authoritative High
+   Conviction, not condition completeness — to "✓ All watch conditions
+   met"); the underlying fullConf boolean condition is unchanged. */
 .watch-progress-strip{display:inline-block;padding:5px 10px;margin-bottom:8px;
   border-radius:var(--radius-sm);border:1px solid var(--border);
   background:transparent;font-size:11px;}
@@ -1391,7 +1394,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 <!-- Tabs — v2.0: Scan · Confluence ⭐ · Trade 📈 · Journal · Instruments ⚙ -->
 <div class="tabs">
   <button class="tab active" onclick="showTab('scanner')"><span class="tab-full">🔍 Scanner</span><span class="tab-short">🔍</span></button>
-  <button class="tab" onclick="showTab('confluence')"><span class="tab-full">⭐ Confluence</span><span class="tab-short">⭐</span> <span id="confCount" style="font-size:10px;color:var(--text3);"></span></button>
+  <button class="tab" onclick="showTab('confluence')"><span class="tab-full">🔗 Confluence</span><span class="tab-short">🔗</span> <span id="confCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" onclick="showTab('trade')"><span class="tab-full">📈 Trade</span><span class="tab-short">📈</span> <span id="tradeCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" onclick="showTab('journal')"><span class="tab-full">📝 Journal</span><span class="tab-short">📝</span> <span id="journalCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" onclick="showTab('settings')"><span class="tab-full">⚙ Instruments</span><span class="tab-short">⚙</span></button>
@@ -1664,7 +1667,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.2C';
+const APP_BUILD = 'V4.10.2D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -12210,6 +12213,18 @@ function renderCard(symbol,d){
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50}=d;
   // Guard all fields that can be undefined during refresh cycles
   const _utBot = safeUtBot(utBot);
+  // TDAS V4.10.2D — Authoritative Presentation Language and Visual
+  // Semantics. The scanner symbol star must always and only mean
+  // authoritative Stage 10 High Conviction — never legacy d.highConviction
+  // (the `highConviction` destructured above, retained unchanged for its
+  // own legitimate uses elsewhere: sorting, persistence, Confluence
+  // population — none of which this task touches). Fails closed: unknown
+  // Evaluation (highConvictionKnown!==true) never shows a star.
+  const _authoritativeHighConvictionForStar = !!(
+    d.authoritativeClassification &&
+    d.authoritativeClassification.highConvictionKnown === true &&
+    d.authoritativeClassification.highConviction === true
+  );
   const _fibRetrace618 = (fibRetrace618!=null&&isFinite(fibRetrace618))?fibRetrace618:null;
   const _stop15 = safeNum(stop15);
   const _target2 = safeNum(target2);
@@ -12461,7 +12476,7 @@ function renderCard(symbol,d){
   el.innerHTML=`
     <div class="tdas-card-front">
     <div class="cz cz-top card-top">
-      <div class="pair">${LABELS[symbol]}${highConviction?' \u2b50':''}</div>
+      <div class="pair">${LABELS[symbol]}${_authoritativeHighConvictionForStar?' \u2b50':''}</div>
       <span class="htf-badge ${_htfPillState}">${htfText}</span>
       <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
     </div>
@@ -14032,7 +14047,7 @@ function openAnalysisPanel(symbol){
                  : 'var(--text3)';
     var _raColor = _ev.signalRegimeAligned?'var(--green-text)':'var(--red-text)';
     var _raText  = _ev.signalRegimeAligned?'Yes ✓':'No ✗';
-    var _hpText  = _ev.highProbability?'Yes ⭐':'No';
+    var _hpText  = _ev.highProbability?'Yes':'No';
     var _hpColor = _ev.highProbability?'var(--green-text)':'var(--text3)';
     // Reasons row — joined, truncated for display
     var _reasonStr = _ev.reasons.length ? _ev.reasons.join(' · ') : '—';
@@ -14159,7 +14174,7 @@ function openAnalysisPanel(symbol){
       <div class="ap-row"><span>Signal</span><span style="color:${signal==='long'?'var(--green-text)':signal==='short'?'var(--red-text)':'var(--text3)'};">${signal==='long'?'▲ Long':signal==='short'?'▼ Short':'Neutral'}</span></div>
       <div class="ap-row"><span>Score</span><span>${score||0}%</span></div>
       <div class="ap-row"><span>HTF alignment</span><span style="color:${htfAlign==='aligned'?'var(--green-text)':htfAlign==='conflict'?'var(--red-text)':'var(--text3)'};">${htfAlign==='aligned'?'Aligned ✓':htfAlign==='conflict'?'Conflict ✗':htfAlign==='insufficient'?'Insufficient data':'Neutral —'}</span></div>
-      <div class="ap-row"><span>High conviction</span><span>${highConviction?'Yes ⭐':'No'}</span></div>`;
+      <div class="ap-row"><span>Legacy stored High Conviction</span><span>${highConviction?'Yes':'No'}</span></div>`;
   const _signalSummaryHtml = _apSectionWrap('Signal summary'+_viewSuffix, _signalSummaryRows, false);
 
   const _indicatorChecklistRows = `
@@ -15705,7 +15720,13 @@ function renderWatchCard(e){
                    : litCount >= 3  ? 'var(--amber-text)'
                    :                  'var(--text3)';
   const condWeight = fullConf ? '600' : '400';
-  const condStarHtml = fullConf ? ' · ⭐ Full confluence' : '';
+  // TDAS V4.10.2D — Narrow Visual-Semantics Correction. Gold-star
+  // exclusivity: "⭐ Full confluence" was a non-HC star (fullConf just
+  // means all 5 watch checkpoints are lit — condition completeness, not
+  // authoritative High Conviction). Relabelled to a checkmark; the exact
+  // same fullConf boolean, condition-count logic, and appearance timing
+  // are unchanged — only the wording/glyph.
+  const condStarHtml = fullConf ? ' · \u2713 All watch conditions met' : '';
   // Honest pending state — never a fabricated "0/5" — shown in place of
   // the progress fraction whenever this render lacks genuinely
   // timeframe-matched data. Reuses the existing 11px muted inline-note
@@ -15748,7 +15769,7 @@ function renderWatchCard(e){
   const _displayNote = e.note ? e.note.replace(/^\s*watch\s*(note)?\s*:\s*/i, '').trim() : '';
   const noteHtml=_displayNote?`<div class="watch-note"><span class="watch-note-label">Watch note:</span> ${_displayNote}</div>`:'';
   return `<div class="watch-card${fullConf?' full-conf':''}" id="wcard-${e.id}">
-    ${fullConf?`<span class="watch-star">⭐</span>`:''}
+    ${fullConf?`<span class="watch-star">\u2713</span>`:''}
     <div class="watch-card-header">
       <div class="watch-card-pair">${LABELS[e.symbol]||e.symbol}</div>
       <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${e.symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
@@ -17170,7 +17191,7 @@ async function runConfluenceScan(opts){
     if(_cards){
       if(!setups.length){
         if(_status) _status.textContent='No confluence setups right now';
-        _cards.innerHTML='<div class="empty-log"><div style="font-size:32px;">\u2b50</div><p style="color:var(--text2);margin:8px 0 4px;">No confluence setups right now</p><p style="color:var(--text3);font-size:12px;">Auto-refreshes every 5 minutes</p></div>';
+        _cards.innerHTML='<div class="empty-log"><div style="font-size:32px;">\ud83d\udd17</div><p style="color:var(--text2);margin:8px 0 4px;">No confluence setups right now</p><p style="color:var(--text3);font-size:12px;">Auto-refreshes every 5 minutes</p></div>';
       } else {
         if(_status) _status.textContent=setups.length+' confluence setup'+(setups.length>1?'s':'')+' found';
         _cards.innerHTML=setups.map(s=>renderConfCard(s)).join('');
@@ -17308,12 +17329,15 @@ function renderConfCard(obj){
       +'</div>';
   })() : '';
 
-  // 4H Stage badge
+  // TDAS V4.10.2D — renamed from "4H Stage": h4.tradeStage is UT-flip-age
+  // trend maturity (Fresh/Developing/Mature/Late Stage — see getTradeStage()),
+  // not the Stage 0-10 Evaluation result. "4H Trend Stage" avoids implying
+  // this is the authoritative Evaluation Stage.
   const stage4h = h4.tradeStage;
   const stageBadgeCls = {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[stage4h]||'stage-fresh';
   const stageHtml = stage4h
     ? '<div style="margin-bottom:8px;">'
-        +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.6px;color:var(--text3);margin-bottom:3px;">4H Stage</div>'
+        +'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.6px;color:var(--text3);margin-bottom:3px;">4H Trend Stage</div>'
         +'<span class="stage-badge '+stageBadgeCls+'">'+stage4h+'</span>'
       +'</div>'
     : '';
@@ -17372,6 +17396,21 @@ function renderConfCard(obj){
   // Actions
   let actionHtml;
   let entryStateHtml = '';
+  // TDAS V4.10.2D — Authoritative Presentation Language and Visual
+  // Semantics. The Confluence symbol star must always and only mean
+  // authoritative Stage 10 High Conviction — computed unconditionally
+  // here (independent of DIAG.confluenceEngineLive and of the active-
+  // trade/active-watch overrides below) via the same pure, existing
+  // Option-C selection helper the action model itself uses — not a new
+  // classifier, not a duplicate of buildConfluenceActionModel()'s own
+  // Stage mapping, just the same entry-authority selection reused for a
+  // second, independent purpose (the star). Fails closed on unknown.
+  const _confEntrySelectionForStar = (typeof _confSelectEntrySource === 'function') ? _confSelectEntrySource(h1, h4) : { tf: 'unknown', ac: null };
+  const _confHighConvictionForStar = !!(
+    _confEntrySelectionForStar.ac &&
+    _confEntrySelectionForStar.ac.highConvictionKnown === true &&
+    _confEntrySelectionForStar.ac.highConviction === true
+  );
   if(activeTrade){
     actionHtml = '<button class="card-btn status-active" onclick="focusTradeDeskCard(\''+sym+'\')" style="width:100%;">🟢 Trade Active → Trade Desk</button>';
   } else if(activeWatch){
@@ -17399,7 +17438,7 @@ function renderConfCard(obj){
   return '<div class="entry-card took" id="conf-card-'+sym+'" style="border-left:3px solid var(--amber);padding:14px 16px;">'
     // L1 — Identity
     +'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
-      +'<span style="font-size:17px;font-weight:700;color:var(--text);">'+label+' ⭐</span>'
+      +'<span style="font-size:17px;font-weight:700;color:var(--text);">'+label+(_confHighConvictionForStar?' \u2b50':'')+'</span>'
       +'<span class="'+(isShort?'chip short':'chip long')+'" style="font-size:12px;">'+dirLabel+'</span>'
     +'</div>'
     +(h1.price ? '<div style="font-size:14px;font-weight:600;color:var(--text2);font-family:var(--mono);margin-bottom:4px;">'+fmt(h1.price)+'</div>' : '')
@@ -17414,8 +17453,12 @@ function renderConfCard(obj){
     +timingHtml+stageHtml
     // L4 — Confluence Persistence then 4H Signal Age
     +persistenceHtml+signalAgeHtml
-    // L5 — Confirmed badge
-    +'<div style="font-size:12px;font-weight:700;color:var(--amber-text);margin-bottom:10px;padding:5px 8px;background:rgba(217,167,68,0.08);border:1px solid rgba(217,167,68,0.25);border-radius:var(--radius-sm);display:inline-block;">⭐ Multi-Timeframe Confirmed</div>'
+    // L5 — TDAS V4.10.2D: alignment badge (non-star; alignment ≠ High
+    // Conviction) plus a distinct, separate premium HC label shown only
+    // for authoritative Stage 10 — the two are intentionally shown
+    // together on a Stage 10 card and separately otherwise.
+    +'<div style="font-size:12px;font-weight:700;color:var(--amber-text);margin-bottom:10px;padding:5px 8px;background:rgba(217,167,68,0.08);border:1px solid rgba(217,167,68,0.25);border-radius:var(--radius-sm);display:inline-block;">\u2713 Multi-Timeframe Aligned</div>'
+    +(_confHighConvictionForStar ? '<div style="font-size:12px;font-weight:700;color:var(--amber-text);margin-bottom:10px;margin-left:6px;padding:5px 8px;background:rgba(217,167,68,0.08);border:1px solid rgba(217,167,68,0.25);border-radius:var(--radius-sm);display:inline-block;">\u2b50 High Conviction</div>' : '')
     // L5b — TDAS V4.10.2C authoritative entry-state section (empty string, hence no markup change, when the flag is off)
     +entryStateHtml
     +(activeHtml?'<br>'+activeHtml:'')
@@ -17633,7 +17676,15 @@ function renderSummary(results){
   const aligned=valid.filter(v=>v.htfAlign==='aligned').length;
   const sigPairs=valid.filter(v=>v.signal!=='neutral');
   const avgScore=sigPairs.length?Math.round(sigPairs.reduce((a,v)=>a+v.score,0)/sigPairs.length):0;
-  const highConv=valid.filter(v=>v.highConviction).length;
+  // TDAS V4.10.2D — Authoritative Presentation Language and Visual
+  // Semantics. The "⭐ High conviction" summary tile explicitly means
+  // authoritative Stage 10 High Conviction — counts only
+  // authoritativeClassification.highConvictionKnown===true &&
+  // .highConviction===true. Unknown Evaluation (Stage 0) is never
+  // counted — no legacy fallback. v.highConviction (legacy) remains
+  // untouched for its own unrelated uses (sorting, persistence,
+  // Confluence population).
+  const highConv=valid.filter(v=>v.authoritativeClassification && v.authoritativeClassification.highConvictionKnown===true && v.authoritativeClassification.highConviction===true).length;
   document.getElementById('summary').innerHTML=`
     <div class="sum-card">Longs<span class="${longs?'g':''}">${longs}</span></div>
     <div class="sum-card">Shorts<span class="${shorts?'r':''}">${shorts}</span></div>
