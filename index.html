@@ -1667,7 +1667,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3D';
+const APP_BUILD = 'V4.10.3E';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -8193,17 +8193,51 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
     + '</div>';
 }
 
+// TDAS V4.10.3E — Scanner Setup-Path Presentation. Pure, presentation-only
+// helper: resolves the visible Trade Ready label from authoritative
+// classification data alone. Never mutates its argument, never infers
+// setup path, never reads legacy scoring, never alters Trade Ready
+// eligibility (that remains _buildScannerAdvisory()'s job entirely — this
+// helper only decides what TEXT to show once the button has already been
+// decided to exist). Requires tradeReadyKnown === true before using a
+// path-specific label — the retained legacy fallback (see
+// _buildLegacyTradeReadyVerdict()) can still make the button appear when
+// authoritative readiness is NOT known, and that case must keep the plain
+// label (V4.10.3E-A audit, Section 4/6). Reads the real nested field
+// (rawEvaluation.evidenceSnapshot.setupPath) — NOT the flat
+// authoritativeClassification.setupPath, which does not exist on the real
+// object shape (audit Section 4/12). Reuses no doctrine: the three
+// recognised path strings are the same ones _SORT_TRADE_READY_PATH_MAP
+// already recognises, kept here only as explicit user-facing copy.
+function _scannerTradeReadyLabel(authoritativeClassification) {
+  if (!authoritativeClassification || authoritativeClassification.tradeReadyKnown !== true) {
+    return 'TRADE READY \u2192';
+  }
+  const setupPath = authoritativeClassification.rawEvaluation
+    && authoritativeClassification.rawEvaluation.evidenceSnapshot
+    && authoritativeClassification.rawEvaluation.evidenceSnapshot.setupPath;
+
+  if (setupPath === 'four_h_led')       return 'TRADE READY \u2014 1H + 4H \u2192';
+  if (setupPath === 'direct_four_h')    return 'TRADE READY \u2014 4H ONLY \u2192';
+  if (setupPath === 'standalone_one_h') return 'TRADE READY \u2014 1H ONLY \u2192';
+  return 'TRADE READY \u2192';
+}
+
 // ── TDAS TRADE READY — Phase 4: static scanner-front button ────────────────
 // Decision-readiness prompt only — opens the existing analysis panel where
 // the Phase 3 checklist already renders. Not an execution button: no paper
 // trade, no live trade, no Bitunix launch. Returns '' whenever advisory is
 // not tradeReady, so callers can concatenate the result unconditionally.
-function buildTradeReadyFrontButtonHtml(symbol, advisory) {
+// TDAS V4.10.3E — third parameter (authoritativeClassification) is new,
+// used only to resolve the visible label via _scannerTradeReadyLabel();
+// the tradeReady eligibility gate immediately below is completely
+// unchanged and still comes from `advisory` alone.
+function buildTradeReadyFrontButtonHtml(symbol, advisory, authoritativeClassification) {
   if (!advisory || !advisory.tradeReady) return '';
   return '<button class="trade-ready-front-btn" onclick="event.stopPropagation();flipTradeReadyCard(\'' + symbol + '\')" '
     + 'title="Enough evidence to justify a trade decision — reveals the TRADE READY checklist" '
     + 'aria-label="TRADE READY — reveal trade decision checklist">'
-    + 'TRADE READY \u2192'
+    + _scannerTradeReadyLabel(authoritativeClassification)
     + '</button>';
 }
 
@@ -12463,7 +12497,7 @@ function renderCard(symbol,d){
   // TDAS TRADE READY Phase 4 — static front button, scanner (non-active)
   // cards only. Returns '' when not tradeReady, per buildTradeReadyFrontButtonHtml.
   const tradeReadyBtnHtml = (typeof buildTradeReadyFrontButtonHtml==='function')
-    ? buildTradeReadyFrontButtonHtml(symbol, _advisory)
+    ? buildTradeReadyFrontButtonHtml(symbol, _advisory, d.authoritativeClassification)
     : '';
 
   // TDAS TRADE READY Phase 5: back-card content — reuses buildTradeReadyChecklistHtml
