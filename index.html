@@ -545,8 +545,9 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .snap-btn:hover .snap-icon::before,
 .snap-btn:hover .snap-icon::after{border-color:var(--text2);}
 .pair{font-size:15px;font-weight:600;color:var(--text2);letter-spacing:0.4px;}
-.htf-badge{font-size:11px;padding:3px 8px;border-radius:99px;font-weight:600;white-space:nowrap;}
+.htf-badge{font-size:12px;padding:3px 8px;border-radius:99px;font-weight:600;white-space:nowrap;}
 .htf-badge.aligned{background:var(--green-bg);color:var(--green-text);}
+.htf-badge.supportive{background:var(--amber-bg);color:var(--amber-text);}
 .htf-badge.conflict{background:var(--red-bg);color:var(--red-text);}
 .htf-badge.neutral{background:var(--bg4);color:var(--text3);}
 .sl-be-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--amber-bg);color:var(--amber-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
@@ -1667,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3E';
+const APP_BUILD = 'V4.10.3H';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -11381,6 +11382,53 @@ function getHtfDirectionState(d, direction) {
   return 'neutral'; // mixed-* regime, TEMA not confirming and UT not confirming either — genuinely undecided
 }
 
+// TDAS V4.10.3H — HTF Badge Four-State Presentation Refinement.
+//
+// Presentation-only HTF badge adapter. Do NOT use for Evaluation,
+// confirms.htf, or Advisory logic — getHtfDirectionState() (above, byte-
+// identical, untouched by this task) remains the sole trading-logic
+// authority for all of those. This adapter exists solely to recover, for
+// display purposes, a distinction getHtfDirectionState() computes and then
+// discards: today's single 'aligned' state is produced by
+// `temaConfirms || utSupports`, so a genuinely fully-confirmed setup and a
+// merely-one-of-two-confirmed setup render identically. This adapter reads
+// the exact same raw inputs (d.htfTrendContext, d.htfUtBot) and the same
+// key sets, but keeps temaConfirms/utSupports separate instead of ORing
+// them together, so the view layer can distinguish full alignment from
+// partial support. Every other predicate (conflict/neutral) is left
+// byte-identical to getHtfDirectionState()'s own logic — see the
+// V4.10.3H audit's partition proof for the exact guarantee this
+// duplication preserves: aligned ∪ supportive here always equals exactly
+// the set of inputs for which getHtfDirectionState() returns 'aligned',
+// and conflict/neutral here always equal getHtfDirectionState()'s own
+// conflict/neutral sets, unchanged.
+function buildHtfBadgeState(d, direction) {
+  const tc = d.htfTrendContext;
+  if (!tc || !tc.key) return 'neutral';
+  const bullishRegimeKeys = ['bullish', 'bullish-weak', 'mixed-bullish'];
+  const bearishRegimeKeys = ['bearish', 'bearish-weak', 'mixed-bearish'];
+  const regimeSupports = direction === 'long'
+    ? bullishRegimeKeys.indexOf(tc.key) !== -1
+    : bearishRegimeKeys.indexOf(tc.key) !== -1;
+  const regimeOpposes = direction === 'long'
+    ? bearishRegimeKeys.indexOf(tc.key) !== -1
+    : bullishRegimeKeys.indexOf(tc.key) !== -1;
+  if (regimeOpposes) return 'conflict';
+  if (!regimeSupports) return 'neutral';
+  const temaConfirms = direction === 'long'
+    ? (tc.key === 'bullish' || tc.key === 'bullish-weak')
+    : (tc.key === 'bearish' || tc.key === 'bearish-weak');
+  const htUt = d.htfUtBot;
+  const utSupports = htUt ? (direction === 'long' ? htUt.direction === 1 : htUt.direction === -1) : false;
+  if (temaConfirms && utSupports) return 'aligned';
+  if (temaConfirms || utSupports) return 'supportive';
+  return 'neutral';
+}
+
+// Badge glyph map — single source of the four rendered symbols, avoiding
+// duplicated nested ternaries across the two adopting renderers.
+const HTF_BADGE_GLYPH = { aligned: '\u2713', supportive: '\u25d0', conflict: '\u2717', neutral: '\u2013' };
+
 function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
   const price = d.price;
   const dirWord = openTrade.signal==='long' ? 'LONG' : 'SHORT';
@@ -11397,10 +11445,11 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
   // TDAS V4.4 HTF Pill Fix — direction-aware, genuinely-HTF-derived state.
   // Was d.htfAlign (current-scan-signal-relative — see getHtfDirectionState
   // header comment above for why that was wrong here).
-  const _htfState = getHtfDirectionState(d, openTrade.signal==='long' ? 'long' : 'short');
-  const htfText = _htfState==='aligned' ? `HTF ${(d.htf||'').toUpperCase()} \u2713`
-                : _htfState==='conflict' ? `HTF ${(d.htf||'').toUpperCase()} \u2717`
-                : `HTF ${(d.htf||'').toUpperCase()} \u2013`;
+  // TDAS V4.10.3H — badge TEXT/CLASS now sourced from buildHtfBadgeState()
+  // (four states), not getHtfDirectionState() (three states, unchanged).
+  // Direction lens (openTrade.signal) is unchanged.
+  const _htfState = buildHtfBadgeState(d, openTrade.signal==='long' ? 'long' : 'short');
+  const htfText = `HTF ${(d.htf||'').toUpperCase()} ${HTF_BADGE_GLYPH[_htfState]}`;
   const countdownUrgent = d.candleClosePct>=90;
   const minsStr = String(d.minsRemaining).padStart(2,'0');
   const secsStr = String(d.secsRemaining).padStart(2,'0');
@@ -12304,10 +12353,17 @@ function renderCard(symbol,d){
   // neutral-signal card has no direction to evaluate HTF support against,
   // so it keeps the existing d.htfAlign-based neutral/insufficient display
   // unchanged (getHtfDirectionState requires a concrete 'long'/'short').
+  // TDAS V4.10.3H — badge TEXT/CLASS now sourced from buildHtfBadgeState()
+  // (four states) instead of getHtfDirectionState() (three states,
+  // unchanged, still untouched) whenever a concrete direction is known.
+  // Neutral-signal fallback to htfAlign is completely unchanged — this
+  // task does not redesign neutral-signal handling.
   const _htfPillState = (signal==='long'||signal==='short')
-    ? getHtfDirectionState(d, signal)
+    ? buildHtfBadgeState(d, signal)
     : htfAlign;
-  const htfText=_htfPillState==='aligned'?`HTF ${htf.toUpperCase()} ✓`:_htfPillState==='conflict'?`HTF ${htf.toUpperCase()} ✗`:`HTF ${htf.toUpperCase()} –`;
+  const htfText = HTF_BADGE_GLYPH[_htfPillState]
+    ? `HTF ${htf.toUpperCase()} ${HTF_BADGE_GLYPH[_htfPillState]}`
+    : `HTF ${htf.toUpperCase()} \u2013`;
   const rsiWarn=signal==='long'&&!rsiOk_long?`<div class="warn-strip">⚠ RSI overbought — momentum may be stretched</div>`:signal==='short'&&!rsiOk_short?`<div class="warn-strip">⚠ RSI oversold — momentum may be stretched</div>`:'';
   const volBarColor=volRatio>=1.5?'var(--green)':volRatio>=0.8?'var(--amber)':'var(--red)';
   const volBarW=Math.min(volRatio*50,100);
