@@ -1668,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3H';
+const APP_BUILD = 'V4.10.3I';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -6689,6 +6689,76 @@ function _formatActive1hHtfState(state, tradeDirWord){
   }
 }
 
+// TDAS V4.10.3I — Active-Trade HTF Advisory Alignment.
+//
+// Presentation-only active-trade HTF advisory grammar. Does not determine
+// HOLD/REVIEW or any trading classification — _classifyActive1hHtfState()
+// and _shouldTriggerHtfConflictReview() immediately above are completely
+// unmodified and remain the sole authority for REVIEW-worthiness. This
+// function only supplies the explanatory TEXT shown once HOLD has already
+// been selected, and replaces this file's previous 1H-only phrase source
+// (_formatActive1hHtfState, still present above, now unused at the P1.5
+// call site but left intact) for two reasons: (1) that source could label
+// a merely-mixed-regime + UT-support combination as "continuation
+// confirmed" — the exact live LTC-class defect this release corrects —
+// because its own internal "temaSupports" variable actually tested broad
+// regime-key membership (including mixed-*), not genuine TEMA
+// confirmation; (2) it never applied to 4H-setup trades at all. This
+// function instead reuses buildHtfBadgeState() (V4.10.3H, unchanged) as
+// the state gate, so the wording can never disagree with the visible HTF
+// badge, and separately inspects the exact same raw d.htfTrendContext /
+// d.htfUtBot evidence that adapter itself reads — never the rendered
+// glyph or badge text — to name which specific component (TEMA vs UT)
+// supports, is pending, or is opposing. Covers both 1H-setup (4H context)
+// and 4H-setup (1D context) active trades; setupTf determines only which
+// label is used, never the predicate. Mismatched-lens protection mirrors
+// _classifyActive1hHtfState()'s existing 'view_unavailable' handling,
+// generalised to also cover 4H-setup trades (which previously had no
+// equivalent guard at all). Pure: no DOM/fetch/journal access, no
+// mutation, never throws.
+function buildActiveTradeHtfContextText(d, tradeDirection, setupTf) {
+  const tf = (setupTf || '').toLowerCase();
+  if (tf !== '1h' && tf !== '4h') return null; // only these two setup timeframes have a defined adjacent-HTF lens
+  const htfLabel = tf === '1h' ? '4H' : '1D';
+  // NOTE: returns ONLY the trailing clause — the caller (_buildEvidenceHoldDetail,
+  // via _selectEvidenceHoldWording's `qualifier`) already prepends the setup-tf
+  // identity clause ("1H long intact." / "4H short intact." / etc.) exactly once;
+  // including it here too would duplicate it (this was caught during
+  // implementation testing — see this release's delivery report).
+
+  const viewMatchesSetup = (d && d.tf || '').toLowerCase() === tf;
+  if (!viewMatchesSetup) return htfLabel + ' confirmation state is unavailable in this view.';
+
+  const badgeState = buildHtfBadgeState(d, tradeDirection);
+
+  const tc = d && d.htfTrendContext;
+  const htUt = d && d.htfUtBot;
+  const temaConfirms = !!(tc && tc.key && (tradeDirection === 'long' ? (tc.key === 'bullish' || tc.key === 'bullish-weak') : (tc.key === 'bearish' || tc.key === 'bearish-weak')));
+  const utDirNum = htUt && typeof htUt.direction === 'number' ? htUt.direction : null;
+  const utSupports = utDirNum != null && (tradeDirection === 'long' ? utDirNum === 1 : utDirNum === -1);
+  const utOpposes  = utDirNum != null && (tradeDirection === 'long' ? utDirNum === -1 : utDirNum === 1);
+
+  if (badgeState === 'aligned')  return htfLabel + ' continuation confirmed.';
+  // Not currently reachable while HOLD is the selected action — a 'conflict'
+  // badge state always implies REVIEW today (see _shouldTriggerHtfConflictReview
+  // above: unconditional for non-1H setups; for 1H setups, temaAgainst in
+  // _classifyActive1hHtfState uses the identical bearish/bullish regime-key
+  // sets as buildHtfBadgeState's regimeOpposes, so 'conflict' always implies
+  // 'deteriorating' there too). Kept for defensive completeness only. Phrased
+  // as a standalone clause (not the settled example's comma form) because the
+  // caller's identity+qualifier concatenation is period-joined, not
+  // restructurable from this single trailing-clause return value alone — see
+  // this release's delivery report for the full reasoning.
+  if (badgeState === 'conflict') return 'The ' + htfLabel + ' regime remains opposing.';
+  if (badgeState === 'neutral')  return htfLabel + ' confirmation remains unavailable.';
+
+  // supportive — name the specific supporting/pending/opposing component.
+  if (utSupports && !temaConfirms) return htfLabel + ' UT supports; TEMA confirmation pending.';
+  if (temaConfirms && utOpposes)   return htfLabel + ' TEMA supports, but UT remains opposing.';
+  if (temaConfirms && !utSupports) return htfLabel + ' TEMA supports; UT confirmation pending.';
+  return htfLabel + ' context remains supportive but incomplete.'; // defensive, non-overclaiming fallback
+}
+
 // Gate for the existing (unmodified) getHtfDirectionState(d, dir)==='conflict'
 // REVIEW trigger. For non-1H-setup trades this always returns true —
 // completely unchanged behaviour, including for 4H setups, which keep 1D
@@ -6762,23 +6832,27 @@ function _selectEvidenceHoldWording(d, openTrade, tradeDirWord, legacyAdverseInf
     qualifier = 'TEMA momentum is converging.';
   }
 
-  // TDAS V4.8 Phase D Fix — 1H trade HTF calibration (§6C/§9). For a
-  // 1H-setup trade, the structural confirmed/awaiting-UT/not-confirmed
-  // state (see _classifyActive1hHtfState above) outranks the generic P3
-  // adverse-UT clause below — a lone dissenting 4H UT should not dominate
-  // the HOLD message when broader 1H/4H structure is aligned, and mere
-  // 4H non-confirmation should read as "not yet confirmed", not as a
-  // stale-adverse-signal warning. This intentionally supersedes the
-  // wording a pre-Phase-D-Fix 1H-setup trade with an isolated non-fresh
-  // adjacent-UT dissent would have received from P3 alone (flagged and
-  // documented in this delivery's notes — the underlying evidence
-  // classification/fixture values are unchanged, only which qualifier
-  // tier wins for this specific pattern). 'deteriorating'/'unknown'
-  // states fall through to P3-P6 unchanged.
-  if (qualifier === null) {
-    const _active1hState = _classifyActive1hHtfState(d, openTrade, tradeDirWord);
-    const _active1hPhrase = _formatActive1hHtfState(_active1hState, tradeDirWord);
-    if (_active1hPhrase) qualifier = _active1hPhrase;
+  // TDAS V4.8 Phase D Fix (§6C/§9), superseded at this exact tier by
+  // V4.10.3I below: a P1.5-tier structural HOLD phrase still outranks the
+  // generic P3 adverse-UT clause below — a lone dissenting adjacent-HTF
+  // UT should not dominate the HOLD message when broader structure is
+  // aligned, and mere non-confirmation should read as "pending"/"not yet
+  // confirmed", not as a stale-adverse-signal warning. This still
+  // supersedes the wording an isolated non-fresh adjacent-UT dissent alone
+  // would otherwise receive from P3.
+  // TDAS V4.10.3I — Active-Trade HTF Advisory Alignment. Wording only:
+  // _classifyActive1hHtfState()/_shouldTriggerHtfConflictReview() above
+  // remain completely unmodified and still solely gate REVIEW-worthiness
+  // — this changes only which TEXT appears once HOLD has already been
+  // selected as the action. buildActiveTradeHtfContextText() replaces the
+  // phrase source at this tier (previously 1H-only via
+  // _formatActive1hHtfState, which remains defined above but is no longer
+  // called here) and now also covers 4H-setup trades (1D context), which
+  // previously had no equivalent wording at this qualifier tier at all —
+  // those trades continue to P3-P6 exactly as before whenever this
+  // returns null (only possible for a setupTf other than 1h/4h).
+  if (qualifier === null && openTrade && (openTrade.tf || '').toLowerCase() === '1h') {
+    qualifier = buildActiveTradeHtfContextText(d, tradeDirWord, openTrade.tf);
   }
 
   // P3 — non-fresh adverse UT context, freshness-aware. Checks the
@@ -6831,6 +6905,20 @@ function _selectEvidenceHoldWording(d, openTrade, tradeDirWord, legacyAdverseInf
     if (extClause && qualClause) qualifier = _joinClause(extClause, qualClause);
     else if (extClause) qualifier = extClause;
     else if (qualClause) qualifier = qualClause;
+  }
+
+  // TDAS V4.10.3I — Active-Trade HTF Advisory Alignment (4H-setup trades
+  // only). Deliberately the LOWEST-priority tier, placed after P3/P4/P5
+  // rather than at the same P1.5 priority as the 1H-setup tier above —
+  // 4H-setup trades never had ANY equivalent structural HTF wording tier
+  // before this release, so this only fills what would otherwise fall to
+  // the generic P6 fallback below. It never overrides P3/P4/P5, so every
+  // existing approved 4H canonical wording (extension/quality/adverse-UT
+  // clauses) is completely preserved. 1H-setup trades are unaffected by
+  // this block (handled entirely by the P1.5 tier above, unchanged in
+  // priority from before this release).
+  if (qualifier === null && openTrade && (openTrade.tf || '').toLowerCase() === '4h') {
+    qualifier = buildActiveTradeHtfContextText(d, tradeDirWord, openTrade.tf);
   }
 
   // P6 — neutral fallback.
