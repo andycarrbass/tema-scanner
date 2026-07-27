@@ -1668,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3I';
+const APP_BUILD = 'V4.10.3J';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -6827,9 +6827,15 @@ function _selectEvidenceHoldWording(d, openTrade, tradeDirWord, legacyAdverseInf
 
   // P2 — momentum weakening/convergence. Only meaningful when the current
   // view genuinely IS the setup timeframe.
+  // TDAS V4.10.3J — replaces the ambiguous, timeframe-silent "TEMA momentum
+  // is converging." with an explicit setup-TF/direction clause. Uses only
+  // the existing temaWidening boolean and cross state (no new evidence, no
+  // magnitude/threshold — this is a qualitative one-bar description, not a
+  // directional-improvement claim, so the noise floor reserved for HTF
+  // "approaching confirmation" wording does not apply here).
   const temaStillSupports = tradeDirWord === 'short' ? st.crossShort === true : st.crossLong === true;
   if (qualifier === null && viewMatchesSetup && st.temaWidening === false && temaStillSupports) {
-    qualifier = 'TEMA momentum is converging.';
+    qualifier = setupLabel + ' TEMA remains ' + (tradeDirWord === 'long' ? 'bullish' : 'bearish') + ', but momentum is slowing.';
   }
 
   // TDAS V4.8 Phase D Fix (§6C/§9), superseded at this exact tier by
@@ -7593,7 +7599,9 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     const viewMatchesSetup = (d.tf||'').toLowerCase() === (openTrade.tf||'').toLowerCase();
     const temaStillSupports = tradeDir==='short' ? st.crossShort===true : st.crossLong===true;
     if (viewMatchesSetup && st.temaWidening === false && temaStillSupports) {
-      return 'TEMA momentum is converging.';
+      // TDAS V4.10.3J — same explicit setup-TF/direction wording as the
+      // P2 tier above; no new evidence required (see that site's comment).
+      return _stateTfTag + ' TEMA remains ' + (tradeDir === 'long' ? 'bullish' : 'bearish') + ', but momentum is slowing.';
     }
     if (adverseInfo && adverseInfo.isAdverse && !adverseInfo.isFresh) {
       const opposite = tradeDir === 'long' ? 'bearish' : 'bullish';
@@ -12107,7 +12115,7 @@ function _getEvidenceTechnicalSummaryModel(d){
     // §4.4 / §4.5 Strong or moderate alignment.
     label = direction === 'bullish' ? 'BULLISH TECHNICALS' : 'BEARISH TECHNICALS';
     cls = 'strongdir';
-    detail = _composeEvidenceTechnicalDetail(direction, htfContext);
+    detail = _composeEvidenceTechnicalDetail(direction, htfContext, d);
     const q = _composeQualityClause(trendQuality);
     if (q) detail += ' ' + q;
   } else {
@@ -12128,11 +12136,36 @@ function _getEvidenceTechnicalSummaryModel(d){
 // Composes the base directional detail sentence for §4.4/§4.5 (strong or
 // moderate alignment), varying honestly by htfContext. HTF opposition
 // never erases direction or produces conflicted wording here.
-function _composeEvidenceTechnicalDetail(direction, htfContext){
+// TDAS V4.10.3J — Presentation-only. The 'aligned' htfContext case is
+// further split by buildHtfBadgeState() (V4.10.3H, unchanged, not called
+// for classification here — only to select which TRUTHFUL sentence to
+// show): ev.htfContext treats any regime-supporting key (including
+// mixed-bullish/mixed-bearish) as an 'aligned' TEMA vote, so a card whose
+// HTF badge reads ◐ (supportive — TEMA not yet actually confirmed) could
+// otherwise read "TEMA, UT and HTF support upside", overclaiming full HTF
+// confirmation the visible badge does not show. Does not use, alter, or
+// duplicate _marketEvidenceHtfContext()'s own classification — reads only
+// the existing, unchanged buildHtfBadgeState() output for this one split.
+function _composeEvidenceTechnicalDetail(direction, htfContext, d){
   const dirWord  = direction === 'bullish' ? 'upside' : 'downside';
   const dirLabel = direction === 'bullish' ? 'Bullish' : 'Bearish';
   switch (htfContext) {
-    case 'aligned':           return 'TEMA, UT and HTF support ' + dirWord + '.';
+    case 'aligned': {
+      const tradeDirection = direction === 'bullish' ? 'long' : 'short';
+      const badgeState = (d && typeof buildHtfBadgeState === 'function') ? buildHtfBadgeState(d, tradeDirection) : 'aligned';
+      // Only override when we can POSITIVELY confirm the badge is the
+      // specific 'supportive' (◐) overclaim state. If d.htfTrendContext/
+      // d.htfUtBot are simply absent (buildHtfBadgeState then returns
+      // 'neutral', not 'aligned'), that is NOT evidence of an overclaim —
+      // it just means this presentation layer cannot independently verify
+      // the badge here, so the original, already-correct full-support
+      // wording is preserved unchanged, exactly as before this release.
+      if (badgeState !== 'supportive') return 'TEMA, UT and HTF support ' + dirWord + '.';
+      const setupTf = ((d && d.tf) || '').toLowerCase();
+      const htfLabel = setupTf === '4h' ? '1D' : '4H';
+      const setupLabel = setupTf === '4h' ? '4H' : '1H';
+      return dirLabel + ' ' + setupLabel + ' structure with ' + htfLabel + ' UT support; ' + htfLabel + ' TEMA confirmation pending.';
+    }
     case 'supportive':        return 'TEMA and UT support ' + dirWord + '; HTF context is supportive.';
     case 'neutral':           return 'TEMA and UT support ' + dirWord + '; HTF context is neutral.';
     case 'opposing':          return dirLabel + ' setup structure is intact, but HTF context opposes.';
