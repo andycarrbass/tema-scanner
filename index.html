@@ -1668,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3J';
+const APP_BUILD = 'V4.10.3L';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -6949,6 +6949,92 @@ function _buildEvidenceHoldDetail(d, openTrade, tradeDirWord, legacyAdverseInfo,
 // already gates most such disagreement upstream; this never asserts
 // something the evidence doesn't support) — callers fall back to the
 // existing legacy detail source (ev.reasons[0]/ev.warnings[0]/etc.).
+// TDAS V4.10.3L — Candidate WATCH Advisory Routing.
+//
+// Presentation-only. Called ONLY after WATCH has already been selected as
+// the action (via ev.actionBias, decided entirely in evaluateSetup()) —
+// never influences action selection, classification, Evaluation or
+// MarketEvidence. Reads only already-computed d.evidence fields and
+// d.htf; never d.states, raw indicator values, authoritative Stage/Trade
+// Ready/High Conviction logic, or persistent Watch/Journal state.
+//
+// Returns null whenever there isn't enough trustworthy evidence to name a
+// specific obstacle, so the existing fallback chain
+// (_buildScannerEvidenceDetail, then warnings/reasons/generic) takes over
+// exactly as it did before this release — this function never widens
+// what's asserted, only what's said when assertion is already safe.
+//
+// Direction-agreement note: ev.htfContext is computed FROM ev.direction
+// (see buildEvidence()'s _htfReferenceDirection), not independently from
+// this card's own dirWord — so, exactly like _buildScannerEvidenceDetail's
+// own strong/moderate branch, ev.htfContext is only trusted once
+// ev.direction is confirmed to agree with the card's direction.
+//
+// Priority (highest first), one primary reason plus at most one
+// trend-quality secondary modifier — never every caution:
+//   1. HTF opposing        4. other partial alignment
+//   2. alignment conflicted 5. direction insufficient
+//   3. UT dissent           6. RSI extended
+//                           7. generic WATCH fallback
+function buildCandidateWatchGuidance(d, dirWord) {
+  const ev = d && d.evidence;
+  if (!ev || typeof ev.direction !== 'string' || typeof ev.alignment !== 'string') return null;
+  const tradeDirection = dirWord === 'LONG' ? 'bullish' : 'bearish';
+  const htfLabel = ((d && d.htf) || 'HTF').toUpperCase();
+  const dirWordLower = dirWord === 'LONG' ? 'long' : 'short';
+  const qualityWeak = ev.trendQuality === 'weak' || ev.trendQuality === 'ranging';
+
+  // Priority 2 — alignment conflicted (no direction concept to verify).
+  if (ev.alignment === 'conflicted') {
+    return 'Wait for setup-timeframe structure to resolve.';
+  }
+  // Priority 5 — direction insufficient (no direction concept to verify).
+  if (ev.alignment === 'none') {
+    return 'Wait for a clear directional setup to form.';
+  }
+
+  // From here (partial/strong/moderate), ev.direction is meaningful and
+  // must agree with the card's own direction before anything derived from
+  // it (htfContext included) can be trusted — degrade to the existing
+  // fallback chain rather than misstate.
+  if (ev.direction !== tradeDirection) return null;
+
+  // Priority 1 — HTF opposing.
+  if (ev.htfContext === 'opposing' || ev.htfContext === 'strongly_opposing') {
+    if (qualityWeak) {
+      return 'Do not enter yet; opposing ' + htfLabel + ' context and weak trend quality reduce follow-through odds.';
+    }
+    return 'Wait for ' + htfLabel + ' opposition to ease before considering a ' + dirWordLower + ' entry.';
+  }
+
+  // Priority 3/4 — partial alignment (UT dissent names the component using
+  // the exact same convention _formatEvidenceDissent()/_formatEvidenceVoterName()
+  // already use: dissent.voter === 'utBot'. Never independently inferred
+  // from raw TEMA/UT state.).
+  if (ev.alignment === 'partial') {
+    const dissent = ev.alignmentDissent;
+    const isUtDissent = !!(dissent && typeof dissent === 'object' && dissent.voter === 'utBot');
+    if (isUtDissent) {
+      return qualityWeak
+        ? 'Wait for UT to realign and trend quality to improve.'
+        : 'Wait for UT to realign before considering entry.';
+    }
+    return qualityWeak
+      ? 'Wait for the dissenting input to realign and trend quality to improve.'
+      : 'Wait for the dissenting input to realign before considering entry.';
+  }
+
+  // Priority 6 — RSI extended. Primary only when no stronger structural
+  // obstacle applied above; never mentioned as a secondary modifier here.
+  if (ev.extension === 'overbought' || ev.extension === 'oversold') {
+    return 'Wait for RSI to cool before considering entry.';
+  }
+
+  // Priority 7 — generic fallback (matches the branch's own existing
+  // `next` sentence, kept consistent rather than introducing new prose).
+  return 'Wait for stronger confirmation before considering entry.';
+}
+
 function _buildScannerEvidenceDetail(d, dirWord){
   const ev = d && d.evidence;
   if (!ev || typeof ev.direction !== 'string' || typeof ev.alignment !== 'string') return null;
@@ -7150,16 +7236,13 @@ function _buildScannerAdvisory(d) {
     if (isCounterRegimeWatchable) {
       action = 'WATCH'; headline = 'WATCH ' + dir;
       next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
-      const htfLabel = (d.htf || 'HTF').toUpperCase();
-      // TDAS V4.8 Phase D — prefer the evidence-driven interpretive
-      // sentence (matches §13's "opposing HTF" example: "Bullish setup
-      // structure is intact, but 1D context strongly opposes.") over the
-      // fixed regime-only sentence, when evidence is available and agrees
-      // with the card's proposed direction. Falls back to the original
-      // wording otherwise — action/headline/next are unchanged either way.
-      detail = _buildScannerEvidenceDetail(d, dir) || (dir === 'LONG'
-        ? '4H long setup, but ' + htfLabel + ' regime still opposes.'
-        : '4H short setup, but ' + htfLabel + ' regime still opposes.');
+      // TDAS V4.10.3L — the visible card detail now uses this branch's own
+      // dedicated counter-regime action sentence (settled grammar
+      // correction: "a counter-trend watch") instead of
+      // _buildScannerEvidenceDetail()'s diagnostic sentence, which could
+      // duplicate the Technicals box verbatim. `next` above is completely
+      // unchanged — still the original wording, still Full-Analysis-only.
+      detail = 'Wait for regime alignment to improve — treat as a counter-trend watch only.';
     } else {
       action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
       next = 'Wait for regime improvement or a cleaner reset before considering entry.';
@@ -7168,13 +7251,13 @@ function _buildScannerAdvisory(d) {
   } else if (ev.actionBias === ACTION_BIAS['WATCH' + sfx]) {
     action = 'WATCH'; headline = 'WATCH';
     next = 'Wait for stronger confirmation before considering entry.';
-    // TDAS V4.8 Phase D — prefer the evidence-driven interpretive sentence
-    // over restating the raw dot row (evaluateSetup's warnings[0]/
-    // reasons[0]) when evidence is available and agrees with the card's
-    // proposed direction. WATCH should explain what's missing/unresolved,
-    // not lead with a supporting fact — warnings[] remains the fallback
-    // source and is otherwise unchanged.
-    detail = _buildScannerEvidenceDetail(d, dir)
+    // TDAS V4.10.3L — prefer the new prescriptive WATCH guidance formatter
+    // (states why entry is premature and what should improve) over the
+    // diagnostic sentence, which could duplicate the Technicals box
+    // verbatim (the reported byte-identical duplication). Entire existing
+    // fallback chain preserved beneath it, unchanged.
+    detail = buildCandidateWatchGuidance(d, dir)
+      || _buildScannerEvidenceDetail(d, dir)
       || ((ev.warnings && ev.warnings.length) ? ev.warnings[0]
       : (ev.reasons && ev.reasons.length) ? ev.reasons[0]
       : 'Setup forming, confirmation missing.');
