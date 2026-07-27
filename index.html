@@ -1668,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3L';
+const APP_BUILD = 'V4.10.3N';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -16832,10 +16832,23 @@ async function _tdSignalRefresh(){
         const el = document.getElementById('wcard-'+watchEntry.id);
         if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderWatchCard(watchEntry); el.replaceWith(tmp.firstChild); }
       }
-      // Same pattern _ensureActiveTradeLivePricing already uses — keep the
-      // Scanner active-trade placeholder in sync too, harmless no-op if
-      // that card isn't currently in the DOM.
-      if(activeEntry && typeof renderCard==='function') renderCard(sym, currentScanData[sym]);
+      // TDAS V4.10.3N — Trade Ready Card / Full Analysis Synchronisation.
+      // Previously this repaint fired only for activeEntry (open-trade)
+      // symbols, even though currentScanData[sym] was updated above for
+      // BOTH watch-only and active-trade symbols. A watch-only symbol
+      // could therefore keep showing a stale Trade Ready button (or a
+      // stale absence of one) after its authoritative classification had
+      // already changed underneath it — openAnalysisPanel() always reads
+      // currentScanData[symbol] fresh, so Full Analysis would disagree
+      // with the still-unrepainted Scanner card. Same pattern
+      // _ensureActiveTradeLivePricing already uses — keep the Scanner
+      // card in sync too, harmless no-op if that card isn't currently in
+      // the DOM. Single combined condition — never two renderCard() calls
+      // for the same symbol even when both activeEntry and watchEntry are
+      // truthy (isSupersededWatch/isActiveWatch already make that
+      // combination unreachable in practice, but the `||` guarantees at
+      // most one call either way).
+      if ((activeEntry || watchEntry) && typeof renderCard==='function') renderCard(sym, currentScanData[sym]);
     });
 
     // Status timestamp only advances on at least a partial success — if
