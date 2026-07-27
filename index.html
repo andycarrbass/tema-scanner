@@ -1668,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3N';
+const APP_BUILD = 'V4.10.3O';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5065,6 +5065,44 @@ function _shadowEvaluate(ev) {
       supports.push('1H ADX executable');
       supports.push('1H trigger ready');
       if (executionExtensionObj.state === 'elevated') (executionExtensionObj.reasons || []).forEach(function(r) { cautions.push(r); });
+
+      // TDAS V4.10.3O — Standalone 1H Counter-HTF Eligibility. Caps Stage 7
+      // to Stage 6 (non-executable) when the canonical adjacent-HTF context
+      // is not genuinely supportive/non-opposing. Reads ev.htfContext only
+      // — never reconstructs HTF state from raw components, never touches
+      // _marketEvidenceHtfContext()'s own construction (unchanged). aligned
+      // and supportive continue to Stage 7 unchanged; neutral remains
+      // Stage 7 with an added caution (available but no confirmation
+      // tailwind — never treated as opposition); unknown/opposing/
+      // strongly_opposing are capped to the existing Stage 6
+      // entry_not_optimal outcome, using the exact same finalize()
+      // convention the timingState==='setup_valid_entry_not_optimal'
+      // branch above already uses. The 1H structure itself remains valid
+      // — this is an entry-eligibility cap, not a structural invalidation,
+      // so it is never routed to Stage 2 (that remains exclusively
+      // counterStructure's own setup-timeframe concern, untouched).
+      // Applies to standalone_one_h Stage 7 ONLY — four_h_led,
+      // direct_four_h, and the Stage 10 strict-1H-origin HC route below
+      // (which already consumes counterHtf's own independent, stricter
+      // check) are completely untouched; ineligible states here return
+      // before ever reaching that block, exactly as an already-non-Stage-7
+      // result would.
+      const htfContext = ev.htfContext;
+      if (htfContext === 'unknown') {
+        cautions.push('Adjacent HTF context unavailable — entry eligibility cannot be confirmed.');
+        return finalize(6, 'entry_not_optimal', 'setup_valid_entry_not_optimal', false, false);
+      }
+      if (htfContext === 'opposing') {
+        cautions.push('Adjacent HTF context opposes the standalone 1H setup.');
+        return finalize(6, 'entry_not_optimal', 'setup_valid_entry_not_optimal', false, false);
+      }
+      if (htfContext === 'strongly_opposing') {
+        cautions.push('Adjacent HTF context strongly opposes the standalone 1H setup.');
+        return finalize(6, 'entry_not_optimal', 'setup_valid_entry_not_optimal', false, false);
+      }
+      if (htfContext === 'neutral') {
+        cautions.push('Adjacent HTF context is neutral — no confirmation tailwind.');
+      }
 
       // ── TDAS V4.10.1D — Strict 1H-Origin High Conviction Route ─────────
       // Revised doctrine: a standalone_one_h setup that already clears
