@@ -1668,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3O';
+const APP_BUILD = 'V4.10.3P';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -14264,6 +14264,21 @@ function openAnalysisPanel(symbol){
           const _didRefreshAsync = _refreshShadowFromCurrentEvidence(_liveD, { rebuildEvidence: true, symbol: symbol });
           if (_didRefreshAsync && typeof _rebuildShadowCensusFromCurrentScanData === 'function') {
             _rebuildShadowCensusFromCurrentScanData();
+          }
+          // TDAS V4.10.3P — Async 1H Timing Scanner Repaint Fix. Mirrors the
+          // V4.10.3N _tdSignalRefresh() pairing pattern exactly: a genuine
+          // evidence/authoritativeClassification rebuild must be paired with
+          // a Scanner-grid repaint, or the visible card can silently
+          // disagree with Full Analysis indefinitely (proven root cause:
+          // TDAS_FRESH_RENDER_TRADE_READY_MISMATCH_AUDIT.md). Harmless
+          // no-op if this symbol's card isn't currently in the DOM (same
+          // pattern _ensureActiveTradeLivePricing() already uses). Uses the
+          // exact live _liveD reference already read from
+          // currentScanData[symbol] above — no recalculation, no second
+          // classification object, no change to _buildScannerAdvisory(),
+          // buildTradeReadyFrontButtonHtml(), or _scannerTradeReadyLabel().
+          if (_didRefreshAsync && typeof renderCard === 'function') {
+            renderCard(symbol, _liveD);
           }
         } else if (typeof buildEvidence === 'function') {
           _liveD.evidence = buildEvidence(_liveD, resolveMarketEvidenceEntry(symbol, _liveD.tf));
