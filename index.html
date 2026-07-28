@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3S';
+const APP_BUILD = 'V4.10.4B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2435,6 +2435,160 @@ let _tradeReadyModalContext = null;
 let selectedDecision = null;
 let selectedOutcome = null;
 let currentScanData = {};
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.4B — Dormant Timeframe Snapshot Registry Foundation         ║
+// ║                                                                          ║
+// ║  Purpose: the first, fully dormant layer of the timeframe-isolated data ║
+// ║  foundation (see TDAS_TIMEFRAME_ISOLATED_DATA_FOUNDATION_AUDIT.md). Adds║
+// ║  a parallel symbol+timeframe-keyed registry alongside currentScanData — ║
+// ║  it does NOT replace it. currentScanData[symbol] remains the sole       ║
+// ║  production read source for every existing consumer in this phase; no  ║
+// ║  render, indicator, Evaluation, Advisory, Watch, Trade, or refresh-     ║
+// ║  scheduling code reads from this registry yet. Gated entirely behind    ║
+// ║  DIAG.timeframeSnapshotRegistry — setting that flag false stops all     ║
+// ║  registry writes and restores byte-identical V4.10.3S behaviour.        ║
+// ║                                                                          ║
+// ║  Root cause this eventually addresses (documented in _tdSignalRefresh() ║
+// ║  below): "currentScanData is keyed by symbol only (not symbol+tf), so   ║
+// ║  exactly one timeframe has to win." This phase only lays the dormant    ║
+// ║  storage/contract groundwork — no consumer migration, no stale-         ║
+// ║  completion rejection, no dedup, no clone-not-mutate conversion. Those  ║
+// ║  are V4.10.4C/4D and later.                                             ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Private, module-level. Never read/written outside the helpers below —
+// no direct _tfSnapshots[...] or _tfSnapshots.get(...) access anywhere
+// else in the file (enforced by static test).
+const _tfSnapshots = new Map();
+// Per symbol+timeframe generation counters — deliberately a SEPARATE Map
+// from _scanGeneration (runScan()'s own global scan-cycle counter, further
+// below), since generation ownership here is scoped per key, not global.
+// An update to HYPEUSDT|1h must never affect HYPEUSDT|4h or BTCUSDT|1h.
+const _tfSnapshotGenerations = new Map();
+
+// TDAS V4.10.4B — canonical composite key. Normalizes symbol the same way
+// the rest of TDAS already does (uppercase — matches DEFAULT_PAIRS/journal
+// symbol conventions throughout) and timeframe to lowercase (matches the
+// existing tf dropdown's own value convention, e.g. '1h'/'4h'/'1d'), joined
+// with a delimiter that cannot appear in either component, so
+// "HYPEUSDT|1h" and "HYPEUSDT" + "|1h" can never collide with a
+// differently-split pair. Pure — no lookups, no side effects. Callers
+// should never construct or parse this string themselves; it exists only
+// as an internal Map key inside this module.
+function _snapshotKey(symbol, tf) {
+  const sym = String(symbol || '').trim().toUpperCase();
+  const tfNorm = String(tf || '').trim().toLowerCase();
+  return sym + '|' + tfNorm;
+}
+
+// TDAS V4.10.4B — per symbol+timeframe generation. Each call returns the
+// NEXT generation for that exact key only; every other key's counter is
+// completely untouched. This establishes the contract V4.10.4C's stale-
+// completion rejection will build on; this phase does not yet reject
+// anything based on it.
+function _nextSnapshotGeneration(symbol, tf) {
+  const key = _snapshotKey(symbol, tf);
+  const next = (_tfSnapshotGenerations.get(key) || 0) + 1;
+  _tfSnapshotGenerations.set(key, next);
+  return next;
+}
+
+// TDAS V4.10.4B — pure snapshot builder. Does not calculate anything, does
+// not fetch, does not mutate `d` — wraps an already-completed calcPair()
+// result (`d`) plus caller-supplied metadata into the dormant snapshot
+// contract. `data` references the same `d` object the caller already has
+// (no clone yet — that conversion is explicitly deferred to V4.10.4D per
+// this phase's own scope lock); nothing in this phase introduces any NEW
+// mutation of it beyond what already happens today.
+//
+// PROVENANCE RULE (critical): meta.buildTf must be the timeframe the
+// caller actually requested/calculated `d` on — e.g. calcPair()'s own `tf`
+// argument — never MarketEvidence.sourceTf. sourceTf is built by
+// _marketEvidenceSourceTf(d, openTrade, openWatch), which prefers a
+// journal entry's *intended* timeframe over d.tf, so it records intent,
+// not build provenance, and must never be read here.
+function buildTimeframeSnapshot(d, meta) {
+  const m = meta || {};
+  return {
+    symbol: m.symbol,
+    tf: m.tf,
+    buildTf: m.buildTf, // authoritative provenance — caller-supplied, never derived from d.evidence/sourceTf
+    generation: m.generation,
+    builtAt: m.builtAt != null ? m.builtAt : Date.now(),
+    priceUpdatedAt: m.priceUpdatedAt != null ? m.priceUpdatedAt : null,
+    timingUpdatedAt: m.timingUpdatedAt != null ? m.timingUpdatedAt : null,
+    source: m.source || 'unknown',
+    status: m.status || 'fresh',
+    error: m.error != null ? m.error : null,
+    data: d,
+  };
+}
+
+// TDAS V4.10.4B — registry helpers. Small, explicit, bounded. None of
+// these render, calculate, fetch, or mutate stored data. getTimeframeSnapshot()
+// returns the exact stored snapshot for that exact key or null — it never
+// falls back to currentScanData and never returns a different timeframe's
+// snapshot.
+function setTimeframeSnapshot(symbol, tf, snapshot) {
+  if (!symbol || !tf || !snapshot) return false;
+  _tfSnapshots.set(_snapshotKey(symbol, tf), snapshot);
+  return true;
+}
+function getTimeframeSnapshot(symbol, tf) {
+  if (!symbol || !tf) return null;
+  const found = _tfSnapshots.get(_snapshotKey(symbol, tf));
+  return found !== undefined ? found : null;
+}
+function hasTimeframeSnapshot(symbol, tf) {
+  if (!symbol || !tf) return false;
+  return _tfSnapshots.has(_snapshotKey(symbol, tf));
+}
+function clearTimeframeSnapshotRegistry() {
+  _tfSnapshots.clear();
+  _tfSnapshotGenerations.clear();
+}
+
+// TDAS V4.10.4B — single mirror-write entry point. Every call site that
+// mirrors a genuine full calcPair(symbol, tf) result into the registry
+// calls this one function, so the mirroring contract (generation
+// allocation, buildTf provenance, snapshot shape) is defined in exactly
+// one place. Entirely gated on DIAG.timeframeSnapshotRegistry — when
+// false, this is a complete no-op and the registry is never touched.
+// Read-only with respect to `d`/currentScanData: does not mutate `d`,
+// does not touch currentScanData, does not render, does not call
+// calcPair() or issue any network request.
+function _mirrorTimeframeSnapshot(symbol, tf, d, source) {
+  if (!DIAG.timeframeSnapshotRegistry) return;
+  if (!symbol || !tf || !d) return;
+  const generation = _nextSnapshotGeneration(symbol, tf);
+  const snapshot = buildTimeframeSnapshot(d, {
+    symbol: symbol,
+    tf: tf,
+    buildTf: tf, // the exact timeframe this calcPair() result was calculated on — never sourceTf
+    generation: generation,
+    builtAt: Date.now(),
+    source: source || 'unknown',
+    status: 'fresh',
+    error: null,
+  });
+  setTimeframeSnapshot(symbol, tf, snapshot);
+}
+
+// TDAS V4.10.4B — DIAG-only inspection helper. Not called anywhere in
+// normal operation; exists solely so tests/diagnostics can confirm
+// simultaneous-timeframe storage, generation isolation, and that
+// currentScanData is unaffected, without exposing internal Map access.
+// Produces no console output on its own (callers may log the return value
+// if they choose) and performs no side effects.
+function _tfSnapshotDiagnostics() {
+  const keys = Array.from(_tfSnapshots.keys());
+  return {
+    count: _tfSnapshots.size,
+    keys: keys,
+    generationCount: _tfSnapshotGenerations.size,
+  };
+}
 
 
 // ── Maths ───────────────────────────────────────────────────────────────
@@ -9402,6 +9556,7 @@ const DIAG = {
   highConvictionEngineLive:  true, // TDAS V4.10.1C — Authoritative High Conviction Presentation Activation. ACTIVE: the large scanner Advisory HIGH CONVICTION headline/action is now authoritative from d.authoritativeClassification.highConviction whenever highConvictionKnown is true (see _buildScannerAdvisory()'s own STRONG-branch comment for the exact policy). Stage 0/unknown withholds HC (fails closed — never falls back to legacy). Trade Ready, sorting, the pair-label star, persistence, and Confluence remain fully legacy-driven, untouched. Rollback: set back to false to instantly restore the pre-V4.10.1C legacy display behaviour — no other change required.
   confluenceEngineLive:      true, // TDAS V4.10.2C — Confluence Action Activation. ACTIVE: renderConfCard() now derives card wording/buttons from buildConfluenceActionModel(), and openConfluenceModal() independently rechecks the same model fresh at click time before allowing decision==='took' to proceed — two-layer enforcement, since the render layer can be stale (see the V4.10.2A audit's F-1 finding). Watch (decision==='watching') remains ungated in every Stage. Card population (the legacy HC qualifying filter), the alignment score, persistence, and active-trade/active-watch overrides are all unchanged. Rollback: set back to false to instantly restore the exact V4.10.2B legacy card/handler behaviour — no other change required.
   scannerSortEngineLive:     true, // TDAS V4.10.3D — Authoritative Scanner Sorting Activation. ACTIVE: the live indexed.sort() comparator inside runScan() now sorts by buildAuthoritativeSortKey()/compareAuthoritativeSortKeys() (V4.10.3B) via the shared _resolveAuthoritativeSortContext() helper, validated live in shadow form since V4.10.3C/C2 (see those audits for the confirmed SUI/BNB-style corrections this activation applies). The nested legacy sortScore() and its full tier logic remain completely unmodified as the rollback path. Rollback: set back to false to instantly restore the exact V4.10.3C2 legacy-only Scanner order — no other change required.
+  timeframeSnapshotRegistry: true, // TDAS V4.10.4B — Dormant Timeframe Snapshot Registry Foundation. Controls ONLY whether successful full calcPair() results are additionally mirrored into the new symbol+timeframe-keyed _tfSnapshots registry (see buildTimeframeSnapshot()/setTimeframeSnapshot()). Does not affect any production read path — currentScanData[symbol] remains the sole source every existing consumer reads in this phase. No render, indicator, Evaluation, Advisory, Watch, Trade, or refresh-scheduling behaviour depends on this flag. Rollback: set back to false to stop registry writes entirely and restore byte-identical V4.10.3S runtime behaviour — no other change required.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -14710,6 +14865,7 @@ async function openTradeAnalysis(symbol, tf, btnId) {
   try {
     const result = await calcPair(symbol, tf || '4h');
     currentScanData[symbol] = result;
+    _mirrorTimeframeSnapshot(symbol, tf || '4h', result, 'onDemand');
     openAnalysisPanel(symbol);
   } catch(err) {
     console.warn('[TradeAnalysis] calcPair failed for', symbol, err.message);
@@ -17031,6 +17187,7 @@ async function _tdSignalRefresh(){
         const prev1hTiming = currentScanData[sym] && currentScanData[sym]._1hTiming;
         currentScanData[sym] = r.value;
         if(prev1hTiming) currentScanData[sym]._1hTiming = prev1hTiming; // preserve — not recomputed here
+        _mirrorTimeframeSnapshot(sym, symTf[sym], r.value, 'tdSignalRefresh');
         refreshed++;
       } else {
         failed++; // non-destructive: currentScanData[sym] and its card are left exactly as they were
@@ -19040,7 +19197,7 @@ async function runScan(auto){
 
   // Render signal cards (full)
   signalItems.forEach(({r, sym}) => {
-    if(r.status==='fulfilled'){currentScanData[sym]=r.value;renderCard(sym,r.value);addToHistory(sym,r.value);}
+    if(r.status==='fulfilled'){currentScanData[sym]=r.value;_mirrorTimeframeSnapshot(sym, tf, r.value, 'runScan');renderCard(sym,r.value);addToHistory(sym,r.value);}
     else if(!auto){
       const msg = r.reason?.message||'Failed to load';
       if(DEBUG_MODE) console.warn(`[runScan] ${sym} failed:`, msg, r.reason);
@@ -19054,6 +19211,7 @@ async function runScan(auto){
   neutralItems.forEach(({r, sym}) => {
     if(r.status==='fulfilled'){
       currentScanData[sym]=r.value;
+      _mirrorTimeframeSnapshot(sym, tf, r.value, 'runScan');
       renderNeutralCompact(sym, r.value);
     } else if(!auto){
       const msg = r.reason?.message||'Failed to load';
