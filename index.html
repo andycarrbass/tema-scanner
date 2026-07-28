@@ -1147,6 +1147,9 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .watch-dot{width:9px;height:9px;border-radius:50%;border:1px solid var(--border3);flex-shrink:0;transition:all 0.3s ease;}
 .watch-dot.lit{background:var(--green);border-color:var(--green);box-shadow:0 0 4px rgba(29,158,117,0.5);}
 .watch-dot.na{background:var(--bg4);border-color:var(--border2);}
+.watch-dot.pass{background:var(--green);border-color:var(--green);box-shadow:0 0 4px rgba(29,158,117,0.5);}
+.watch-dot.fail{background:var(--red);border-color:var(--red);}
+.watch-dot.unknown,.watch-dot.pending{background:var(--bg4);border-color:var(--border2);}
 .watch-cond-label{font-size:13px;color:var(--text2);}
 .watch-cond-label.lit{color:var(--green-text);}
 /* TDAS V4.6.5 — Watch progress container (Task 2). Same subtle-panel
@@ -1668,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3Q';
+const APP_BUILD = 'V4.10.3R';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -16122,13 +16125,9 @@ function renderWatchCard(e){
   const evidence = buildWatchEvidenceModel(liveData, e);
   const _tfMatches = evidence.valid;
   const litCount = evidence.passed;
-  const condNames=['TEMA widening','ADX ≥ 25','HTF aligned','UT Bot confirming','SMA position'];
   // Watch card status — visual guidance, not enforcement
   // Take Trade is always enabled regardless of condition count.
   const fullConf  = _tfMatches && litCount === 5;  // kept for CSS class / star compat
-  const condStatus = litCount === 5 ? 'Actionable'
-                   : litCount >= 3  ? 'Developing'
-                   :                  'Early';
   const condColor  = !_tfMatches ? 'var(--text3)'
                    : litCount === 5 ? 'var(--green-text)'
                    : litCount >= 3  ? 'var(--amber-text)'
@@ -16159,7 +16158,7 @@ function renderWatchCard(e){
   const LABELS_BY_KEY = { tema:'TEMA structure', ut:'UT confirmation', htf:'HTF support', adx:'ADX trend', sma:'SMA filter' };
   const condListHtml=evidence.checkpoints.map(c=>`
     <div class="watch-cond-row">
-      <span class="watch-dot ${c.pass?'lit':'na'}"></span>
+      <span class="watch-dot ${c.status}"></span>
       <span class="watch-cond-label ${c.pass?'lit':''}">${LABELS_BY_KEY[c.key]}</span>
     </div>`).join('');
   const priceColor=null; // replaced by currentPxColor below
@@ -16204,7 +16203,31 @@ function renderWatchCard(e){
       const _label = e.signal === 'long' ? 'Better long entry' : 'Better short entry';
       return `🟢 ${_label} (+${_improvement.toFixed(1)}%)`;
     })()}</div>
-    ${e.tradeStage ? `<div style="font-size:11px;margin-bottom:8px;">Trade Stage: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }">${e.tradeStage}</span></div>` : ''}
+    ${(()=>{
+      // TDAS V4.10.3R — Watch-Card Truthfulness. e.tradeStage was frozen at
+      // Watch creation by buildV1Entry() and never refreshed by any repaint
+      // path; liveData.tradeStage is computed fresh on every calcPair() and
+      // sits on the same currentScanData object the checklist already
+      // reads. Uses the model's own evidence.valid timeframe-match guard —
+      // the same guard the checklist relies on — so a mismatched-lens scan
+      // can never present a wrong-timeframe live stage as current. The
+      // stored creation-time stage always remains visible as historical
+      // context ("At watch:"), never silently dropped, and never silently
+      // presented as current. getTradeStage()/buildV1Entry()/persistence
+      // are completely untouched — this is presentation only.
+      const _stageBadgeClass = {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'};
+      const _badge = (label) => `<span class="stage-badge ${_stageBadgeClass[label]||'stage-fresh'}">${label}</span>`;
+      const _liveStage = (evidence.valid && liveData && liveData.tradeStage) ? liveData.tradeStage : null;
+      const _storedStage = e.tradeStage || null;
+      if (!_liveStage && !_storedStage) return '';
+      if (_liveStage) {
+        const _atWatchHtml = _storedStage ? `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">At watch: ${_badge(_storedStage)}</div>` : '';
+        return `<div style="font-size:11px;margin-bottom:8px;">Trade Stage: ${_badge(_liveStage)}</div>${_atWatchHtml}`;
+      }
+      // No timeframe-matched live stage available (mismatched lens or no
+      // liveData at all) -- never present the stored value as current.
+      return _storedStage ? `<div style="font-size:11px;margin-bottom:8px;">At watch: ${_badge(_storedStage)}</div>` : '';
+    })()}
     ${(()=>{
       const _t = currentScanData[e.symbol] && currentScanData[e.symbol]._1hTiming;
       if(!_t||!_t.state) return '';
