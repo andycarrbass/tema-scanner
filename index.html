@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.4B';
+const APP_BUILD = 'V4.10.4C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2545,42 +2545,229 @@ function hasTimeframeSnapshot(symbol, tf) {
   return _tfSnapshots.has(_snapshotKey(symbol, tf));
 }
 function clearTimeframeSnapshotRegistry() {
+  // TDAS V4.10.4C — narrowed scope: clears stored SNAPSHOTS only. Per-key
+  // generation counters are intentionally left untouched (clearing them
+  // here would let a later, genuinely-stale-generation request appear
+  // "current" again after a mid-flight clear — see resetTimeframeSnapshotFoundation()
+  // for the explicit full reset used by tests/diagnostics).
   _tfSnapshots.clear();
-  _tfSnapshotGenerations.clear();
 }
 
-// TDAS V4.10.4B — single mirror-write entry point. Every call site that
-// mirrors a genuine full calcPair(symbol, tf) result into the registry
-// calls this one function, so the mirroring contract (generation
-// allocation, buildTf provenance, snapshot shape) is defined in exactly
-// one place. Entirely gated on DIAG.timeframeSnapshotRegistry — when
-// false, this is a complete no-op and the registry is never touched.
-// Read-only with respect to `d`/currentScanData: does not mutate `d`,
-// does not touch currentScanData, does not render, does not call
-// calcPair() or issue any network request.
-function _mirrorTimeframeSnapshot(symbol, tf, d, source) {
-  if (!DIAG.timeframeSnapshotRegistry) return;
-  if (!symbol || !tf || !d) return;
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.4C — Snapshot Provenance, Per-Key Generation Guards and     ║
+// ║  Shadow Equivalence                                                     ║
+// ║                                                                          ║
+// ║  Converts V4.10.4B's passive per-key generation counter into an actual  ║
+// ║  request/commit guard for the still-fully-dormant registry. A           ║
+// ║  generation is now RESERVED (via _beginSnapshotRequest()) before each   ║
+// ║  full asynchronous calcPair() begins, carried through as an immutable   ║
+// ║  token, and only committed if it is still the current generation for    ║
+// ║  that exact symbol+timeframe key by the time the result arrives. An     ║
+// ║  older same-key completion is rejected WITHOUT touching the newer       ║
+// ║  stored snapshot. This protects the dormant registry only — it does     ║
+// ║  NOT change which legacy completion wins currentScanData[symbol]; that  ║
+// ║  remains exactly V4.10.3S/4B behaviour (see the scope note on each      ║
+// ║  call site below). Production refresh coordination/dedup is V4.10.4D.   ║
+// ║                                                                          ║
+// ║  This is a SEPARATE protection from _scanGeneration (runScan()'s own    ║
+// ║  global whole-scan-cycle counter, further below) — the two are never    ║
+// ║  conflated. _scanGeneration protects the legacy Scanner render cycle;   ║
+// ║  the per-key generation here protects only this dormant registry key.   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Bounded, per-key diagnostic state — separate from the snapshots
+// themselves so clearing diagnostics never touches live snapshot data and
+// vice versa. Each Map holds at most one entry per _snapshotKey (latest
+// state only, no history retained).
+const _tfSnapshotRegistryDiagnostics = new Map();
+const _tfSnapshotShadowDiagnostics = new Map();
+
+function _emptyRegistryDiagnostic() {
+  return {
+    storedGeneration: null, latestRequestGeneration: null,
+    commitCount: 0, staleRejectionCount: 0,
+    lastCommittedGeneration: null, lastRejectedGeneration: null, lastRejectionReason: null,
+    buildTf: null, source: null,
+  };
+}
+
+// TDAS V4.10.4C — reserves the next generation for symbol+tf BEFORE the
+// caller starts its asynchronous calcPair() call, and returns an immutable
+// token carrying that reservation through to commit time. buildTf is
+// always set equal to the requested tf here, at reservation time — the
+// one and only place provenance is established — never inferred later
+// from d.evidence.sourceTf or any journal/MarketEvidence field.
+function _beginSnapshotRequest(symbol, tf, source) {
   const generation = _nextSnapshotGeneration(symbol, tf);
-  const snapshot = buildTimeframeSnapshot(d, {
+  return Object.freeze({
+    key: _snapshotKey(symbol, tf),
     symbol: symbol,
     tf: tf,
-    buildTf: tf, // the exact timeframe this calcPair() result was calculated on — never sourceTf
+    buildTf: tf,
     generation: generation,
-    builtAt: Date.now(),
     source: source || 'unknown',
+    requestedAt: Date.now(),
+  });
+}
+
+// TDAS V4.10.4C — pure. True only if no newer request has been reserved
+// for this exact symbol+tf key since this token was issued. Compares
+// against the CURRENT per-key generation counter only — never any other
+// key's counter, never _scanGeneration.
+function _isSnapshotRequestCurrent(token) {
+  if (!token || !token.symbol || !token.tf || typeof token.generation !== 'number') return false;
+  const latest = _tfSnapshotGenerations.get(_snapshotKey(token.symbol, token.tf)) || 0;
+  return token.generation === latest;
+}
+
+// TDAS V4.10.4C — guarded commit. Never calculates, fetches, renders, or
+// mutates `d`/currentScanData/another timeframe's stored snapshot.
+//   reason: 'registry_disabled' — DIAG.timeframeSnapshotRegistry is false;
+//           no write, no diagnostics.
+//   reason: 'invalid_token'     — token or d fails basic/provenance
+//           validation (missing symbol/tf/generation, token.tf !==
+//           token.buildTf, or d.tf disagreeing with buildTf where d
+//           exposes tf). d.evidence.sourceTf is never consulted.
+//   reason: 'stale_generation'  — DIAG.timeframeSnapshotGenerationGuards
+//           is true and a newer request has already been reserved for
+//           this exact key; the currently stored snapshot (if any) is
+//           left completely untouched.
+//   reason: 'committed'         — snapshot built and stored. When guards
+//           are disabled, every structurally valid token commits
+//           unconditionally (V4.10.4B last-write behaviour, preserved
+//           exactly as the documented fallback).
+function _commitTimeframeSnapshot(d, token) {
+  if (!DIAG.timeframeSnapshotRegistry) {
+    return { committed: false, reason: 'registry_disabled', snapshot: null };
+  }
+  if (!token || !token.symbol || !token.tf || typeof token.generation !== 'number' || !d) {
+    return { committed: false, reason: 'invalid_token', snapshot: null };
+  }
+  if (token.tf !== token.buildTf) {
+    return { committed: false, reason: 'invalid_token', snapshot: null };
+  }
+  // Provenance cross-check against the actual calc result's own tf field,
+  // where the result exposes one — deliberately never d.evidence.sourceTf,
+  // which reflects a journal entry's intended timeframe, not build
+  // provenance (see buildTimeframeSnapshot()'s own header comment).
+  if (d.tf != null && String(d.tf).toLowerCase() !== String(token.buildTf).toLowerCase()) {
+    return { committed: false, reason: 'invalid_token', snapshot: null };
+  }
+
+  const key = token.key || _snapshotKey(token.symbol, token.tf);
+  const guardsOn = !!DIAG.timeframeSnapshotGenerationGuards;
+
+  if (guardsOn && !_isSnapshotRequestCurrent(token)) {
+    const rec = _tfSnapshotRegistryDiagnostics.get(key) || _emptyRegistryDiagnostic();
+    rec.latestRequestGeneration = _tfSnapshotGenerations.get(key) || 0;
+    rec.staleRejectionCount = (rec.staleRejectionCount || 0) + 1;
+    rec.lastRejectedGeneration = token.generation;
+    rec.lastRejectionReason = 'stale_generation';
+    _tfSnapshotRegistryDiagnostics.set(key, rec);
+    return { committed: false, reason: 'stale_generation', snapshot: null };
+  }
+
+  const snapshot = buildTimeframeSnapshot(d, {
+    symbol: token.symbol,
+    tf: token.tf,
+    buildTf: token.buildTf,
+    generation: token.generation,
+    builtAt: Date.now(),
+    source: token.source,
     status: 'fresh',
     error: null,
   });
-  setTimeframeSnapshot(symbol, tf, snapshot);
+  setTimeframeSnapshot(token.symbol, token.tf, snapshot);
+
+  const rec = _tfSnapshotRegistryDiagnostics.get(key) || _emptyRegistryDiagnostic();
+  rec.storedGeneration = snapshot.generation;
+  rec.latestRequestGeneration = _tfSnapshotGenerations.get(key) || 0;
+  rec.commitCount = (rec.commitCount || 0) + 1;
+  rec.lastCommittedGeneration = snapshot.generation;
+  rec.buildTf = snapshot.buildTf;
+  rec.source = snapshot.source;
+  _tfSnapshotRegistryDiagnostics.set(key, rec);
+
+  return { committed: true, reason: 'committed', snapshot: snapshot };
 }
 
-// TDAS V4.10.4B — DIAG-only inspection helper. Not called anywhere in
-// normal operation; exists solely so tests/diagnostics can confirm
-// simultaneous-timeframe storage, generation isolation, and that
-// currentScanData is unaffected, without exposing internal Map access.
-// Produces no console output on its own (callers may log the return value
-// if they choose) and performs no side effects.
+// TDAS V4.10.4C — dormant shadow-equivalence comparator. Pure; compares
+// VALUES of a bounded set of identity/high-value fields between the
+// registry snapshot's data and the exact object written to
+// currentScanData at the same mirror site — proving mirroring fidelity,
+// not a live/ongoing comparison (legacyData may be mutated afterwards by
+// unrelated code, same as any other TDAS object; this function only ever
+// looks at the values passed in at call time). Only ever reads fields
+// that genuinely exist on either side.
+function _compareSnapshotToLegacyWrite(snapshot, legacyData, context) {
+  const ctx = context || {};
+  const sData = (snapshot && snapshot.data) || {};
+  const lData = legacyData || {};
+  const mismatches = [];
+  ['symbol', 'tf', 'signal', 'price', 'crossLong', 'crossShort', 'adx', 'aboveTrendSMA'].forEach(function (f) {
+    if (sData[f] !== lData[f]) mismatches.push(f);
+  });
+  const sDir = sData.evidence && sData.evidence.direction;
+  const lDir = lData.evidence && lData.evidence.direction;
+  if (sDir !== undefined || lDir !== undefined) {
+    if (sDir !== lDir) mismatches.push('evidence.direction');
+  }
+  const sStage = sData.evidence && sData.evidence.setupPath && sData.evidence.setupPath.state;
+  const lStage = lData.evidence && lData.evidence.setupPath && lData.evidence.setupPath.state;
+  if (sStage !== undefined || lStage !== undefined) {
+    if (sStage !== lStage) mismatches.push('evidence.setupPath.state');
+  }
+  const sAcStage = sData.authoritativeClassification && sData.authoritativeClassification.rawEvaluation && sData.authoritativeClassification.rawEvaluation.stage;
+  const lAcStage = lData.authoritativeClassification && lData.authoritativeClassification.rawEvaluation && lData.authoritativeClassification.rawEvaluation.stage;
+  if (sAcStage !== undefined || lAcStage !== undefined) {
+    if (sAcStage !== lAcStage) mismatches.push('authoritativeClassification.stage');
+  }
+  const sReady = sData.authoritativeClassification && sData.authoritativeClassification.tradeReady;
+  const lReady = lData.authoritativeClassification && lData.authoritativeClassification.tradeReady;
+  if (sReady !== undefined || lReady !== undefined) {
+    if (sReady !== lReady) mismatches.push('authoritativeClassification.tradeReady');
+  }
+  return {
+    match: mismatches.length === 0,
+    mismatches: mismatches,
+    symbol: (snapshot && snapshot.symbol) || ctx.symbol,
+    tf: (snapshot && snapshot.tf) || ctx.tf,
+    generation: snapshot && snapshot.generation,
+    source: ctx.source || (snapshot && snapshot.source),
+    checkedAt: Date.now(),
+  };
+}
+
+// TDAS V4.10.4C — records the shadow comparison for a key, keeping only
+// the most recent result (bounded memory — no history array). No-op
+// entirely when DIAG.timeframeSnapshotShadowCompare is false: no
+// comparison is computed, nothing is stored, no console output.
+function _recordShadowComparison(snapshot, legacyData, context) {
+  if (!DIAG.timeframeSnapshotShadowCompare) return null;
+  if (!snapshot) return null;
+  const result = _compareSnapshotToLegacyWrite(snapshot, legacyData, context);
+  _tfSnapshotShadowDiagnostics.set(_snapshotKey(result.symbol, result.tf), result);
+  return result;
+}
+
+// TDAS V4.10.4C — the single call-site entry point every mirror site uses:
+// commits the reserved token's snapshot, then (only if committed and the
+// shadow-compare flag is on) records the shadow comparison against the
+// exact object the caller just wrote to currentScanData. Combines, but
+// does not alter, the two independent flags' own gating.
+function _commitMirroredSnapshot(token, d, legacyData) {
+  if (!token) return { committed: false, reason: 'invalid_token', snapshot: null };
+  const result = _commitTimeframeSnapshot(d, token);
+  if (result.committed) {
+    _recordShadowComparison(result.snapshot, legacyData, { symbol: token.symbol, tf: token.tf, source: token.source });
+  }
+  return result;
+}
+
+// TDAS V4.10.4B (kept for inspection convenience) — coarse registry-wide
+// snapshot; unchanged in behaviour, generationCount now reflects
+// clearTimeframeSnapshotRegistry()'s narrowed scope (V4.10.4C) since
+// generations live in a Map this helper reads live, not a cached count.
 function _tfSnapshotDiagnostics() {
   const keys = Array.from(_tfSnapshots.keys());
   return {
@@ -2588,6 +2775,44 @@ function _tfSnapshotDiagnostics() {
     keys: keys,
     generationCount: _tfSnapshotGenerations.size,
   };
+}
+
+// TDAS V4.10.4C — combined, read-only, per-key inspection. Merges the
+// registry-commit diagnostics and the shadow-comparison diagnostics for
+// one key into a single object; returns null if neither exists yet for
+// that key. Diagnostic-only — never a production data source.
+function getTimeframeSnapshotDiagnostic(symbol, tf) {
+  if (!symbol || !tf) return null;
+  const key = _snapshotKey(symbol, tf);
+  const reg = _tfSnapshotRegistryDiagnostics.get(key);
+  const shadow = _tfSnapshotShadowDiagnostics.get(key);
+  if (!reg && !shadow) return null;
+  return Object.assign({}, reg || _emptyRegistryDiagnostic(), {
+    symbol: String(symbol).toUpperCase(),
+    tf: String(tf).toLowerCase(),
+    shadow: shadow || null,
+  });
+}
+function getAllTimeframeSnapshotDiagnostics() {
+  const keys = new Set(Array.from(_tfSnapshotRegistryDiagnostics.keys()).concat(Array.from(_tfSnapshotShadowDiagnostics.keys())));
+  const out = {};
+  keys.forEach(function (key) {
+    out[key] = Object.assign({}, _tfSnapshotRegistryDiagnostics.get(key) || _emptyRegistryDiagnostic(), {
+      shadow: _tfSnapshotShadowDiagnostics.get(key) || null,
+    });
+  });
+  return out;
+}
+function clearTimeframeSnapshotDiagnostics() {
+  _tfSnapshotRegistryDiagnostics.clear();
+  _tfSnapshotShadowDiagnostics.clear();
+}
+// TDAS V4.10.4C — test/diagnostic-only full reset: snapshots, per-key
+// generations, and all diagnostics. Not used anywhere in production code.
+function resetTimeframeSnapshotFoundation() {
+  _tfSnapshots.clear();
+  _tfSnapshotGenerations.clear();
+  clearTimeframeSnapshotDiagnostics();
 }
 
 
@@ -9557,6 +9782,8 @@ const DIAG = {
   confluenceEngineLive:      true, // TDAS V4.10.2C — Confluence Action Activation. ACTIVE: renderConfCard() now derives card wording/buttons from buildConfluenceActionModel(), and openConfluenceModal() independently rechecks the same model fresh at click time before allowing decision==='took' to proceed — two-layer enforcement, since the render layer can be stale (see the V4.10.2A audit's F-1 finding). Watch (decision==='watching') remains ungated in every Stage. Card population (the legacy HC qualifying filter), the alignment score, persistence, and active-trade/active-watch overrides are all unchanged. Rollback: set back to false to instantly restore the exact V4.10.2B legacy card/handler behaviour — no other change required.
   scannerSortEngineLive:     true, // TDAS V4.10.3D — Authoritative Scanner Sorting Activation. ACTIVE: the live indexed.sort() comparator inside runScan() now sorts by buildAuthoritativeSortKey()/compareAuthoritativeSortKeys() (V4.10.3B) via the shared _resolveAuthoritativeSortContext() helper, validated live in shadow form since V4.10.3C/C2 (see those audits for the confirmed SUI/BNB-style corrections this activation applies). The nested legacy sortScore() and its full tier logic remain completely unmodified as the rollback path. Rollback: set back to false to instantly restore the exact V4.10.3C2 legacy-only Scanner order — no other change required.
   timeframeSnapshotRegistry: true, // TDAS V4.10.4B — Dormant Timeframe Snapshot Registry Foundation. Controls ONLY whether successful full calcPair() results are additionally mirrored into the new symbol+timeframe-keyed _tfSnapshots registry (see buildTimeframeSnapshot()/setTimeframeSnapshot()). Does not affect any production read path — currentScanData[symbol] remains the sole source every existing consumer reads in this phase. No render, indicator, Evaluation, Advisory, Watch, Trade, or refresh-scheduling behaviour depends on this flag. Rollback: set back to false to stop registry writes entirely and restore byte-identical V4.10.3S runtime behaviour — no other change required.
+  timeframeSnapshotGenerationGuards: true, // TDAS V4.10.4C — controls ONLY whether a dormant registry commit (_commitTimeframeSnapshot()) rejects a stale same-key generation. When false, every structurally valid token commits unconditionally — the exact V4.10.4B last-write-wins fallback, still fully dormant. Never affects currentScanData or any production read path either way. Rollback: set back to false to disable stale-generation rejection only.
+  timeframeSnapshotShadowCompare: true, // TDAS V4.10.4C — controls ONLY whether _recordShadowComparison() runs after a successful dormant registry commit. Diagnostic only — compares the committed snapshot's data against the exact object just written to currentScanData at the same mirror site, storing at most one bounded result per symbol+timeframe key. No console output, no alerting, no network work, no rendering, no effect on any strategy or display decision. Rollback: set back to false to stop all shadow-comparison work.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -14863,9 +15090,11 @@ async function openTradeAnalysis(symbol, tf, btnId) {
   if(btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
 
   try {
-    const result = await calcPair(symbol, tf || '4h');
+    const _resolvedTf = tf || '4h'; // resolved ONCE — the exact same value is used to reserve the token and to calculate, so the token's buildTf can never disagree with what was actually requested.
+    const _snapToken = _beginSnapshotRequest(symbol, _resolvedTf, 'onDemand');
+    const result = await calcPair(symbol, _resolvedTf);
     currentScanData[symbol] = result;
-    _mirrorTimeframeSnapshot(symbol, tf || '4h', result, 'onDemand');
+    _commitMirroredSnapshot(_snapToken, result, currentScanData[symbol]);
     openAnalysisPanel(symbol);
   } catch(err) {
     console.warn('[TradeAnalysis] calcPair failed for', symbol, err.message);
@@ -17178,6 +17407,15 @@ async function _tdSignalRefresh(){
   _tdSignalRefreshBusy = true;
   const t0 = Date.now();
   try{
+    // TDAS V4.10.4C — reserve a dormant registry request token per symbol
+    // before this asynchronous batch begins. This path currently has no
+    // per-symbol/timeframe stale-completion protection at all in
+    // production (symTf collapses to one tf per symbol, documented in
+    // this function's own header comment) — the token protects only the
+    // dormant registry key; it does not change which completion wins
+    // currentScanData below.
+    const _snapTokens = {};
+    symbols.forEach(function (sym) { _snapTokens[sym] = _beginSnapshotRequest(sym, symTf[sym], 'tdSignalRefresh'); });
     const results = await Promise.allSettled(symbols.map(sym => calcPair(sym, symTf[sym])));
     let refreshed = 0, failed = 0;
 
@@ -17187,7 +17425,7 @@ async function _tdSignalRefresh(){
         const prev1hTiming = currentScanData[sym] && currentScanData[sym]._1hTiming;
         currentScanData[sym] = r.value;
         if(prev1hTiming) currentScanData[sym]._1hTiming = prev1hTiming; // preserve — not recomputed here
-        _mirrorTimeframeSnapshot(sym, symTf[sym], r.value, 'tdSignalRefresh');
+        _commitMirroredSnapshot(_snapTokens[sym], r.value, currentScanData[sym]);
         refreshed++;
       } else {
         failed++; // non-destructive: currentScanData[sym] and its card are left exactly as they were
@@ -19028,6 +19266,14 @@ async function runScan(auto){
     _statusEl0.className='scanner-result-neutral';
     document.getElementById('summary').innerHTML='';
   }
+  // TDAS V4.10.4C — reserve a dormant registry request token per symbol
+  // BEFORE the asynchronous calcPair() calls below begin (calcPair()
+  // itself is unchanged and unaware of these tokens). This does not
+  // affect legacy behaviour in any way — _scanGeneration (below) remains
+  // the sole protection for the legacy render cycle; these tokens protect
+  // only the still-fully-dormant per-symbol/timeframe registry key.
+  const _snapTokens = {};
+  PAIRS.forEach(function (s) { _snapTokens[s] = _beginSnapshotRequest(s, tf, 'runScan'); });
   const results=await Promise.allSettled(PAIRS.map(s=>calcPair(s,tf)));
   // Ensure journal is fresh from Sheets before we apply watch/trade routing.
   // On mobile a cold load may have an empty journal; we wait up to 3s for it.
@@ -19197,7 +19443,7 @@ async function runScan(auto){
 
   // Render signal cards (full)
   signalItems.forEach(({r, sym}) => {
-    if(r.status==='fulfilled'){currentScanData[sym]=r.value;_mirrorTimeframeSnapshot(sym, tf, r.value, 'runScan');renderCard(sym,r.value);addToHistory(sym,r.value);}
+    if(r.status==='fulfilled'){currentScanData[sym]=r.value;_commitMirroredSnapshot(_snapTokens[sym], r.value, currentScanData[sym]);renderCard(sym,r.value);addToHistory(sym,r.value);}
     else if(!auto){
       const msg = r.reason?.message||'Failed to load';
       if(DEBUG_MODE) console.warn(`[runScan] ${sym} failed:`, msg, r.reason);
@@ -19211,7 +19457,7 @@ async function runScan(auto){
   neutralItems.forEach(({r, sym}) => {
     if(r.status==='fulfilled'){
       currentScanData[sym]=r.value;
-      _mirrorTimeframeSnapshot(sym, tf, r.value, 'runScan');
+      _commitMirroredSnapshot(_snapTokens[sym], r.value, currentScanData[sym]);
       renderNeutralCompact(sym, r.value);
     } else if(!auto){
       const msg = r.reason?.message||'Failed to load';
