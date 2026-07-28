@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3R';
+const APP_BUILD = 'V4.10.3S';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -16039,6 +16039,76 @@ function _utDirectionSupportsSignal(ut, signal) {
   return !!(ut && typeof ut.direction === 'number') &&
     (signal === 'long' ? ut.direction === 1 : ut.direction === -1);
 }
+// TDAS V4.10.3S — Authoritative Watch Input Adapter.
+// Pure, read-only, direction-neutral-only translation from
+// d.evidence.components (MarketEvidence) into the liveData-shaped input
+// buildWatchEvidenceModel() already expects — that function itself is
+// completely unchanged by this task. See
+// TDAS_AUTHORITATIVE_WATCH_EVIDENCE_MIGRATION_AUDIT.md for the full
+// rationale: d.evidence.direction is the LIVE SCAN's own currently-
+// detected direction (buildEvidence() falls back only to an active open
+// trade, explicitly never a watch — see that function's own comment), so
+// this adapter NEVER consumes any direction-baked component
+// (utOpposition.setup.state, htfContext, rsiContext, timingState, or any
+// authoritativeClassification direction). Consuming those here would
+// silently re-anchor a Watch to whatever direction the live scan
+// currently detects — reintroducing the exact class of bug the V4.8.x
+// Watch-Card Checkpoint Correctness Fix already fixed once for HTF.
+//
+// Only absolute, direction-neutral facts are translated
+// (temaStructure.direction, utDirection.direction, adxState.value); every
+// other field passes straight through unchanged, so
+// buildWatchEvidenceModel()'s own comparison against watch.signal (never
+// liveData.signal, never any evidence-derived direction) continues to own
+// direction exactly as before. Never mutates d, d.evidence, or
+// watchRecord — always returns a new shallow-copied object (or the
+// original d, untouched, on the fail-closed path). watchRecord is
+// currently unused by the mapping itself (direction ownership stays with
+// buildWatchEvidenceModel()'s own `watch` parameter) but is accepted for
+// a stable, self-documenting call signature and future use.
+function adaptAuthoritativeWatchInputs(d, watchRecord) {
+  if (!d || !d.evidence || !d.evidence.components) return d;
+  const comp = d.evidence.components;
+
+  const out = Object.assign({}, d);
+
+  // 1. TEMA structure — direction-neutral absolute fact. Momentum,
+  // 200MA regime and final classification are deliberately never read
+  // here (this is a factual structure row, not an interpretation).
+  const temaDir = (comp.temaStructure && comp.temaStructure.direction) || 'unknown';
+  if (temaDir === 'bullish') { out.crossLong = true; out.crossShort = false; }
+  else if (temaDir === 'bearish') { out.crossLong = false; out.crossShort = true; }
+  else { out.crossLong = false; out.crossShort = false; } // unknown -> both unavailable, matches buildWatchEvidenceModel()'s existing temaDirKnown check
+
+  // 2. UT confirmation — direction-neutral absolute fact. Deliberately
+  // NEVER comp.utOpposition.setup.state, which is already baked against
+  // ev.direction (the live scan's own direction), not watch.signal.
+  // Freshness remains excluded, matching V4.10.3Q doctrine and the
+  // existing _utDirectionSupportsSignal() contract.
+  const utDir = (comp.utDirection && comp.utDirection.direction) || 'unknown';
+  const utNumeric = utDir === 'bullish' ? 1 : utDir === 'bearish' ? -1 : utDir === 'neutral' ? 0 : null;
+  out.utBot = Object.assign({}, d.utBot, { direction: utNumeric });
+
+  // 3. ADX trend — direction-neutral absolute fact. adxState.slope's
+  // highRollingOver is deliberately never read here — a timing/
+  // management signal (per its own source comment), not part of this
+  // factual, binary row.
+  const adxVal = (comp.adxState && comp.adxState.value != null && isFinite(comp.adxState.value)) ? comp.adxState.value : null;
+  out.adx = adxVal;
+
+  // 4. HTF support — no direction-safe authoritative equivalent exists
+  // (htfContext is baked against the live scan's own direction). Raw
+  // htfTrendContext/htfUtBot pass through completely unchanged via the
+  // shallow copy above, so getHtfDirectionState(adaptedInput,
+  // watch.signal) continues to re-anchor HTF support to the stored Watch
+  // direction exactly as before — no override needed here.
+
+  // 5. SMA filter — MarketEvidence exposes no trend-SMA equivalent at
+  // all (only ma200Relation, a different concern). aboveTrendSMA passes
+  // through completely unchanged via the shallow copy above.
+
+  return out;
+}
 function buildWatchEvidenceModel(liveData, watch) {
   const signal = watch && watch.signal;
   const tf     = watch && watch.tf;
@@ -16122,7 +16192,16 @@ function renderWatchCard(e){
   // derived exclusively from the single buildWatchEvidenceModel() result.
   // See that function's own header comment for the preserved per-
   // checkpoint semantics and the two flagged (not changed) audit findings.
-  const evidence = buildWatchEvidenceModel(liveData, e);
+  // TDAS V4.10.3S — Authoritative Watch Input Adapter. buildWatchEvidenceModel()
+  // itself is completely unchanged; only its input is now translated
+  // through adaptAuthoritativeWatchInputs() first, which substitutes
+  // direction-neutral authoritative MarketEvidence facts (TEMA structure,
+  // UT direction, ADX value) where safe, and fails closed to the original
+  // liveData object otherwise. Direction ownership is untouched — the
+  // model still compares everything against watch.signal (e.signal) here,
+  // never against any live-scan or evidence-derived direction.
+  const watchEvidenceInput = adaptAuthoritativeWatchInputs(liveData, e);
+  const evidence = buildWatchEvidenceModel(watchEvidenceInput, e);
   const _tfMatches = evidence.valid;
   const litCount = evidence.passed;
   // Watch card status — visual guidance, not enforcement
