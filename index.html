@@ -1668,7 +1668,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.3P';
+const APP_BUILD = 'V4.10.3Q';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -6527,13 +6527,79 @@ function _isRsiStretchedCap(dir, d) {
   return false;
 }
 
+// TDAS V4.10.3Q — Regime-Aware UT Staleness Cap Presentation.
+// Pure, read-only helper — reuses existing MarketEvidence facts already
+// computed by buildEvidence()/calcPair(); no new indicator, no
+// recomputation. Mirrors the identical regime/TEMA/UT-opposition/ADX-slope
+// facts stage10Eligible already consults inside _shadowEvaluate() (see that
+// function — completely untouched by this release), applied here only to
+// decide whether a stale UT signal deserves display as a conviction-capping
+// reason in the legacy pre-Stage-10 presentation layer. Settled doctrine:
+// an old-but-still-aligned UT signal in a clean, established 200MA regime
+// with aligned TEMA structure is a timing caution, not a structural High
+// Conviction blocker. The authoritative Stage 10 gate was already
+// freshness-blind by design (see _utOppositionFromValues()'s own "Aligned
+// regardless of freshness" comment) — this helper brings the legacy display
+// layer into line with that same doctrine, nothing more.
+//
+// Returns true only when every one of the following, independently
+// verifiable facts holds:
+//   - setup 200MA regime is CONFIRMED in the intended direction (not
+//     transitional/unknown/opposing) — comp.ma200RegimeInputs.setup.regime
+//   - TEMA structure is aligned in the intended direction —
+//     comp.temaStructure.direction
+//   - TEMA is not narrowing/weakening against the setup —
+//     comp.temaStructure.momentum !== 'converging'
+//   - UT direction itself remains aligned (independent of freshness) —
+//     comp.utOpposition.setup.state === 'aligned'
+//   - no ADX high-rollover reversal evidence —
+//     comp.adxState.slope.highRollingOver !== true
+// Any missing/unknown evidence fails closed (returns false), matching this
+// codebase's existing convention of never fabricating support.
+function _isEstablishedAlignedRegimeForUtStaleness(d, direction) {
+  if (direction !== 'long' && direction !== 'short') return false;
+  const comp = (d && d.evidence && d.evidence.components) || null;
+  if (!comp) return false;
+
+  const setupRegimeObj = (comp.ma200RegimeInputs && comp.ma200RegimeInputs.setup) || {};
+  const setupRegime = setupRegimeObj.regime || 'unknown';
+  const confirmedRegime = direction === 'long' ? 'confirmed_bullish' : 'confirmed_bearish';
+  if (setupRegime !== confirmedRegime) return false;
+
+  const setupTemaDir = (comp.temaStructure && comp.temaStructure.direction) || 'unknown';
+  const alignedTemaDir = direction === 'long' ? 'bullish' : 'bearish';
+  if (setupTemaDir !== alignedTemaDir) return false;
+
+  const temaMomentum = (comp.temaStructure && comp.temaStructure.momentum) || 'unknown';
+  if (temaMomentum === 'converging') return false;
+
+  const setupUtOpp = (comp.utOpposition && comp.utOpposition.setup) || { state: 'unknown' };
+  if (setupUtOpp.state !== 'aligned') return false;
+
+  const adxSlope = (comp.adxState && comp.adxState.slope) || { highRollingOver: false };
+  if (adxSlope.highRollingOver === true) return false;
+
+  return true;
+}
+
 function _capReasonText(ev, d) {
   const st = (d && d.states) || {};
   if (ev.score != null && ev.score < 75) return 'score below premium threshold';
   if (st.adx != null && !st.adxTrending) return 'ADX ranging';
   if (st.utBot && typeof classifyUtFreshness === 'function') {
     const fresh = classifyUtFreshness(st.utBot.barsAgoFlip);
-    if (fresh.rank >= 2) return 'UT signal stale'; // Mature or Stale
+    // TDAS V4.10.3Q — regime-aware UT staleness cap. A stale/mature UT
+    // signal only cites as the display reason when the wider regime is
+    // NOT a clean, established, aligned one (see
+    // _isEstablishedAlignedRegimeForUtStaleness() above for the exact
+    // criteria and rationale). Direction is read from ev.tradeBias, the
+    // same field _buildScannerAdvisory() already uses to derive `dir` —
+    // no second direction source.
+    if (fresh.rank >= 2) {
+      const _dir = ev.tradeBias === 'LONG' ? 'long' : ev.tradeBias === 'SHORT' ? 'short' : null;
+      const _establishedAlignedRegime = !!(_dir && _isEstablishedAlignedRegimeForUtStaleness(d, _dir));
+      if (!_establishedAlignedRegime) return 'UT signal stale'; // Mature or Stale, not a clean established regime
+    }
   }
   if (ev.signalRegimeAligned === false) return 'HTF not aligned';
   if (ev.warnings && ev.warnings.length) return ev.warnings[0];
