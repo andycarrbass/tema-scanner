@@ -1399,6 +1399,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 <div class="tabs">
   <button class="tab active" data-tab-key="scanner" onclick="showTab('scanner')"><span class="tab-full">🔍 Scanner</span><span class="tab-short">🔍</span></button>
   <button class="tab" data-tab-key="confluence" onclick="showTab('confluence')"><span class="tab-full">🔗 Confluence</span><span class="tab-short">🔗</span> <span id="confCount" style="font-size:10px;color:var(--text3);"></span></button>
+  <button class="tab" data-tab-key="watch" onclick="showTab('watch')"><span class="tab-full">👁 Watch</span><span class="tab-short">👁</span> <span id="watchCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="trade" onclick="showTab('trade')"><span class="tab-full">📈 Trade</span><span class="tab-short">📈</span> <span id="tradeCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="journal" onclick="showTab('journal')"><span class="tab-full">📝 Journal</span><span class="tab-short">📝</span> <span id="journalCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="settings" onclick="showTab('settings')"><span class="tab-full">⚙ Instruments</span><span class="tab-short">⚙</span></button>
@@ -1429,12 +1430,26 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   <div id="confCards" class="trade-cards-grid"></div>
 </div>
 
-<!-- Trade tab — v2.0 live monitoring desk -->
+<!-- Watch tab — relocated Watch list (V5.0.0C Phase 1: simple list, no lanes yet) -->
+<div id="tab-watch" class="tab-panel">
+  <div class="trade-desk-header">
+    <div>
+      <h2 style="margin:0;font-size:17px;font-weight:500;">👁 Watchlist</h2>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px;">Setups being monitored for entry</div>
+    </div>
+  </div>
+  <div class="trade-col" id="watchCol">
+    <div class="trade-col-header">👁 Watching <span id="watchColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
+    <div id="watchCards" class="trade-cards-grid"></div>
+  </div>
+</div>
+
+<!-- Trade tab — v2.0 live monitoring desk (V5.0.0C: active trades only) -->
 <div id="tab-trade" class="tab-panel">
   <div class="trade-desk-header">
     <div>
       <h2 style="margin:0;font-size:17px;font-weight:500;">📈 Trading Desk</h2>
-      <div style="font-size:12px;color:var(--text3);margin-top:2px;">Watches developing · Active trades · Live P&amp;L</div>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px;">Active trades · Live P&amp;L</div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       <button onclick="exportTrades()" style="font-size:12px;padding:6px 11px;">&#8595; Export</button>
@@ -1444,24 +1459,16 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div id="trade-desk-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0;"></div>
     <div id="tdLastSync" class="tdas-status-block" style="display:none;"></div>
   </div>
-  <!-- TF-0: setup-timeframe display filter — same pill row pattern as the Journal filter bar. Display-only: filters which watches/trades render; never triggers a scan or fetch. -->
+  <!-- TF-0: setup-timeframe display filter — same pill row pattern as the Journal filter bar. Display-only: filters which trades render; never triggers a scan or fetch. -->
   <div class="journal-filter-bar" id="tradeDeskFilterBar">
     <button class="jf-btn active" data-tdfilter="all" onclick="setTradeDeskSetupFilter('all')">All</button>
     <button class="jf-btn" data-tdfilter="1h" onclick="setTradeDeskSetupFilter('1h')">1H Setups</button>
     <button class="jf-btn" data-tdfilter="4h" onclick="setTradeDeskSetupFilter('4h')">4H Setups</button>
     <span id="activeTfTradeDesk" class="htf-note" style="margin-left:4px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span>
   </div>
-  <div class="trade-desk-grid" id="tradeDeskGrid">
-    <!-- Watch cards column -->
-    <div class="trade-col" id="watchCol">
-      <div class="trade-col-header">👁 Watching <span id="watchColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
-      <div id="watchCards" class="trade-cards-grid"></div>
-    </div>
-    <!-- Active trades column -->
-    <div class="trade-col" id="activeCol">
-      <div class="trade-col-header">⚡ Active trades <span id="activeColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
-      <div id="activeTradeCards" class="trade-cards-grid"></div>
-    </div>
+  <div class="trade-col" id="activeCol">
+    <div class="trade-col-header">⚡ Active trades <span id="activeColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
+    <div id="activeTradeCards" class="trade-cards-grid"></div>
   </div>
   <!-- Closed trades history table -->
   <div id="closedTradesSection" style="margin-top:24px;">
@@ -1671,7 +1678,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0B';
+const APP_BUILD = 'V5.0.0C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2248,7 +2255,9 @@ function renderAllJournalDependentUI(){
   updateLivePnL();
   updateJournalCount();
   updateTradeCount();
-  // Re-render trade desk if active
+  // Re-render Watch page / Trade desk if active
+  const watchTab = document.getElementById('tab-watch');
+  if(watchTab && watchTab.classList.contains('active')) renderWatchPage();
   const tradeTab = document.getElementById('tab-trade');
   if(tradeTab && tradeTab.classList.contains('active')) renderTradeDesk();
 }
@@ -17413,13 +17422,29 @@ function updateJournalCount(){
   if(el) el.textContent=journal.length?`(${journal.length})`:'';
 }
 
+// TDAS V5.0.0C — new Watch tab badge. Mirrors updateTradeCount()'s
+// existing pattern exactly, scoped to active Watches only.
+function updateWatchCount(){
+  const el=document.getElementById('watchCount');
+  if(!el)return;
+  const n=journal.filter(j=>isActiveWatch(j)).length;
+  el.textContent=n?`(${n})`:'';
+}
+// TDAS V5.0.0C — now active-trade-only (previously watches+active
+// combined, matching the mixed-purpose Trade page this badge used to
+// represent). Also refreshes the new Watch tab's badge here, rather than
+// at each of this function's nine existing call sites individually: every
+// one of those call sites already refreshes both counts together
+// (post-sync, post-scan, global refresh), so pairing them here is the
+// smallest-diff way to keep both badges truthful without touching every
+// call site — and there is no existing call site where refreshing the
+// Watch badge alongside the Trade badge would be incorrect.
 function updateTradeCount(){
+  updateWatchCount();
   const el=document.getElementById('tradeCount');
   if(!el)return;
-  const watches=journal.filter(j=>isActiveWatch(j)).length;
   const active=journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome).length;
-  const total=watches+active;
-  el.textContent=total?`(${total})`:'';
+  el.textContent=active?`(${active})`:'';
 }
 
 // ── Trade Desk v2.0 ──────────────────────────────────────────────────────
@@ -17440,16 +17465,36 @@ function setTradeDeskSetupFilter(f){
   document.querySelectorAll('#tradeDeskFilterBar .jf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tdfilter===f));
   renderTradeDesk(); // re-render immediately from existing data — no scan, no fetch
 }
-function renderTradeDesk(){
+// TDAS V5.0.0C — Dedicated Watch Page. Extracted from the former combined
+// renderTradeDesk() — this now owns the Watch column exclusively. No TF-0
+// filter here per this phase's scope lock ("simple relocated list, no
+// new filters") — the existing TF-0 filter bar remains Trade-only, on
+// the Trade page, filtering active trades exactly as it already did.
+function renderWatchPage(){
   const watchesAll=journal.filter(j=>isActiveWatch(j));
+
+  const watchEl=document.getElementById('watchCards');
+  const watchCount=document.getElementById('watchColCount');
+  if(watchCount) watchCount.textContent=watchesAll.length?`(${watchesAll.length})`:'';
+  if(!watchesAll.length){
+    if(watchEl) watchEl.innerHTML='<div class="trade-col-empty">No watches active.<br>Hit <strong>Log decision → Watch</strong> on a scanner card.</div>';
+  } else {
+    // Phantom cards ensure the column always renders at correct width (min 1 phantom)
+    const phantomCount=Math.max(0,1-watchesAll.length);
+    const phantoms='<div class="trade-phantom"></div>'.repeat(phantomCount);
+    if(watchEl) watchEl.innerHTML=watchesAll.map(e=>renderWatchCard(e)).join('')+phantoms;
+  }
+  updateWatchCount();
+}
+
+function renderTradeDesk(){
   const activeAll=journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome);
 
-  // TF-0 pill counts — per-timeframe totals across BOTH columns, computed
-  // from the unfiltered arrays so each pill's count is stable regardless
-  // of which filter is currently selected.
-  const _tfCount = tf => watchesAll.filter(j=>String(j.tf||'').toLowerCase()===tf).length
-                       + activeAll.filter(j=>String(j.tf||'').toLowerCase()===tf).length;
-  const _pillCounts = { all: watchesAll.length + activeAll.length, '1h': _tfCount('1h'), '4h': _tfCount('4h') };
+  // TF-0 pill counts — TDAS V5.0.0C: active-trades-only now that Watch has
+  // moved to its own page (renderWatchPage() above) and no longer uses
+  // this filter bar.
+  const _tfCount = tf => activeAll.filter(j=>String(j.tf||'').toLowerCase()===tf).length;
+  const _pillCounts = { all: activeAll.length, '1h': _tfCount('1h'), '4h': _tfCount('4h') };
   document.querySelectorAll('#tradeDeskFilterBar .jf-btn').forEach(b=>{
     const key=b.dataset.tdfilter;
     const label = key==='all' ? 'All' : key.toUpperCase()+' Setups';
@@ -17457,21 +17502,7 @@ function renderTradeDesk(){
     b.textContent = n ? label+' ('+n+')' : label;
   });
 
-  const watches=watchesAll.filter(_tdSetupFilterMatch);
   const active=activeAll.filter(_tdSetupFilterMatch);
-
-  // Watch column
-  const watchEl=document.getElementById('watchCards');
-  const watchCount=document.getElementById('watchColCount');
-  if(watchCount) watchCount.textContent=watches.length?`(${watches.length})`:'';
-  if(!watches.length){
-    if(watchEl) watchEl.innerHTML='<div class="trade-col-empty">No watches active.<br>Hit <strong>Log decision → Watch</strong> on a scanner card.</div>';
-  } else {
-    // Phantom cards ensure the column always renders at correct width (min 1 phantom)
-    const phantomCount=Math.max(0,1-watches.length);
-    const phantoms='<div class="trade-phantom"></div>'.repeat(phantomCount);
-    if(watchEl) watchEl.innerHTML=watches.map(e=>renderWatchCard(e)).join('')+phantoms;
-  }
 
   // Active trade column
   const activeEl=document.getElementById('activeTradeCards');
@@ -17485,7 +17516,8 @@ function renderTradeDesk(){
     if(activeEl) activeEl.innerHTML=active.map(e=>renderOrderTicketCard(e)).join('')+phantoms;
   }
 
-  // Stats bar
+  // Stats bar — TDAS V5.0.0C: "Watching" pill removed (Trade page no
+  // longer has any watches to report; see renderWatchPage() for that).
   const closed=journal.filter(j=>!j.deleted&&j.decision==='took'&&j.outcome&&j.outcome!=='cancelled');
   const wins=closed.filter(j=>j.outcome==='win'||(j.outcome==='manual'&&j.rMultiple>0)).length;
   const losses=closed.filter(j=>j.outcome==='loss'||(j.outcome==='manual'&&j.rMultiple<=0)).length;
@@ -17495,7 +17527,6 @@ function renderTradeDesk(){
     :null;
   const statsEl=document.getElementById('trade-desk-stats');
   if(statsEl) statsEl.innerHTML=[
-    `<div class="log-stat">Watching<span style="color:var(--amber-text);">${watches.length}</span></div>`,
     `<div class="log-stat">Active<span style="color:var(--green-text);">${active.length}</span></div>`,
     `<div class="log-stat">Closed<span>${closed.length}</span></div>`,
     `<div class="log-stat">Win rate<span>${wr!==null?wr+'%':'—'}</span></div>`,
@@ -18136,8 +18167,16 @@ function _updateTradeDeskStatusBar(){
 
 async function _tdLightweightRefresh(){
   if(_tdRefreshBusy) return; // prevent overlap
-  const tab = document.getElementById('tab-trade');
-  if(!tab || !tab.classList.contains('active')) return; // trade desk not visible
+  // TDAS V5.0.0C — Dedicated Watch Page. This function exclusively
+  // refreshes Watch cards (see the comment a few lines below — active
+  // trades already have their own tab-independent equivalent,
+  // _ensureActiveTradeLivePricing()). Gate moved from tab-trade to
+  // tab-watch accordingly; without this change, watch price refresh would
+  // silently stop working whenever the user is actually on the new Watch
+  // tab — the exact staleness bug _ensureActiveTradeLivePricing() was
+  // already built once to fix, for trades.
+  const tab = document.getElementById('tab-watch');
+  if(!tab || !tab.classList.contains('active')) return; // watch page not visible
   if(document.hidden) return; // browser tab hidden
 
   _tdRefreshBusy = true;
@@ -18407,7 +18446,11 @@ async function _calc1HTiming(symbol) {
 
 async function _timingRefresh() {
   if (_timingBusy) return;
-  const tab = document.getElementById('tab-trade');
+  // TDAS V5.0.0C — Dedicated Watch Page. Exclusively watch-scoped (see
+  // this function's own body below and the _ensureActiveTrade1HTiming
+  // comment further down — active trades already have their own
+  // tab-independent equivalent). Gate moved from tab-trade to tab-watch.
+  const tab = document.getElementById('tab-watch');
   if (!tab || !tab.classList.contains('active')) return;
   if (document.hidden) return;
 
@@ -18559,8 +18602,17 @@ let _tdSignalLastMs       = 0; // distinct from _tdPriceLastMs — only set once
 
 async function _tdSignalRefresh(){
   if(_tdSignalRefreshBusy) return; // prevent self-overlap
-  const tab = document.getElementById('tab-trade');
-  if(!tab || !tab.classList.contains('active')) return; // Trade Desk not the visible tab
+  // TDAS V5.0.0C — Dedicated Watch Page. Unlike _tdLightweightRefresh/
+  // _timingRefresh above (now watch-exclusive), this function repaints
+  // BOTH watch cards and active-trade cards together (see its symbol/tf
+  // map below, and its repaint loop further down). Gate widened to fire
+  // whenever EITHER the Watch or the Trade tab is the visible one, rather
+  // than switched outright.
+  const watchTab = document.getElementById('tab-watch');
+  const tradeTab = document.getElementById('tab-trade');
+  const watchVisible = watchTab && watchTab.classList.contains('active');
+  const tradeVisible = tradeTab && tradeTab.classList.contains('active');
+  if(!watchVisible && !tradeVisible) return; // neither Watch nor Trade tab is the visible tab
   if(document.hidden) return; // browser tab/window hidden
   if(_scanRunning){
     if(DEBUG_MODE) console.log('[TradeDeskSignalRefresh] Scanner scan already in progress — skipping this cycle');
@@ -20311,10 +20363,36 @@ function buildGrid(){
 // One button, one mental model. Behaviour depends on active tab.
 async function globalRefresh(){
   const btn = document.getElementById('refreshBtn');
+  const watchActive   = document.getElementById('tab-watch')?.classList.contains('active');
   const tradeActive   = document.getElementById('tab-trade')?.classList.contains('active');
   const journalActive = document.getElementById('tab-journal')?.classList.contains('active');
 
-  console.log('[Global Refresh] activeTab:', tradeActive?'trade':journalActive?'journal':'scanner/other');
+  console.log('[Global Refresh] activeTab:', watchActive?'watch':tradeActive?'trade':journalActive?'journal':'scanner/other');
+
+  // TDAS V5.0.0C — Dedicated Watch Page. _tdLightweightRefresh() and
+  // _timingRefresh() are now gated on the Watch tab being visible (they
+  // already exclusively handled watches — see their own comments), so
+  // they belong in this new branch, not the Trade branch below. Calling
+  // them from the Trade branch would now silently do nothing, since their
+  // own internal gate would reject a Trade-tab-visible call.
+  if(watchActive){
+    if(btn){ btn.textContent='Syncing…'; btn.disabled=true; }
+    console.log('[Global Refresh] pulling Sheets');
+    await loadFromSheets();
+    console.log('[Global Refresh] rendering Watch page');
+    renderWatchPage();
+    renderJournal();
+    updateWatchCount();
+    updateJournalCount();
+    await _tdLightweightRefresh();
+    await _timingRefresh();
+    await _tdSignalRefresh();
+    _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
+    if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
+    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
+    console.log('[Global Refresh] complete');
+    return;
+  }
 
   if(tradeActive){
     if(btn){ btn.textContent='Syncing…'; btn.disabled=true; }
@@ -20325,8 +20403,6 @@ async function globalRefresh(){
     renderJournal();
     updateTradeCount();
     updateJournalCount();
-    await _tdLightweightRefresh();
-    await _timingRefresh();
     // TDAS V4.5 bug fix — globalRefresh()'s Trade-tab branch was written
     // before _tdSignalRefresh() existed (that was added in a later task,
     // wired only into the 5-minute timer). Manual Re-scan on Trade Desk was
@@ -20337,6 +20413,9 @@ async function globalRefresh(){
     // self-overlap), so calling it directly here is exactly as safe as its
     // timer-driven invocation; it also updates the status bar's
     // "Signals/advisories" line itself on success.
+    // TDAS V5.0.0C — _tdLightweightRefresh()/_timingRefresh() calls moved
+    // to the watchActive branch above (see comment there); _tdSignalRefresh()
+    // remains here too since it also repaints active-trade cards.
     await _tdSignalRefresh();
     _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
     if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
@@ -20382,7 +20461,15 @@ function showTab(name){
   if(name==='scanner'){ startScannerAutoRefresh(); } else { stopScannerAutoRefresh(); }
   if(name==='settings')renderPairsList();
   if(name==='journal'){loadFromSheets().then(()=>{renderJournal();updateLivePnL();updateJournalCount();});}
-  if(name==='trade'){loadFromSheets().then(()=>{renderTradeDesk();updateTradeDeskPnL();updateTradeCount();});startTradeDeskAutoRefresh();}
+  if(name==='watch'){loadFromSheets().then(()=>{renderWatchPage();updateWatchCount();});}
+  if(name==='trade'){loadFromSheets().then(()=>{renderTradeDesk();updateTradeDeskPnL();updateTradeCount();});}
+  // TDAS V5.0.0C — Dedicated Watch Page. This timer bundle
+  // (_tdLightweightRefresh/_timingRefresh/_tdSignalRefresh, all with their
+  // own internal tab-visibility gates — see those functions) now serves
+  // both the Watch and Trade pages between them, so it starts for either
+  // and stops only when neither is the active tab. Same start/else-stop
+  // shape as before, widened from trade-only.
+  if(name==='trade'||name==='watch'){startTradeDeskAutoRefresh();}
   else{stopTradeDeskAutoRefresh();}
   if(name==='confluence'){
     // Reset tab highlight (user has now seen the page)
@@ -20709,6 +20796,10 @@ async function runScan(auto){
   // branch) — changing the tf dropdown while already on Trade Desk updated
   // currentScanData for every symbol above, but left the visible cards
   // stale. Same tab-active guard as renderAllJournalDependentUI().
+  // TDAS V5.0.0C — Watch cards now repaint via their own tab-gated call,
+  // since they live on a separate page from active trades.
+  const _watchTabForRepaint = document.getElementById('tab-watch');
+  if(_watchTabForRepaint && _watchTabForRepaint.classList.contains('active')) renderWatchPage();
   const _tradeTabForRepaint = document.getElementById('tab-trade');
   if(_tradeTabForRepaint && _tradeTabForRepaint.classList.contains('active')) renderTradeDesk();
   _updateActiveTfIndicator();
