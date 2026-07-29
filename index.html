@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.4C';
+const APP_BUILD = 'V4.10.4D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2518,6 +2518,7 @@ function buildTimeframeSnapshot(d, meta) {
     builtAt: m.builtAt != null ? m.builtAt : Date.now(),
     priceUpdatedAt: m.priceUpdatedAt != null ? m.priceUpdatedAt : null,
     timingUpdatedAt: m.timingUpdatedAt != null ? m.timingUpdatedAt : null,
+    evidenceUpdatedAt: m.evidenceUpdatedAt != null ? m.evidenceUpdatedAt : null,
     source: m.source || 'unknown',
     status: m.status || 'fresh',
     error: m.error != null ? m.error : null,
@@ -2750,11 +2751,12 @@ function _recordShadowComparison(snapshot, legacyData, context) {
   return result;
 }
 
-// TDAS V4.10.4C — the single call-site entry point every mirror site uses:
-// commits the reserved token's snapshot, then (only if committed and the
-// shadow-compare flag is on) records the shadow comparison against the
-// exact object the caller just wrote to currentScanData. Combines, but
-// does not alter, the two independent flags' own gating.
+// TDAS V4.10.4C — combined commit + shadow-compare convenience helper.
+// TDAS V4.10.4D note: the four production full-calculation call sites now
+// dispatch through requestTimeframeSnapshot() (below), which owns commit
+// directly — none of them call this helper anymore. Left in place,
+// unchanged and still fully tested, as a valid dormant convenience
+// wrapper for any future direct commit+shadow-compare need.
 function _commitMirroredSnapshot(token, d, legacyData) {
   if (!token) return { committed: false, reason: 'invalid_token', snapshot: null };
   const result = _commitTimeframeSnapshot(d, token);
@@ -2809,10 +2811,203 @@ function clearTimeframeSnapshotDiagnostics() {
 }
 // TDAS V4.10.4C — test/diagnostic-only full reset: snapshots, per-key
 // generations, and all diagnostics. Not used anywhere in production code.
+// TDAS V4.10.4D — extended to also clear in-flight coordinator state and
+// coordinator diagnostics (both declared further below; safe to reference
+// here since this function is only ever CALLED after full module
+// evaluation, by which point every module-level const below has already
+// been initialised).
 function resetTimeframeSnapshotFoundation() {
   _tfSnapshots.clear();
   _tfSnapshotGenerations.clear();
   clearTimeframeSnapshotDiagnostics();
+  _tfSnapshotInFlight.clear();
+  clearTimeframeSnapshotCoordinatorDiagnostics();
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.4D — Snapshot Refresh Coordinator and Immutable Partial     ║
+// ║  Updates                                                                 ║
+// ║                                                                          ║
+// ║  Adds the smallest practical coordinator for full symbol+timeframe      ║
+// ║  calculations (shared in-flight deduplication, one calcPair() per       ║
+// ║  identical concurrent request) and converts every partial (price/1H-    ║
+// ║  timing/evidence-rebuild) registry-side update from in-place mutation   ║
+// ║  to clone-not-mutate. Still entirely dormant: currentScanData[symbol]   ║
+// ║  remains the sole production read source, and every legacy write/       ║
+// ║  render/error-handling behaviour at each of the four full-calculation   ║
+// ║  call sites is preserved exactly — the coordinator only replaces HOW    ║
+// ║  the underlying calcPair() call and registry commit happen, never       ║
+// ║  WHAT the caller does with the result.                                  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// One in-flight entry per key at most; removed on both success and
+// failure (see requestTimeframeSnapshot()'s finally block below) — no
+// unbounded history, no entry ever outlives its own request.
+const _tfSnapshotInFlight = new Map();
+const _tfSnapshotCoordinatorDiagnostics = new Map();
+
+function _emptyCoordinatorDiagnostic() {
+  return {
+    requestCount: 0, calculationCount: 0, dedupeJoinCount: 0,
+    successCount: 0, failureCount: 0,
+    lastSource: null, lastCompletedGeneration: null, lastDurationMs: null,
+    inFlight: false, lastError: null,
+  };
+}
+function _coordDiag(key) {
+  return _tfSnapshotCoordinatorDiagnostics.get(key) || _emptyCoordinatorDiagnostic();
+}
+
+// TDAS V4.10.4D — the full-calculation coordinator. Symbol+timeframe is
+// the sole dedup identity (via _snapshotKey(), the same canonical key
+// V4.10.4B/C already use). Resolves to {ok:true, data, snapshot, token,
+// deduped, error:null} on success; REJECTS (does not resolve to an error
+// object) on calcPair() failure, so every existing Promise.allSettled-
+// based caller's r.status==='rejected'/r.reason handling continues to
+// work completely unchanged after migration — only r.value's shape
+// changes on the fulfilled path (now {ok,data,...} instead of the raw
+// calcPair() result; callers read r.value.data).
+//
+// Never renders. Never writes currentScanData — legacy callers remain
+// fully responsible for their own existing production write/render
+// behaviour, exactly as before this phase.
+async function requestTimeframeSnapshot(symbol, tf, reason, options) {
+  const key = _snapshotKey(symbol, tf);
+  const coordinatorOn = !!DIAG.timeframeSnapshotCoordinator;
+
+  {
+    const rec = _coordDiag(key);
+    rec.requestCount++;
+    rec.lastSource = reason || rec.lastSource;
+    _tfSnapshotCoordinatorDiagnostics.set(key, rec);
+  }
+
+  if (coordinatorOn && _tfSnapshotInFlight.has(key)) {
+    const entry = _tfSnapshotInFlight.get(key);
+    entry.consumerReasons.push(reason || 'unknown');
+    const rec = _coordDiag(key);
+    rec.dedupeJoinCount++;
+    _tfSnapshotCoordinatorDiagnostics.set(key, rec);
+    const joined = await entry.promise; // rejects naturally if entry.promise rejects — same failure for every joiner
+    return Object.assign({}, joined, { deduped: true });
+  }
+
+  const token = _beginSnapshotRequest(symbol, tf, reason);
+  const t0 = Date.now();
+  const promise = (async () => {
+    try {
+      {
+        const rec = _coordDiag(key);
+        rec.calculationCount++;
+        rec.inFlight = true;
+        _tfSnapshotCoordinatorDiagnostics.set(key, rec);
+      }
+      const data = await calcPair(symbol, tf);
+      const commitResult = _commitTimeframeSnapshot(data, token);
+      const rec = _coordDiag(key);
+      rec.successCount++;
+      rec.inFlight = false;
+      rec.lastCompletedGeneration = token.generation;
+      rec.lastDurationMs = Date.now() - t0;
+      _tfSnapshotCoordinatorDiagnostics.set(key, rec);
+      return { ok: true, data: data, snapshot: commitResult.snapshot, token: token, deduped: false, error: null };
+    } catch (err) {
+      const rec = _coordDiag(key);
+      rec.failureCount++;
+      rec.inFlight = false;
+      rec.lastError = (err && err.message) || String(err);
+      _tfSnapshotCoordinatorDiagnostics.set(key, rec);
+      throw err; // preserve calcPair()'s own throw-based failure contract
+    } finally {
+      _tfSnapshotInFlight.delete(key);
+    }
+  })();
+
+  if (coordinatorOn) {
+    _tfSnapshotInFlight.set(key, {
+      key: key, token: token, promise: promise, source: reason,
+      requestedAt: t0, consumerReasons: [reason || 'unknown'],
+    });
+  }
+
+  return promise;
+}
+
+function getTimeframeSnapshotCoordinatorDiagnostic(symbol, tf) {
+  if (!symbol || !tf) return null;
+  const key = _snapshotKey(symbol, tf);
+  return _tfSnapshotCoordinatorDiagnostics.has(key) ? Object.assign({}, _tfSnapshotCoordinatorDiagnostics.get(key)) : null;
+}
+function clearTimeframeSnapshotCoordinatorDiagnostics() {
+  _tfSnapshotCoordinatorDiagnostics.clear();
+}
+
+// TDAS V4.10.4D — generic immutable partial-update helper. Never mutates
+// the existing snapshot or its data object; always builds and stores a
+// NEW snapshot wrapper wrapping a NEW shallow-cloned+patched data object.
+// Preserves full-calculation provenance (buildTf, builtAt, generation)
+// untouched — a partial update never invents a new full-calculation
+// generation. `updater(existingData)` must be a PURE function returning a
+// plain object of fields to patch onto a clone of existingData; it must
+// not mutate existingData itself.
+//
+// meta.expectedGeneration, if supplied, guards against a stale partial
+// completion: if the snapshot's stored generation has moved on since the
+// caller captured expectedGeneration (a newer full calculation committed
+// in the meantime), the update is rejected and the newer snapshot is left
+// completely untouched.
+function _updateTimeframeSnapshotImmutable(symbol, tf, updater, meta) {
+  const m = meta || {};
+  if (!DIAG.timeframeSnapshotRegistry) return { updated: false, reason: 'registry_disabled', snapshot: null };
+  if (!DIAG.timeframeSnapshotImmutableUpdates) return { updated: false, reason: 'immutable_updates_disabled', snapshot: null };
+  const existing = getTimeframeSnapshot(symbol, tf);
+  if (!existing) return { updated: false, reason: 'missing_snapshot', snapshot: null };
+  if (m.expectedGeneration != null && m.expectedGeneration !== existing.generation) {
+    return { updated: false, reason: 'stale_generation', snapshot: null };
+  }
+  const patch = (typeof updater === 'function' ? updater(existing.data) : null) || {};
+  const clonedData = Object.assign({}, existing.data, patch);
+  const newSnapshot = Object.assign({}, existing, {
+    data: clonedData,
+    priceUpdatedAt: m.priceUpdatedAt !== undefined ? m.priceUpdatedAt : existing.priceUpdatedAt,
+    timingUpdatedAt: m.timingUpdatedAt !== undefined ? m.timingUpdatedAt : existing.timingUpdatedAt,
+    evidenceUpdatedAt: m.evidenceUpdatedAt !== undefined ? m.evidenceUpdatedAt : existing.evidenceUpdatedAt,
+    // buildTf/builtAt/generation intentionally NOT overwritten here — a
+    // partial update never revises full-calculation provenance.
+  });
+  setTimeframeSnapshot(symbol, tf, newSnapshot);
+  return { updated: true, reason: 'updated', snapshot: newSnapshot };
+}
+
+// TDAS V4.10.4D — the only reliable existing source for "which timeframe
+// does this symbol's current registry entry belong to" from a price/
+// timing refresh site that itself has no timeframe context of its own:
+// currentScanData[symbol].tf, set by the same full calculation that
+// (when the registry is enabled) already produced the matching snapshot.
+// Never guessed; returns null (skip registry update) if unavailable.
+function _reliableRegistryTf(symbol) {
+  return (currentScanData[symbol] && currentScanData[symbol].tf) || null;
+}
+// TDAS V4.10.4D — price-only registry mirror. Skips safely (no update,
+// no guess) when the symbol's timeframe cannot be reliably established.
+function _applyPriceUpdateToRegistry(symbol, price) {
+  if (!DIAG.timeframeSnapshotImmutableUpdates) return;
+  const tf = _reliableRegistryTf(symbol);
+  if (!tf) return;
+  _updateTimeframeSnapshotImmutable(symbol, tf, function () { return { price: price }; }, { priceUpdatedAt: Date.now() });
+}
+// TDAS V4.10.4D — 1H-timing registry mirror. Follows the exact existing
+// legacy semantics of _ensure1HTimingFor()/_ensureActiveTrade1HTiming():
+// _1hTiming is attached to whatever currentScanData[symbol] currently is
+// (a 1H setup snapshot directly, or a 4H setup snapshot as supporting
+// timing) — never redirected to a fixed '1h' key regardless of the
+// symbol's actual current setup timeframe. Never overwrites a different
+// symbol/timeframe's snapshot.
+function _applyTimingUpdateToRegistry(symbol, result) {
+  if (!DIAG.timeframeSnapshotImmutableUpdates) return;
+  const tf = _reliableRegistryTf(symbol);
+  if (!tf) return;
+  _updateTimeframeSnapshotImmutable(symbol, tf, function () { return { _1hTiming: result }; }, { timingUpdatedAt: Date.now() });
 }
 
 
@@ -9784,6 +9979,8 @@ const DIAG = {
   timeframeSnapshotRegistry: true, // TDAS V4.10.4B — Dormant Timeframe Snapshot Registry Foundation. Controls ONLY whether successful full calcPair() results are additionally mirrored into the new symbol+timeframe-keyed _tfSnapshots registry (see buildTimeframeSnapshot()/setTimeframeSnapshot()). Does not affect any production read path — currentScanData[symbol] remains the sole source every existing consumer reads in this phase. No render, indicator, Evaluation, Advisory, Watch, Trade, or refresh-scheduling behaviour depends on this flag. Rollback: set back to false to stop registry writes entirely and restore byte-identical V4.10.3S runtime behaviour — no other change required.
   timeframeSnapshotGenerationGuards: true, // TDAS V4.10.4C — controls ONLY whether a dormant registry commit (_commitTimeframeSnapshot()) rejects a stale same-key generation. When false, every structurally valid token commits unconditionally — the exact V4.10.4B last-write-wins fallback, still fully dormant. Never affects currentScanData or any production read path either way. Rollback: set back to false to disable stale-generation rejection only.
   timeframeSnapshotShadowCompare: true, // TDAS V4.10.4C — controls ONLY whether _recordShadowComparison() runs after a successful dormant registry commit. Diagnostic only — compares the committed snapshot's data against the exact object just written to currentScanData at the same mirror site, storing at most one bounded result per symbol+timeframe key. No console output, no alerting, no network work, no rendering, no effect on any strategy or display decision. Rollback: set back to false to stop all shadow-comparison work.
+  timeframeSnapshotCoordinator: true, // TDAS V4.10.4D — controls ONLY whether requestTimeframeSnapshot() deduplicates concurrent same-key requests via _tfSnapshotInFlight. When false, every call performs its own independent token-reserve + calcPair() + guarded commit (the exact V4.10.4C per-call behaviour) with no joining. Never affects currentScanData or any production read path either way — still fully dormant.
+  timeframeSnapshotImmutableUpdates: true, // TDAS V4.10.4D — controls ONLY whether partial (price/1H-timing/evidence-rebuild) updates additionally clone-not-mutate the corresponding dormant registry snapshot via _updateTimeframeSnapshotImmutable(). When false, no registry-side partial update occurs at all (existing legacy currentScanData mutation, which this flag never touches, continues exactly as before). Rollback: set back to false to disable all registry-side partial updates.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -14700,6 +14897,15 @@ function openAnalysisPanel(symbol){
   const _eligibleFor1hTiming = d.tf === '4h';
   if(_eligibleFor1hTiming && typeof _ensure1HTimingFor === 'function'){
     const _before1h = d._1hTiming;
+    // TDAS V4.10.4D — captured BEFORE the async gap below, so the
+    // registry-side mirror can detect (and reject) a newer full
+    // calculation having committed for this exact key while we were
+    // awaiting _ensure1HTimingFor(). null when the registry has no entry
+    // for this key yet (nothing to guard against).
+    const _regExpectedGeneration = (function () {
+      const _s = getTimeframeSnapshot(symbol, d.tf);
+      return _s ? _s.generation : null;
+    })();
     _ensure1HTimingFor(symbol).then(result => {
       // Required re-render sequence: same analysis symbol still open, scan
       // object still exists, only then rebuild evidence and re-render.
@@ -14730,6 +14936,17 @@ function openAnalysisPanel(symbol){
           // buildTradeReadyFrontButtonHtml(), or _scannerTradeReadyLabel().
           if (_didRefreshAsync && typeof renderCard === 'function') {
             renderCard(symbol, _liveD);
+          }
+          // TDAS V4.10.4D — registry-side clone-not-mutate mirror of this
+          // same rebuild. Rejects (leaves the registry untouched) if a
+          // newer full calculation committed for this exact key while we
+          // were awaiting above — see _regExpectedGeneration capture.
+          // Does not alter the V4.10.3P repaint or legacy currentScanData
+          // behaviour above in any way; purely additive.
+          if (_didRefreshAsync) {
+            _updateTimeframeSnapshotImmutable(symbol, _liveD.tf, function () {
+              return { evidence: _liveD.evidence, authoritativeClassification: _liveD.authoritativeClassification };
+            }, { evidenceUpdatedAt: Date.now(), expectedGeneration: _regExpectedGeneration });
           }
         } else if (typeof buildEvidence === 'function') {
           _liveD.evidence = buildEvidence(_liveD, resolveMarketEvidenceEntry(symbol, _liveD.tf));
@@ -15090,11 +15307,10 @@ async function openTradeAnalysis(symbol, tf, btnId) {
   if(btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
 
   try {
-    const _resolvedTf = tf || '4h'; // resolved ONCE — the exact same value is used to reserve the token and to calculate, so the token's buildTf can never disagree with what was actually requested.
-    const _snapToken = _beginSnapshotRequest(symbol, _resolvedTf, 'onDemand');
-    const result = await calcPair(symbol, _resolvedTf);
+    const _resolvedTf = tf || '4h'; // resolved ONCE — the exact same value is passed to the coordinator, to production assignment, and (implicitly, via currentScanData[symbol].tf) to Full Analysis rendering. Never allowed to diverge between reservation and calculation.
+    const _req = await requestTimeframeSnapshot(symbol, _resolvedTf, 'onDemand');
+    const result = _req.data;
     currentScanData[symbol] = result;
-    _commitMirroredSnapshot(_snapToken, result, currentScanData[symbol]);
     openAnalysisPanel(symbol);
   } catch(err) {
     console.warn('[TradeAnalysis] calcPair failed for', symbol, err.message);
@@ -15380,9 +15596,17 @@ function openConfluenceModal(sym, decision){
     }
   }
 
-  // Merge into currentScanData — standard modal reads this
-  if(!currentScanData[sym]) currentScanData[sym] = {};
-  Object.assign(currentScanData[sym], h1, {
+  // Merge into currentScanData — standard modal reads this.
+  // TDAS V4.10.4D — build a NEW merged object rather than mutating
+  // currentScanData[sym] in place: buildTimeframeSnapshot()'s `data: d`
+  // aliases the exact same object into any dormant registry snapshot for
+  // this symbol/tf, so an in-place merge here would silently corrupt that
+  // snapshot's data too. Visible currentScanData read behaviour is
+  // unchanged — callers still read currentScanData[sym] and see exactly
+  // the same merged fields; only the object IDENTITY changes, decoupling
+  // this new object from whatever the registry still references. Neither
+  // source snapshot (h1's own registry entry, if any) is touched.
+  currentScanData[sym] = Object.assign({}, currentScanData[sym], h1, {
     htf:      h4 ? (h4.htf || '1d') : '1d',
     htfAlign: h4 ? (h4.htfAlign || h1.htfAlign) : h1.htfAlign,
   });
@@ -16870,7 +17094,7 @@ async function updateTradeDeskPnL(){
   const symbols=[...new Set(active.map(j=>j.symbol))];
   try{
     const prices = await fetchTickerPrices(symbols);
-    Object.entries(prices).forEach(([sym,px])=>{ if(currentScanData[sym]) currentScanData[sym].price=px; });
+    Object.entries(prices).forEach(([sym,px])=>{ if(currentScanData[sym]) currentScanData[sym].price=px; _applyPriceUpdateToRegistry(sym, px); });
   }catch(e){ console.warn('[API] updateTradeDeskPnL failed:', e.message); }
   // Re-render order ticket cards in place
   active.forEach(e=>{
@@ -16986,6 +17210,7 @@ async function _tdLightweightRefresh(){
     // Update currentScanData price so downstream renderers see fresh price
     Object.entries(prices).forEach(([sym,px])=>{
       if(currentScanData[sym]) currentScanData[sym].price = px;
+      _applyPriceUpdateToRegistry(sym, px);
     });
 
     // Re-render watch cards in-place (current price, entry improvement)
@@ -17043,6 +17268,7 @@ async function _ensureActiveTradeLivePricing(){
 
     Object.entries(prices).forEach(([sym,px])=>{
       if(currentScanData[sym]) currentScanData[sym].price = px;
+      _applyPriceUpdateToRegistry(sym, px);
     });
 
     // Re-render Trade Desk active cards in place, if present in the DOM
@@ -17255,6 +17481,7 @@ async function _timingRefresh() {
       if (result) {
         if (!currentScanData[sym]) currentScanData[sym] = {};
         currentScanData[sym]._1hTiming = result;
+        _applyTimingUpdateToRegistry(sym, result);
         refreshed++;
       } else { failed++; }
     }
@@ -17319,6 +17546,7 @@ async function _ensure1HTimingFor(symbol) {
     if (result) {
       if (!currentScanData[symbol]) currentScanData[symbol] = {};
       currentScanData[symbol]._1hTiming = result;
+      _applyTimingUpdateToRegistry(symbol, result);
     }
     return result;
   })();
@@ -17407,16 +17635,18 @@ async function _tdSignalRefresh(){
   _tdSignalRefreshBusy = true;
   const t0 = Date.now();
   try{
-    // TDAS V4.10.4C — reserve a dormant registry request token per symbol
-    // before this asynchronous batch begins. This path currently has no
-    // per-symbol/timeframe stale-completion protection at all in
-    // production (symTf collapses to one tf per symbol, documented in
-    // this function's own header comment) — the token protects only the
-    // dormant registry key; it does not change which completion wins
-    // currentScanData below.
-    const _snapTokens = {};
-    symbols.forEach(function (sym) { _snapTokens[sym] = _beginSnapshotRequest(sym, symTf[sym], 'tdSignalRefresh'); });
-    const results = await Promise.allSettled(symbols.map(sym => calcPair(sym, symTf[sym])));
+    // TDAS V4.10.4D — dispatch through the coordinator: deduplicates
+    // against a concurrent Scanner request for the same symbol+timeframe
+    // (e.g. a Watch/Trade symbol that also happens to be in PAIRS at the
+    // same tf), sharing one calcPair() call rather than issuing a second
+    // one. Unwrapped immediately back into the exact legacy
+    // {status,value:<raw d>} shape so every existing consumer below is
+    // unchanged. Current production symTf-collapse-to-one-tf-per-symbol
+    // behaviour (documented above) is completely untouched — the
+    // coordinator only protects the dormant registry key, never which
+    // completion wins currentScanData.
+    const _coordResults = await Promise.allSettled(symbols.map(sym => requestTimeframeSnapshot(sym, symTf[sym], 'tdSignalRefresh')));
+    const results = _coordResults.map(r => r.status === 'fulfilled' ? { status: 'fulfilled', value: r.value.data } : r);
     let refreshed = 0, failed = 0;
 
     results.forEach((r, i) => {
@@ -17425,7 +17655,6 @@ async function _tdSignalRefresh(){
         const prev1hTiming = currentScanData[sym] && currentScanData[sym]._1hTiming;
         currentScanData[sym] = r.value;
         if(prev1hTiming) currentScanData[sym]._1hTiming = prev1hTiming; // preserve — not recomputed here
-        _commitMirroredSnapshot(_snapTokens[sym], r.value, currentScanData[sym]);
         refreshed++;
       } else {
         failed++; // non-destructive: currentScanData[sym] and its card are left exactly as they were
@@ -19266,15 +19495,20 @@ async function runScan(auto){
     _statusEl0.className='scanner-result-neutral';
     document.getElementById('summary').innerHTML='';
   }
-  // TDAS V4.10.4C — reserve a dormant registry request token per symbol
-  // BEFORE the asynchronous calcPair() calls below begin (calcPair()
-  // itself is unchanged and unaware of these tokens). This does not
-  // affect legacy behaviour in any way — _scanGeneration (below) remains
-  // the sole protection for the legacy render cycle; these tokens protect
-  // only the still-fully-dormant per-symbol/timeframe registry key.
-  const _snapTokens = {};
-  PAIRS.forEach(function (s) { _snapTokens[s] = _beginSnapshotRequest(s, tf, 'runScan'); });
-  const results=await Promise.allSettled(PAIRS.map(s=>calcPair(s,tf)));
+  // TDAS V4.10.4D — dispatch through the coordinator instead of calling
+  // calcPair() directly: shares one calculation with any concurrent
+  // request for the same symbol+timeframe (e.g. an overlapping
+  // _tdSignalRefresh() cycle for the same pair), while still calling
+  // calcPair() exactly once per genuinely distinct pair, exactly as
+  // before. _scanGeneration (below) remains the SOLE protection for the
+  // legacy whole-scan render cycle — entirely untouched, never replaced
+  // or weakened by this dormant per-key coordination.
+  const _coordResults=await Promise.allSettled(PAIRS.map(s=>requestTimeframeSnapshot(s,tf,'runScan')));
+  // Unwrap back into the EXACT shape every downstream consumer already
+  // expects ({status, value: <raw calcPair() result>}) — the coordinator
+  // migration changes only how the calculation happens, never what any
+  // existing sorting/classification/render code below receives.
+  const results = _coordResults.map(r => r.status === 'fulfilled' ? { status: 'fulfilled', value: r.value.data } : r);
   // Ensure journal is fresh from Sheets before we apply watch/trade routing.
   // On mobile a cold load may have an empty journal; we wait up to 3s for it.
   // This only runs if the journal is still empty and Sheets may have data.
@@ -19443,7 +19677,7 @@ async function runScan(auto){
 
   // Render signal cards (full)
   signalItems.forEach(({r, sym}) => {
-    if(r.status==='fulfilled'){currentScanData[sym]=r.value;_commitMirroredSnapshot(_snapTokens[sym], r.value, currentScanData[sym]);renderCard(sym,r.value);addToHistory(sym,r.value);}
+    if(r.status==='fulfilled'){currentScanData[sym]=r.value;renderCard(sym,r.value);addToHistory(sym,r.value);}
     else if(!auto){
       const msg = r.reason?.message||'Failed to load';
       if(DEBUG_MODE) console.warn(`[runScan] ${sym} failed:`, msg, r.reason);
@@ -19457,7 +19691,6 @@ async function runScan(auto){
   neutralItems.forEach(({r, sym}) => {
     if(r.status==='fulfilled'){
       currentScanData[sym]=r.value;
-      _commitMirroredSnapshot(_snapTokens[sym], r.value, currentScanData[sym]);
       renderNeutralCompact(sym, r.value);
     } else if(!auto){
       const msg = r.reason?.message||'Failed to load';
@@ -19564,6 +19797,7 @@ async function _scannerTickerRefresh(){
     if(!px || !isFinite(px)) return;
     // Update cached scan data — keeps Trade Desk P&L consistent
     if(currentScanData[sym]) currentScanData[sym].price = px;
+    _applyPriceUpdateToRegistry(sym, px);
     // Update visible price span on scanner card only — no re-render, no recalc
     const card = document.getElementById('c-'+sym);
     if(!card) return;
