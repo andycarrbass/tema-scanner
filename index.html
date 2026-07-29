@@ -1400,7 +1400,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   <button class="tab active" data-tab-key="scanner" onclick="showTab('scanner')"><span class="tab-full">🔍 Scanner</span><span class="tab-short">🔍</span></button>
   <button class="tab" data-tab-key="confluence" onclick="showTab('confluence')"><span class="tab-full">🔗 Confluence</span><span class="tab-short">🔗</span> <span id="confCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="watch" onclick="showTab('watch')"><span class="tab-full">👁 Watch</span><span class="tab-short">👁</span> <span id="watchCount" style="font-size:10px;color:var(--text3);"></span></button>
-  <button class="tab" data-tab-key="trade" onclick="showTab('trade')"><span class="tab-full">📈 Trade</span><span class="tab-short">📈</span> <span id="tradeCount" style="font-size:10px;color:var(--text3);"></span></button>
+  <button class="tab" data-tab-key="trade" onclick="showTab('trade')"><span class="tab-full">⚡ Trade</span><span class="tab-short">⚡</span> <span id="tradeCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="journal" onclick="showTab('journal')"><span class="tab-full">📝 Journal</span><span class="tab-short">📝</span> <span id="journalCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="settings" onclick="showTab('settings')"><span class="tab-full">⚙ Instruments</span><span class="tab-short">⚙</span></button>
 </div>
@@ -1437,6 +1437,9 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <h2 style="margin:0;font-size:17px;font-weight:500;">👁 Watchlist</h2>
       <div style="font-size:12px;color:var(--text3);margin-top:2px;">Setups being monitored for entry</div>
     </div>
+  </div>
+  <div class="summary-status-row">
+    <div id="watchLastSync" class="tdas-status-block" style="display:none;"></div>
   </div>
   <div class="trade-col" id="watchCol">
     <div class="trade-col-header">👁 Watching <span id="watchColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
@@ -1678,7 +1681,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0C';
+const APP_BUILD = 'V5.0.0C1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -14164,7 +14167,7 @@ function renderCard(symbol,d){
   } else if(isWatching){
     // Navigation-only status button — no management actions on scanner
     actionZone = '<div class="card-btn-row">'
-      +'<button class="card-btn status-watching" onclick="focusTradeDeskCard(\''+symbol+'\')">\uD83D\uDFE1 Watching →</button>'
+      +'<button class="card-btn status-watching" onclick="focusScannerWatchCard(\''+symbol+'\')">\uD83D\uDFE1 Watching →</button>'
       +'</div>';
   } else if(signal!=='neutral'){
     // alreadyLogged: a non-watching decision (skip/miss) was recorded for this
@@ -14281,6 +14284,34 @@ function focusTradeDeskCard(symbol){
                     : null;
       if(!cardId) return;
       const el = document.getElementById(cardId);
+      if(el){
+        el.scrollIntoView({behavior:'smooth',block:'center'});
+        el.style.transition='box-shadow 0.3s';
+        el.style.boxShadow='0 0 0 2px var(--amber-text)';
+        setTimeout(()=>{ el.style.boxShadow=''; },2200);
+      }
+    });
+  });
+}
+// TDAS V5.0.0C1 — Watch Navigation and Freshness Parity. Scanner-only
+// routing fix for the "Watching" button: before the V5.0.0C Watch/Trade
+// split, focusTradeDeskCard() above always went to Trade (the only page
+// that existed for either watches or trades). Watch cards now live on
+// their own tab, so the Scanner card's "Watching" button must open Watch,
+// not Trade. Deliberately NOT changed in focusTradeDeskCard() itself,
+// which the Confluence tab's identical-pattern "Watching → Trade Desk"
+// button also calls — that surface, and its explicit "Trade Desk"
+// wording, are outside this task's scope (Scanner card only). This is a
+// separate, minimal function used only by the Scanner card's Watching
+// button, so every other existing caller of focusTradeDeskCard() is
+// completely unaffected.
+function focusScannerWatchCard(symbol){
+  const watchE = journal.find(j=>j.symbol===symbol&&isActiveWatch(j));
+  if(!watchE){ focusTradeDeskCard(symbol); return; } // no active watch found — fall back to prior behaviour (e.g. stale card)
+  showTab('watch');
+  requestAnimationFrame(()=>{
+    requestAnimationFrame(()=>{
+      const el = document.getElementById('wcard-'+watchE.id);
       if(el){
         el.scrollIntoView({behavior:'smooth',block:'center'});
         el.style.transition='box-shadow 0.3s';
@@ -18122,10 +18153,21 @@ let _tdRefreshBusy  = false;
 // multiple timeframes, so the '4h' tier is used as the default, same
 // fallback Scanner itself uses for an unrecognised timeframe.
 let _tdPriceLastMs = 0;
+// TDAS V5.0.0C1 — Watch Navigation and Freshness Parity. Now writes the
+// identical freshness HTML to BOTH #tdLastSync (Trade) and #watchLastSync
+// (Watch) from the same underlying state (_tdPriceLastMs/_tdSignalLastMs/
+// _scanLastMs) and the same cadence — one builder, one state model, two
+// display targets, exactly parity rather than a second refresh system.
 function _updateTradeDeskStatusBar(){
-  const el = document.getElementById('tdLastSync');
-  if(!el) return;
-  if(!_tdPriceLastMs){ el.style.display='none'; el.innerHTML=''; return; } // nothing refreshed yet this session
+  const elTrade = document.getElementById('tdLastSync');
+  const elWatch = document.getElementById('watchLastSync');
+  if(!elTrade && !elWatch) return;
+  if(!_tdPriceLastMs){
+    // nothing refreshed yet this session
+    if(elTrade){ elTrade.style.display='none'; elTrade.innerHTML=''; }
+    if(elWatch){ elWatch.style.display='none'; elWatch.innerHTML=''; }
+    return;
+  }
 
   const _cfg = EXCHANGE_CONFIG[ACTIVE_EXCHANGE] || {};
   const _sigSrc   = _cfg.signalSource || _cfg.label || ACTIVE_EXCHANGE;
@@ -18158,11 +18200,13 @@ function _updateTradeDeskStatusBar(){
   const pricesLine =
     '<div style="margin-top:2px;">Prices: <span style="color:var(--green-text);font-weight:600;">'+_priceSrc+' live @ '+priceTime+'</span>'+sep+'auto 30s</div>';
 
-  el.style.display = 'block';
-  el.innerHTML =
+  const html =
     signalsLine
     + pricesLine
     + '<div style="margin-top:4px;opacity:0.8;">Data: signals '+_sigSrc+' &middot; prices '+_priceSrc+'</div>';
+
+  if(elTrade){ elTrade.style.display = 'block'; elTrade.innerHTML = html; }
+  if(elWatch){ elWatch.style.display = 'block'; elWatch.innerHTML = html; }
 }
 
 async function _tdLightweightRefresh(){
