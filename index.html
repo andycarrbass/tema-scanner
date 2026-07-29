@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.4D';
+const APP_BUILD = 'V4.10.4E';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3008,6 +3008,135 @@ function _applyTimingUpdateToRegistry(symbol, result) {
   const tf = _reliableRegistryTf(symbol);
   if (!tf) return;
   _updateTimeframeSnapshotImmutable(symbol, tf, function () { return { _1hTiming: result }; }, { timingUpdatedAt: Date.now() });
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.4E — Scanner Snapshot Compatibility Adapter                 ║
+// ║                                                                          ║
+// ║  The first controlled PRODUCTION READER migration. Resolves symbol +    ║
+// ║  the currently-selected Scanner timeframe against the V4.10.4B–D        ║
+// ║  registry, falling back to legacy currentScanData[symbol] ONLY when its ║
+// ║  own d.tf exactly matches the selected Scanner timeframe — never a      ║
+// ║  wrong-timeframe borrow. currentScanData remains fully writable and     ║
+// ║  production-authoritative everywhere; this adapter only changes HOW a   ║
+// ║  small, explicitly-audited set of Scanner-surface call sites READ it.   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+const _scannerReadDiagnostics = new Map(); // one bounded entry per _snapshotKey(symbol, tf)
+
+// TDAS V4.10.4E — the single authoritative source for "which timeframe is
+// the Scanner currently showing" — the exact same element runScan() itself
+// reads. Never inferred from a snapshot, a Watch/Trade record, or
+// MarketEvidence.sourceTf. Falls back to '4h' ONLY when the #tf element
+// itself does not exist yet (matching that element's own HTML default
+// `<option value="4h" selected>`) — i.e. before the page has finished
+// rendering its own DOM, never as a substitute for a genuinely different
+// selected value.
+function _getSelectedScannerTf() {
+  const el = (typeof document !== 'undefined') ? document.getElementById('tf') : null;
+  return (el && el.value) ? el.value : '4h';
+}
+
+// TDAS V4.10.4E — Scanner compatibility reader. Pure with respect to
+// state (reads only; never writes currentScanData, never writes the
+// registry, never calls calcPair(), never renders).
+//
+// Contract: { data, snapshot, source, tf, reason }
+//   source: 'registry' | 'legacy_fallback' | 'missing'
+//   reason (only set on non-'registry' outcomes, for diagnostics):
+//     'registry_missing' | 'legacy_missing' | 'legacy_wrong_tf' |
+//     'invalid_registry_provenance'
+//
+// When DIAG.scannerSnapshotReader is false: behaves exactly as V4.10.4D —
+// always source:'legacy_fallback'-equivalent (reads currentScanData[symbol]
+// directly, no tf validation added, no registry consulted at all).
+function getScannerSnapshotData(symbol, tfOverride) {
+  const tf = tfOverride || _getSelectedScannerTf();
+  if (!DIAG.scannerSnapshotReader) {
+    const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+    return { data: legacy || null, snapshot: null, source: legacy ? 'legacy_fallback' : 'missing', tf: tf, reason: legacy ? null : 'legacy_missing' };
+  }
+
+  let _invalidProvenance = false;
+  const snapshot = getTimeframeSnapshot(symbol, tf);
+  if (snapshot) {
+    // Validate provenance before trusting it — never return another
+    // timeframe's data under this key by mistake.
+    const provenanceOk =
+      snapshot.tf === tf &&
+      snapshot.buildTf === tf &&
+      !!snapshot.data &&
+      (snapshot.data.tf == null || String(snapshot.data.tf).toLowerCase() === String(tf).toLowerCase());
+    if (provenanceOk) {
+      _recordScannerReadDiagnostic(symbol, tf, snapshot.data, 'registry');
+      return { data: snapshot.data, snapshot: snapshot, source: 'registry', tf: tf, reason: null };
+    }
+    // Fall through to the legacy fallback policy below — an invalid
+    // registry entry is treated exactly like a missing one for this
+    // migration-resilience fallback, never surfaced as registry data.
+    // The diagnostic itself must stay 'invalid_registry_provenance' —
+    // recorded once, below, AFTER the fallback outcome is known, so it is
+    // never silently overwritten by the subsequent missing/legacy_fallback
+    // recording that would otherwise run next.
+    _invalidProvenance = true;
+  }
+
+  const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+  if (legacy && legacy.tf != null && String(legacy.tf).toLowerCase() === String(tf).toLowerCase()) {
+    _recordScannerReadDiagnostic(symbol, tf, legacy, _invalidProvenance ? 'invalid_registry_provenance' : 'legacy_fallback');
+    return { data: legacy, snapshot: null, source: 'legacy_fallback', tf: tf, reason: 'registry_missing' };
+  }
+  const reason = !legacy ? 'legacy_missing' : 'legacy_wrong_tf';
+  _recordScannerReadDiagnostic(symbol, tf, null, _invalidProvenance ? 'invalid_registry_provenance' : 'missing', reason);
+  return { data: null, snapshot: null, source: 'missing', tf: tf, reason: reason };
+}
+
+// TDAS V4.10.4E — bounded shadow-equivalence diagnostic: compares what
+// the registry-backed read returned against a fresh legacy
+// currentScanData[symbol] read for the same key, for a small set of
+// identity/high-value fields. Never affects the returned data or any
+// Scanner decision — diagnostic only, one latest entry per key.
+function _recordScannerReadDiagnostic(symbol, tf, resolvedData, classification, subReason) {
+  const key = _snapshotKey(symbol, tf);
+  const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+  let result = { symbol: symbol, tf: tf, classification: classification, mismatches: [], checkedAt: Date.now() };
+
+  if (classification === 'invalid_registry_provenance') {
+    result.classification = 'invalid_registry_provenance';
+  } else if (classification === 'missing') {
+    result.classification = subReason === 'legacy_wrong_tf' ? 'legacy_wrong_tf' : 'legacy_missing';
+  } else if (classification === 'legacy_fallback') {
+    result.classification = 'registry_missing';
+  } else if (classification === 'registry' && legacy) {
+    const fields = ['symbol', 'tf', 'signal', 'price', 'crossLong', 'crossShort', 'adx', 'aboveTrendSMA'];
+    fields.forEach(function (f) { if (resolvedData[f] !== legacy[f]) result.mismatches.push(f); });
+    const rDir = resolvedData.evidence && resolvedData.evidence.direction;
+    const lDir = legacy.evidence && legacy.evidence.direction;
+    if ((rDir !== undefined || lDir !== undefined) && rDir !== lDir) result.mismatches.push('evidence.direction');
+    const rStage = resolvedData.authoritativeClassification && resolvedData.authoritativeClassification.rawEvaluation && resolvedData.authoritativeClassification.rawEvaluation.stage;
+    const lStage = legacy.authoritativeClassification && legacy.authoritativeClassification.rawEvaluation && legacy.authoritativeClassification.rawEvaluation.stage;
+    if ((rStage !== undefined || lStage !== undefined) && rStage !== lStage) result.mismatches.push('authoritativeClassification.stage');
+    const rReady = resolvedData.authoritativeClassification && resolvedData.authoritativeClassification.tradeReady;
+    const lReady = legacy.authoritativeClassification && legacy.authoritativeClassification.tradeReady;
+    if ((rReady !== undefined || lReady !== undefined) && rReady !== lReady) result.mismatches.push('authoritativeClassification.tradeReady');
+    const rHC = resolvedData.authoritativeClassification && resolvedData.authoritativeClassification.highConviction;
+    const lHC = legacy.authoritativeClassification && legacy.authoritativeClassification.highConviction;
+    if ((rHC !== undefined || lHC !== undefined) && rHC !== lHC) result.mismatches.push('authoritativeClassification.highConviction');
+    if (resolvedData.tradeStage !== legacy.tradeStage) result.mismatches.push('tradeStage');
+    result.classification = result.mismatches.length === 0 ? 'match' : 'field_mismatch';
+  } else if (classification === 'registry' && !legacy) {
+    result.classification = 'match'; // nothing to compare against — treated as trivially consistent, not a failure
+  }
+  _scannerReadDiagnostics.set(key, result);
+}
+
+function getScannerReadDiagnostic(symbol, tf) {
+  if (!symbol) return null;
+  const key = _snapshotKey(symbol, tf || _getSelectedScannerTf());
+  return _scannerReadDiagnostics.has(key) ? Object.assign({}, _scannerReadDiagnostics.get(key)) : null;
+}
+function clearScannerReadDiagnostics() {
+  _scannerReadDiagnostics.clear();
 }
 
 
@@ -9981,6 +10110,7 @@ const DIAG = {
   timeframeSnapshotShadowCompare: true, // TDAS V4.10.4C — controls ONLY whether _recordShadowComparison() runs after a successful dormant registry commit. Diagnostic only — compares the committed snapshot's data against the exact object just written to currentScanData at the same mirror site, storing at most one bounded result per symbol+timeframe key. No console output, no alerting, no network work, no rendering, no effect on any strategy or display decision. Rollback: set back to false to stop all shadow-comparison work.
   timeframeSnapshotCoordinator: true, // TDAS V4.10.4D — controls ONLY whether requestTimeframeSnapshot() deduplicates concurrent same-key requests via _tfSnapshotInFlight. When false, every call performs its own independent token-reserve + calcPair() + guarded commit (the exact V4.10.4C per-call behaviour) with no joining. Never affects currentScanData or any production read path either way — still fully dormant.
   timeframeSnapshotImmutableUpdates: true, // TDAS V4.10.4D — controls ONLY whether partial (price/1H-timing/evidence-rebuild) updates additionally clone-not-mutate the corresponding dormant registry snapshot via _updateTimeframeSnapshotImmutable(). When false, no registry-side partial update occurs at all (existing legacy currentScanData mutation, which this flag never touches, continues exactly as before). Rollback: set back to false to disable all registry-side partial updates.
+  scannerSnapshotReader: true, // TDAS V4.10.4E — controls ONLY whether getScannerSnapshotData() (the Scanner compatibility reader) may resolve the selected-timeframe registry snapshot. When false, it reads legacy currentScanData[symbol] directly with no registry involvement, exactly as V4.10.4D. Affects Scanner-surface reads only — never registry writes, the coordinator, Watch, Trade Desk, Full Analysis, Journal, Confluence, or alerts. Rollback: set back to false to instantly restore V4.10.4D Scanner read behaviour.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -12078,7 +12208,14 @@ function copySnapshotFromJournal(id, btnEl) {
 }
 
 function copySnapshot(symbol, btnEl) {
-  console.log('[CopyClick] copySnapshot symbol:', symbol, 'btnEl:', !!btnEl, 'scanData:', !!currentScanData[symbol]);
+  // TDAS V4.10.4E — existence check now routed through the Scanner
+  // compatibility reader (selected-timeframe, provenance-validated);
+  // buildSnapshot(symbol) itself is UNCHANGED and still reads
+  // currentScanData[symbol] directly — this call site only decides
+  // whether data is available to log, it never substitutes what
+  // buildSnapshot() actually renders.
+  const _scanRead = getScannerSnapshotData(symbol);
+  console.log('[CopyClick] copySnapshot symbol:', symbol, 'btnEl:', !!btnEl, 'scanData:', !!_scanRead.data, 'source:', _scanRead.source);
   var text = buildSnapshot(symbol);
   console.log('[CopyClick] snapshot length:', text ? text.length : 0);
   if (!text) { console.warn('[CopyClick] buildSnapshot returned null — currentScanData['+symbol+']:', !!currentScanData[symbol]); return; }
