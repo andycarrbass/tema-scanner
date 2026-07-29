@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0A';
+const APP_BUILD = 'V5.0.0B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9871,14 +9871,20 @@ function createTradeReadyPaperTrade(symbol) {
     return;
   }
 
-  // Tag the originating Watch entry, if this symbol currently has one —
-  // same lookup quickTakeFromWatch() uses. Without this, saveEntry()'s
-  // existing "Atomic watch → trade commit" step (gated entirely on
-  // window._watchEntryId being set) never fires for trades created via
-  // this route, so the original Watch never gets marked outcome='taken'
-  // and stays visible on the Trading Desk after conversion. This reuses
-  // that same existing commit path — no separate lifecycle mechanism.
-  const watchEntry = journal.find(j => j.symbol === symbol && isActiveWatch(j));
+  // Tag the originating Watch entry, if this symbol currently has one on
+  // THIS exact timeframe (d.tf — the timeframe this Trade Ready trade is
+  // actually being created on). TDAS V5.0.0B — narrowed from a symbol-only
+  // match to symbol+tf: a bare symbol match could previously mislink (and
+  // then incorrectly close, via saveEntry()'s atomic commit step below) an
+  // unrelated Watch open on the OTHER timeframe for the same symbol, which
+  // was never actually converted by this action. Without linking at all,
+  // saveEntry()'s existing "Atomic watch → trade commit" step (gated
+  // entirely on window._watchEntryId being set) never fires for trades
+  // created via this route, so a genuinely-matching Watch never gets
+  // marked outcome='taken' and stays visible on the Trading Desk after
+  // conversion. This reuses that same existing commit path — no separate
+  // lifecycle mechanism.
+  const watchEntry = journal.find(j => j.symbol === symbol && j.tf === d.tf && isActiveWatch(j));
   if (watchEntry) window._watchEntryId = watchEntry.id;
 
   // Stash Trade Ready metadata — saveEntry() attaches these fields onto the
@@ -16368,14 +16374,39 @@ function logDecision(decision){
 }
 
 function openModalFull(symbol,decision){
-  const d=currentScanData[symbol];
+  // TDAS V5.0.0B — Exact-Timeframe Watch→Trade Conversion. When this call
+  // originates from quickTakeFromWatch(), _watchConversionContext carries
+  // the converting Watch's own authoritative {symbol, tf} — consumed and
+  // cleared immediately (one-shot, same handoff pattern as
+  // window._watchEntryId) so it can never leak into an unrelated later
+  // modal open for a different symbol, or a plain Scanner-triggered Log
+  // Decision. Resolution reuses getWatchSnapshotData() — the exact same
+  // registry-backed accessor renderWatchCard() already uses for this
+  // Watch — rather than rebuilding a parallel read of currentScanData,
+  // which is keyed by symbol only and reflects whichever timeframe the
+  // Scanner currently happens to be displaying, not the timeframe this
+  // Watch was actually created on.
+  let _convCtx = null;
+  if (window._watchConversionContext && window._watchConversionContext.symbol === symbol) {
+    _convCtx = window._watchConversionContext;
+  }
+  window._watchConversionContext = null;
+
+  let d, tf;
+  if (_convCtx && _convCtx.tf) {
+    d = getWatchSnapshotData({ symbol: symbol, tf: _convCtx.tf }).data;
+    tf = _convCtx.tf;
+  } else {
+    // Prefer d.tf (the timeframe this card's data was actually computed on)
+    // over the live dropdown — same Audit Fix H3 as createTradeReadyPaperTrade
+    // /buildTradeReadyChecklistHtml. modalData.tf feeds into buildV1Entry's
+    // overrides.tf, which takes priority over d.tf there, so getting it right
+    // here matters for the standard Log Decision flow too.
+    d = currentScanData[symbol];
+    tf = d ? (d.tf || document.getElementById('tf').value) : null;
+  }
   if(!d||d.error)return;
-  // Prefer d.tf (the timeframe this card's data was actually computed on)
-  // over the live dropdown — same Audit Fix H3 as createTradeReadyPaperTrade
-  // /buildTradeReadyChecklistHtml. modalData.tf feeds into buildV1Entry's
-  // overrides.tf, which takes priority over d.tf there, so getting it right
-  // here matters for the standard Log Decision flow too.
-  modalData={symbol,data:d,tf:d.tf||document.getElementById('tf').value};
+  modalData={symbol,data:d,tf:tf||document.getElementById('tf').value};
   selectedDecision=decision;
   selectedOutcome=null;
   const decLabels={took:'📈 Trade',watching:'👁 Watch',skipped:'✗ Skip signal',missed:'⚡ Missed entry'};
@@ -16477,11 +16508,26 @@ function selectOutcome(out){selectedOutcome=out;}
 // Quick-take from a watching card on the scanner
 // Finds the existing watching entry for this symbol and opens the take-trade modal.
 // After save, saveEntry() stamps journalId so the trade links back to the watch record.
-function quickTakeFromWatch(symbol){
-  window._lastLogSymbol = symbol;
+// TDAS V5.0.0B — Exact-Timeframe Watch→Trade Conversion. Identifies the
+// Watch being converted by its own unique journal id — never by symbol
+// alone. The prior symbol-only lookup (journal.find(j => j.symbol ===
+// symbol && isActiveWatch(j))) took whichever matching Watch happened to
+// appear first in the journal array, silently mis-converting the wrong
+// timeframe whenever a symbol had both a 1H and a 4H Watch open at once.
+// _watchConversionContext carries the Watch's own authoritative
+// {symbol, tf} forward as a one-shot handoff (same pattern already used
+// for window._watchEntryId below) so openModalFull() can resolve the
+// exact registry snapshot for THIS Watch's timeframe, instead of
+// currentScanData[symbol] — which reflects whichever timeframe the
+// Scanner currently happens to be displaying for that symbol, not the
+// timeframe this Watch was actually created on.
+function quickTakeFromWatch(watchId){
+  const watchEntry = journal.find(j => j.id === watchId && isActiveWatch(j));
+  if(!watchEntry) return;
+  window._lastLogSymbol = watchEntry.symbol;
   // Tag the watching entry — will be linked when trade is saved
-  const watchEntry = journal.find(j => j.symbol === symbol && isActiveWatch(j));
-  if(watchEntry) window._watchEntryId = watchEntry.id;
+  window._watchEntryId = watchEntry.id;
+  window._watchConversionContext = { symbol: watchEntry.symbol, tf: watchEntry.tf };
   logDecision('took');
 }
 
@@ -16513,8 +16559,14 @@ function saveEntry(){
 
   // Build canonical V1 entry via shared builder
   // Compute entry improvement from watch, if this is a watch→trade conversion
-  // Capture 1H timing state at trade time (from currentScanData._1hTiming)
-  const _1hSnap = currentScanData[modalData.symbol] && currentScanData[modalData.symbol]._1hTiming;
+  // Capture 1H timing state at trade time. TDAS V5.0.0B — reads from `d`
+  // (modalData.data, already resolved above to the exact symbol+tf source
+  // this modal was opened with — the Watch's own registry snapshot on a
+  // Watch→Trade conversion, per getWatchSnapshotData()'s own _1hTiming
+  // field) rather than a fresh currentScanData[symbol] lookup, which is
+  // keyed by symbol only and could reflect a different timeframe than the
+  // one this trade is actually being created on.
+  const _1hSnap = d && d._1hTiming;
   const _oneHourTimingState     = _1hSnap ? _1hSnap.state     : null;
   const _oneHourTimingDirection = _1hSnap ? _1hSnap.direction : null;
   const _oneHourTimingTimestamp = _1hSnap ? _1hSnap.updatedAt : null;
@@ -17792,7 +17844,7 @@ function renderWatchCard(e){
     </div>
     ${noteHtml}
     <div class="watch-actions">
-      <button class="watch-take-btn${fullConf?' ready pulsing':''}" onclick="quickTakeFromWatch('${e.symbol}')">
+      <button class="watch-take-btn${fullConf?' ready pulsing':''}" onclick="quickTakeFromWatch(${e.id})">
         ✓ Convert to trade
       </button>
       <button class="watch-cancel-btn" onclick="closeWatch(${e.id})">✗ Cancel</button>
