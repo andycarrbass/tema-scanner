@@ -1397,11 +1397,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 <!-- Tabs — v2.0: Scan · Confluence ⭐ · Trade 📈 · Journal · Instruments ⚙ -->
 <div class="tabs">
-  <button class="tab active" onclick="showTab('scanner')"><span class="tab-full">🔍 Scanner</span><span class="tab-short">🔍</span></button>
-  <button class="tab" onclick="showTab('confluence')"><span class="tab-full">🔗 Confluence</span><span class="tab-short">🔗</span> <span id="confCount" style="font-size:10px;color:var(--text3);"></span></button>
-  <button class="tab" onclick="showTab('trade')"><span class="tab-full">📈 Trade</span><span class="tab-short">📈</span> <span id="tradeCount" style="font-size:10px;color:var(--text3);"></span></button>
-  <button class="tab" onclick="showTab('journal')"><span class="tab-full">📝 Journal</span><span class="tab-short">📝</span> <span id="journalCount" style="font-size:10px;color:var(--text3);"></span></button>
-  <button class="tab" onclick="showTab('settings')"><span class="tab-full">⚙ Instruments</span><span class="tab-short">⚙</span></button>
+  <button class="tab active" data-tab-key="scanner" onclick="showTab('scanner')"><span class="tab-full">🔍 Scanner</span><span class="tab-short">🔍</span></button>
+  <button class="tab" data-tab-key="confluence" onclick="showTab('confluence')"><span class="tab-full">🔗 Confluence</span><span class="tab-short">🔗</span> <span id="confCount" style="font-size:10px;color:var(--text3);"></span></button>
+  <button class="tab" data-tab-key="trade" onclick="showTab('trade')"><span class="tab-full">📈 Trade</span><span class="tab-short">📈</span> <span id="tradeCount" style="font-size:10px;color:var(--text3);"></span></button>
+  <button class="tab" data-tab-key="journal" onclick="showTab('journal')"><span class="tab-full">📝 Journal</span><span class="tab-short">📝</span> <span id="journalCount" style="font-size:10px;color:var(--text3);"></span></button>
+  <button class="tab" data-tab-key="settings" onclick="showTab('settings')"><span class="tab-full">⚙ Instruments</span><span class="tab-short">⚙</span></button>
 </div>
 
 <!-- Scanner tab -->
@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.4H';
+const APP_BUILD = 'V5.0.0A';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -20315,8 +20315,15 @@ async function globalRefresh(){
 const handleRefresh = globalRefresh;
 
 function showTab(name){
-  const tabNames=['scanner','confluence','trade','journal','settings'];
-  document.querySelectorAll('.tab').forEach((t,i)=>{t.classList.toggle('active',tabNames[i]===name);});
+  // TDAS V5.0.0A — Explicit Tab Keying Foundation. Activation now keys off
+  // each button's own data-tab-key attribute rather than its position in
+  // the DOM. The prior positional tabNames[i]===name mapping silently
+  // relied on .tab element order exactly matching this array's order —
+  // any future reorder/insert (e.g. a V5 Watch tab) would have activated
+  // the wrong button while the correct panel still opened. No behavioural
+  // change for any of the five existing tabs: each button's key is set to
+  // the exact same name this function has always been called with.
+  document.querySelectorAll('.tab').forEach((t)=>{t.classList.toggle('active',t.getAttribute('data-tab-key')===name);});
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   const panel=document.getElementById('tab-'+name);
   if(panel) panel.classList.add('active');
