@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.4E';
+const APP_BUILD = 'V4.10.4F';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3137,6 +3137,214 @@ function getScannerReadDiagnostic(symbol, tf) {
 }
 function clearScannerReadDiagnostics() {
   _scannerReadDiagnostics.clear();
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.4F — Timeframe-Isolated Watch Data Migration                ║
+// ║                                                                          ║
+// ║  Removes the root defect documented in _tdSignalRefresh()'s own         ║
+// ║  comment and the timeframe-foundation audit: currentScanData is keyed   ║
+// ║  only by symbol, so a 4H Scanner scan could silently replace the data a ║
+// ║  1H Watch needed, leaving V4.10.3R's checklist honestly Pending forever ║
+// ║  until a manual same-timeframe rescan. Watch cards now read their exact ║
+// ║  symbol+watch.tf registry snapshot instead. Watch direction remains     ║
+// ║  anchored exclusively to watch.signal throughout (V4.10.3S untouched -- ║
+// ║  this migration changes WHERE evidence comes from, never how direction  ║
+// ║  is applied to it). Scanner, Trade, and Full Analysis readers are not   ║
+// ║  touched by this release.                                               ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+const _watchSnapshotDiagnostics = new Map(); // one bounded entry per _snapshotKey(symbol, tf)
+let _watchRefreshBusy = false; // prevents overlapping _refreshWatchSnapshots() cycles
+
+function _emptyWatchDiagnostic() {
+  return {
+    source: null, generation: null, buildTf: null, builtAt: null,
+    requestedAt: null, completedAt: null, lastSuccessAt: null, lastError: null,
+    pending: false, legacyFallbackUsed: false, wrongTimeframeRejected: false,
+    renderedGeneration: null,
+  };
+}
+function _watchDiag(key) {
+  return _watchSnapshotDiagnostics.get(key) || _emptyWatchDiagnostic();
+}
+
+// TDAS V4.10.4F — Watch compatibility reader. Pure with respect to state
+// (never writes currentScanData, never writes the registry, never calls
+// calcPair(), never renders). Resolves ONLY watchRecord.symbol +
+// watchRecord.tf — the Scanner's currently-selected timeframe is never
+// consulted, matching the required "Scanner-selected timeframe has no
+// effect on Watch read" invariant.
+//
+// Contract: { data, snapshot, source, symbol, tf, status, reason, error }
+//   source: 'registry' | 'legacy_fallback' | 'missing'
+//   status: 'fresh' | 'stale' | 'pending' | 'error' | 'missing'
+//     'fresh'   — data available, no unresolved refresh error
+//     'stale'   — data available (last GOOD snapshot), but the most
+//                 recent refresh attempt for this key failed; the data
+//                 itself is untouched/unreplaced (registry commits never
+//                 happen on failure — see V4.10.4C/D) and remains fully
+//                 displayable with this status attached
+//     'pending' — no data yet, a request is currently in flight
+//     'error'   — no data at all, and the last attempt failed
+//     'missing' — no data, no request in flight, no prior error on record
+function getWatchSnapshotData(watchRecord) {
+  const symbol = watchRecord && watchRecord.symbol;
+  const tf = watchRecord && watchRecord.tf;
+  const key = (symbol && tf) ? _snapshotKey(symbol, tf) : null;
+  const diag = key ? _watchDiag(key) : _emptyWatchDiagnostic();
+
+  if (!DIAG.watchSnapshotReader) {
+    const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+    return { data: legacy || null, snapshot: null, source: legacy ? 'legacy_fallback' : 'missing', symbol: symbol, tf: tf, status: legacy ? 'fresh' : 'missing', reason: null, error: null };
+  }
+
+  const snapshot = (symbol && tf) ? getTimeframeSnapshot(symbol, tf) : null;
+  if (snapshot) {
+    const provenanceOk =
+      snapshot.symbol === symbol &&
+      snapshot.tf === tf &&
+      snapshot.buildTf === tf &&
+      !!snapshot.data &&
+      (snapshot.data.tf == null || String(snapshot.data.tf).toLowerCase() === String(tf).toLowerCase());
+    if (provenanceOk) {
+      const status = diag.lastError && (diag.lastSuccessAt == null || diag.completedAt > diag.lastSuccessAt) ? 'stale' : 'fresh';
+      return { data: snapshot.data, snapshot: snapshot, source: 'registry', symbol: symbol, tf: tf, status: status, reason: null, error: diag.lastError };
+    }
+  }
+
+  // No valid exact registry snapshot. Fall back ONLY to legacy data whose
+  // own tf exactly matches — this is the exact same guard that already
+  // protects the checklist (buildWatchEvidenceModel()'s evidence.valid),
+  // applied here one layer earlier so the Trade Stage / diagnostics see
+  // the same truth. Never borrows mismatched legacy data — this is
+  // precisely the defect being removed, not reintroduced.
+  const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+  if (legacy && legacy.tf != null && String(legacy.tf).toLowerCase() === String(tf).toLowerCase()) {
+    return { data: legacy, snapshot: null, source: 'legacy_fallback', symbol: symbol, tf: tf, status: 'fresh', reason: 'registry_missing', error: null };
+  }
+  if (diag.pending) return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, status: 'pending', reason: 'request_in_flight', error: null };
+  if (diag.lastError) return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, status: 'error', reason: 'refresh_failed', error: diag.lastError };
+  return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, status: 'missing', reason: legacy ? 'legacy_wrong_tf' : 'legacy_missing', error: null };
+}
+
+// TDAS V4.10.4F — active Watch symbol+tf pairs, deduplicated. Pure; does
+// not derive direction, does not touch Trade pairs, does not include
+// closed/removed/historical rows (isActiveWatch() already excludes
+// those, unchanged).
+function _collectRequiredWatchSnapshotPairs() {
+  const seen = new Set();
+  const pairs = [];
+  journal.filter(isActiveWatch).forEach(function (j) {
+    if (!j.symbol || !j.tf) return;
+    const key = _snapshotKey(j.symbol, j.tf);
+    if (seen.has(key)) return;
+    seen.add(key);
+    pairs.push({ symbol: j.symbol, tf: j.tf });
+  });
+  return pairs;
+}
+
+// TDAS V4.10.4F — Watch refresh coordinator. Requests every active Watch
+// pair through the shared requestTimeframeSnapshot() coordinator
+// (V4.10.4D), so an identical concurrent Scanner or Trade request for the
+// same symbol+tf is joined rather than duplicated — never calls
+// calcPair() directly. Failures preserve the last good snapshot
+// automatically (the registry simply never commits on failure); this
+// function only updates bounded per-key diagnostics and repaints the
+// specific Watch cards whose exact key completed.
+async function _refreshWatchSnapshots(reason) {
+  if (!DIAG.watchSnapshotRefresh) return;
+  if (_watchRefreshBusy) return; // avoid overlapping cycles — same convention as _scanRunning/_tdRefreshBusy
+  const pairs = _collectRequiredWatchSnapshotPairs();
+  if (!pairs.length) return;
+  _watchRefreshBusy = true;
+  try {
+    await Promise.allSettled(pairs.map(function (p) {
+      const key = _snapshotKey(p.symbol, p.tf);
+      const rec = _watchDiag(key);
+      rec.pending = true;
+      rec.requestedAt = Date.now();
+      _watchSnapshotDiagnostics.set(key, rec);
+      return requestTimeframeSnapshot(p.symbol, p.tf, reason || 'watchAutoRefresh').then(function (result) {
+        const r2 = _watchDiag(key);
+        r2.pending = false;
+        r2.completedAt = Date.now();
+        r2.lastSuccessAt = Date.now();
+        r2.lastError = null;
+        r2.source = 'registry';
+        r2.generation = result.token && result.token.generation;
+        r2.buildTf = result.token && result.token.buildTf;
+        r2.builtAt = result.snapshot && result.snapshot.builtAt;
+        _watchSnapshotDiagnostics.set(key, r2);
+        // Repaint only the exact Watch cards owning this exact key — never
+        // another timeframe's card, and only if the card currently exists
+        // in the DOM (harmless no-op otherwise, same convention used
+        // throughout this file).
+        journal.filter(isActiveWatch).forEach(function (j) {
+          if (j.symbol === p.symbol && j.tf === p.tf) {
+            const el = document.getElementById('wcard-' + j.id);
+            if (el && typeof renderWatchCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(j); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+          }
+        });
+      }).catch(function (err) {
+        const r2 = _watchDiag(key);
+        r2.pending = false;
+        r2.completedAt = Date.now();
+        r2.lastError = (err && err.message) || String(err);
+        _watchSnapshotDiagnostics.set(key, r2);
+        // Last good snapshot (if any) is untouched — nothing to repaint
+        // with different data, but repaint anyway so the card's
+        // stale/error status text reflects the completed attempt.
+        journal.filter(isActiveWatch).forEach(function (j) {
+          if (j.symbol === p.symbol && j.tf === p.tf) {
+            const el = document.getElementById('wcard-' + j.id);
+            if (el && typeof renderWatchCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(j); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+          }
+        });
+      });
+    }));
+  } finally {
+    _watchRefreshBusy = false;
+  }
+}
+
+// TDAS V4.10.4F — called immediately after a new Watch is created/
+// restored, so it does not wait for the next 5-minute cycle. Deduplicates
+// naturally against any identical in-flight request via the coordinator.
+function _requestWatchSnapshotNow(symbol, tf, reason) {
+  if (!DIAG.watchSnapshotRefresh || !symbol || !tf) return;
+  const key = _snapshotKey(symbol, tf);
+  const rec = _watchDiag(key);
+  rec.pending = true;
+  rec.requestedAt = Date.now();
+  _watchSnapshotDiagnostics.set(key, rec);
+  requestTimeframeSnapshot(symbol, tf, reason || 'watchCreate').then(function (result) {
+    const r2 = _watchDiag(key);
+    r2.pending = false; r2.completedAt = Date.now(); r2.lastSuccessAt = Date.now(); r2.lastError = null;
+    r2.generation = result.token && result.token.generation; r2.buildTf = result.token && result.token.buildTf;
+    r2.builtAt = result.snapshot && result.snapshot.builtAt;
+    _watchSnapshotDiagnostics.set(key, r2);
+    journal.filter(isActiveWatch).forEach(function (j) {
+      if (j.symbol === symbol && j.tf === tf) {
+        const el = document.getElementById('wcard-' + j.id);
+        if (el && typeof renderWatchCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(j); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+      }
+    });
+  }).catch(function (err) {
+    const r2 = _watchDiag(key);
+    r2.pending = false; r2.completedAt = Date.now(); r2.lastError = (err && err.message) || String(err);
+    _watchSnapshotDiagnostics.set(key, r2);
+  });
+}
+
+function getWatchSnapshotDiagnostic(symbol, tf) {
+  if (!symbol || !tf) return null;
+  const key = _snapshotKey(symbol, tf);
+  return _watchSnapshotDiagnostics.has(key) ? Object.assign({}, _watchSnapshotDiagnostics.get(key)) : null;
+}
+function clearWatchSnapshotDiagnostics() {
+  _watchSnapshotDiagnostics.clear();
 }
 
 
@@ -10111,6 +10319,8 @@ const DIAG = {
   timeframeSnapshotCoordinator: true, // TDAS V4.10.4D — controls ONLY whether requestTimeframeSnapshot() deduplicates concurrent same-key requests via _tfSnapshotInFlight. When false, every call performs its own independent token-reserve + calcPair() + guarded commit (the exact V4.10.4C per-call behaviour) with no joining. Never affects currentScanData or any production read path either way — still fully dormant.
   timeframeSnapshotImmutableUpdates: true, // TDAS V4.10.4D — controls ONLY whether partial (price/1H-timing/evidence-rebuild) updates additionally clone-not-mutate the corresponding dormant registry snapshot via _updateTimeframeSnapshotImmutable(). When false, no registry-side partial update occurs at all (existing legacy currentScanData mutation, which this flag never touches, continues exactly as before). Rollback: set back to false to disable all registry-side partial updates.
   scannerSnapshotReader: true, // TDAS V4.10.4E — controls ONLY whether getScannerSnapshotData() (the Scanner compatibility reader) may resolve the selected-timeframe registry snapshot. When false, it reads legacy currentScanData[symbol] directly with no registry involvement, exactly as V4.10.4D. Affects Scanner-surface reads only — never registry writes, the coordinator, Watch, Trade Desk, Full Analysis, Journal, Confluence, or alerts. Rollback: set back to false to instantly restore V4.10.4D Scanner read behaviour.
+  watchSnapshotReader: true, // TDAS V4.10.4F — controls ONLY whether getWatchSnapshotData() resolves the Watch's exact stored symbol+watch.tf registry snapshot. When false, renderWatchCard() reads legacy currentScanData[e.symbol] directly with no registry involvement, exactly as V4.10.4E/V4.10.3R. Never affects Scanner, Trade Desk, or Full Analysis reads.
+  watchSnapshotRefresh: true, // TDAS V4.10.4F — controls ONLY whether Watch records independently request their own symbol+tf snapshots (creation, restoration, and the 5-minute Watch refresh cycle). When false, no new Watch-owned full-calculation requests occur; Watches remain dependent on Scanner/Trade Desk scans happening to cover their timeframe, exactly as before this release.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -15622,6 +15832,22 @@ function buildV1Entry(symbol, d, decision, overrides) {
   entry.utBotSignal = String(entry.utFreshness != null ? entry.utFreshness : 'none');
   entry.closedAt    = entry.closeTimestamp;
 
+  // TDAS V4.10.4F — a fresh Watch requests its own exact symbol+tf
+  // snapshot immediately rather than waiting for the next 5-minute cycle
+  // or a manual Scanner scan. buildV1Entry() is the single canonical
+  // builder for every Watch creation path (modal and auto-log alike), so
+  // this fires exactly once regardless of which UI path created the
+  // entry. Deduplicates naturally against any identical in-flight
+  // request via the shared coordinator (V4.10.4D). No-op if an exact,
+  // fresh registry snapshot already exists — requestTimeframeSnapshot()
+  // still performs its own calculation regardless of registry freshness
+  // (this call always issues a genuine request, matching "request
+  // promptly" — freshness-based skipping is a coordinator/cadence
+  // concern, not this creation hook's).
+  if (decision === 'watching' && entry.symbol && entry.tf) {
+    _requestWatchSnapshotNow(entry.symbol, entry.tf, 'watchCreate');
+  }
+
   return entry;
 }
 
@@ -16930,7 +17156,16 @@ function buildWatchEvidenceModel(liveData, watch) {
 }
 
 function renderWatchCard(e){
-  const liveData=currentScanData[e.symbol];
+  // TDAS V4.10.4F — Timeframe-Isolated Watch Data Migration. liveData now
+  // comes from the exact symbol+watch.tf registry snapshot via
+  // getWatchSnapshotData(), never from the Scanner's currently-selected
+  // timeframe and never a wrong-timeframe legacy borrow. Everything
+  // downstream (adaptAuthoritativeWatchInputs, buildWatchEvidenceModel,
+  // Trade Stage) is completely unchanged — it already only ever consumed
+  // whatever `liveData` this line produced, so this single substitution
+  // is sufficient to migrate the entire card's evidence source.
+  const _watchRead = getWatchSnapshotData(e);
+  const liveData = _watchRead.data;
   const currentPrice=liveData?liveData.price:null;
   // TDAS V4.8 — Watch-Card Evidence Migration. renderWatchCard() no longer
   // interprets raw liveData fields itself for the checklist — dots, pass
@@ -16971,7 +17206,24 @@ function renderWatchCard(e){
   // convention already used elsewhere in this card (Trade Stage, 1H
   // Timing rows) rather than introducing a new CSS class.
   const _progressCountHtml = _tfMatches ? (litCount + '/5') : 'Pending';
-  const _tfPendingNoteHtml = _tfMatches ? '' : `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">Checkpoints pending — refreshing to this watch's ${(e.tf||'').toUpperCase()} timeframe.</div>`;
+  // TDAS V4.10.4F — state-aware pending/stale/error wording, replacing the
+  // single misleading "refreshing to this watch's Xh timeframe" message
+  // (which was shown even when no refresh was actually happening). Uses
+  // _watchRead.status, already resolved above from the exact same reader
+  // that supplied liveData — no new data source, no new mutation.
+  let _tfPendingNoteHtml = '';
+  if (!_tfMatches) {
+    const _tfUp = (e.tf||'').toUpperCase();
+    if (_watchRead.status === 'pending') {
+      _tfPendingNoteHtml = `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">Checkpoints pending — fetching this Watch's ${_tfUp} data.</div>`;
+    } else if (_watchRead.status === 'error') {
+      _tfPendingNoteHtml = `<div style="font-size:11px;margin-bottom:8px;color:var(--red-text);">Refresh failed — no ${_tfUp} data available yet.</div>`;
+    } else {
+      _tfPendingNoteHtml = `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">Checkpoints pending — ${_tfUp} data is not available yet.</div>`;
+    }
+  } else if (_watchRead.status === 'stale') {
+    _tfPendingNoteHtml = `<div style="font-size:11px;margin-bottom:8px;color:var(--amber-text);">Refresh failed — showing last successful ${(e.tf||'').toUpperCase()} data.</div>`;
+  }
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   const dir=e.signal==='long'?'<span class="chip long" style="font-size:12px;">▲ Long</span>':'<span class="chip short" style="font-size:12px;">▼ Short</span>';
   // TDAS V4.8 Evidence Migration — checklist display labels/order are now
@@ -17054,7 +17306,12 @@ function renderWatchCard(e){
       return _storedStage ? `<div style="font-size:11px;margin-bottom:8px;">At watch: ${_badge(_storedStage)}</div>` : '';
     })()}
     ${(()=>{
-      const _t = currentScanData[e.symbol] && currentScanData[e.symbol]._1hTiming;
+      // TDAS V4.10.4F — reads liveData (already resolved above via
+      // getWatchSnapshotData(e)) instead of a fresh direct
+      // currentScanData[e.symbol] lookup — same exact-timeframe source
+      // as the rest of this card, never a second, independently-timed
+      // read of a possibly-different generation.
+      const _t = liveData && liveData._1hTiming;
       if(!_t||!_t.state) return '';
       const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
       return `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">1H Timing: <span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
@@ -20185,6 +20442,17 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
   // TRADE_DESK_REFRESH_MS (30s) matches the cadence Trade Desk itself used.
   setInterval(_ensureActiveTradeLivePricing, TRADE_DESK_REFRESH_MS);
   setTimeout(_ensureActiveTradeLivePricing, 3000);
+
+  // TDAS V4.10.4F — Watch-owned snapshot refresh, tab-independent, same
+  // established pattern as _ensureActiveTrade1HTiming() immediately above
+  // (setInterval for the ongoing 5-minute cadence + a staggered setTimeout
+  // for prompt initial population). Staggered to 5s (after the 3s trade-
+  // timing/pricing kicks above) specifically so Watch restoration never
+  // competes with or blocks the Scanner's own initial runScan() — it is
+  // requested, not awaited, and shares in-flight deduplication with
+  // Scanner/Trade via the coordinator regardless of exact timing.
+  setInterval(function(){ _refreshWatchSnapshots('watchAutoRefresh'); }, TIMING_REFRESH_MS);
+  setTimeout(function(){ _refreshWatchSnapshots('watchRestore'); }, 5000);
 })();
 </script>
 
