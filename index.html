@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.4F';
+const APP_BUILD = 'V4.10.4G';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3345,6 +3345,212 @@ function getWatchSnapshotDiagnostic(symbol, tf) {
 }
 function clearWatchSnapshotDiagnostics() {
   _watchSnapshotDiagnostics.clear();
+}
+
+function isActiveTrade(j) {
+  return !!j && !j.deleted && j.decision === 'took' && !j.outcome;
+}
+
+function getActiveTradeSetupTf(tradeRecord) {
+  const tf = tradeRecord && tradeRecord.tf;
+  return (tf === '1h' || tf === '4h') ? tf : null;
+}
+function getActiveTradeSupportTf(tradeRecord) {
+  const setupTf = getActiveTradeSetupTf(tradeRecord);
+  if (setupTf === '1h') return '4h';
+  if (setupTf === '4h') return '1h';
+  return null;
+}
+
+const _tradeSnapshotDiagnostics = new Map();
+
+function _emptyTradeDiagnostic() {
+  return {
+    tradeId: null, symbol: null, storedTf: null, setupTf: null, supportTf: null,
+    setupSource: null, supportSource: null,
+    setupGeneration: null, supportGeneration: null,
+    setupBuildTf: null, supportBuildTf: null,
+    setupBuiltAt: null, supportBuiltAt: null,
+    setupPending: false, supportPending: false,
+    setupLastSuccess: null, supportLastSuccess: null,
+    setupLastError: null, supportLastError: null,
+    legacySetupFallbackUsed: false, legacySupportFallbackUsed: false,
+    wrongTimeframeSetupRejected: false, wrongTimeframeSupportRejected: false,
+    renderedSetupGeneration: null, renderedSupportGeneration: null,
+  };
+}
+function _tradeDiag(tradeId) {
+  return _tradeSnapshotDiagnostics.get(tradeId) || _emptyTradeDiagnostic();
+}
+
+function getActiveTradeSnapshotData(tradeRecord) {
+  const symbol = tradeRecord && tradeRecord.symbol;
+  const tf = getActiveTradeSetupTf(tradeRecord);
+  const tradeId = tradeRecord && tradeRecord.id;
+  const diag = (tradeId != null) ? _tradeDiag(tradeId) : _emptyTradeDiagnostic();
+
+  if (!symbol || !tf) {
+    return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'setup', status: 'missing', reason: 'unsupported_timeframe', error: null };
+  }
+
+  if (!DIAG.tradeSnapshotReader) {
+    const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+    return { data: legacy || null, snapshot: null, source: legacy ? 'legacy_fallback' : 'missing', symbol: symbol, tf: tf, role: 'setup', status: legacy ? 'fresh' : 'missing', reason: null, error: null };
+  }
+
+  const snapshot = getTimeframeSnapshot(symbol, tf);
+  if (snapshot) {
+    const provenanceOk =
+      snapshot.symbol === symbol && snapshot.tf === tf && snapshot.buildTf === tf &&
+      !!snapshot.data && (snapshot.data.tf == null || String(snapshot.data.tf).toLowerCase() === String(tf).toLowerCase());
+    if (provenanceOk) {
+      const status = diag.setupLastError && (diag.setupLastSuccess == null || (diag.setupCompletedAt || 0) > diag.setupLastSuccess) ? 'stale' : 'fresh';
+      return { data: snapshot.data, snapshot: snapshot, source: 'registry', symbol: symbol, tf: tf, role: 'setup', status: status, reason: null, error: diag.setupLastError };
+    }
+  }
+
+  const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+  if (legacy && legacy.tf != null && String(legacy.tf).toLowerCase() === String(tf).toLowerCase()) {
+    return { data: legacy, snapshot: null, source: 'legacy_fallback', symbol: symbol, tf: tf, role: 'setup', status: 'fresh', reason: 'registry_missing', error: null };
+  }
+  if (diag.setupPending) return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'setup', status: 'pending', reason: 'request_in_flight', error: null };
+  if (diag.setupLastError) return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'setup', status: 'error', reason: 'refresh_failed', error: diag.setupLastError };
+  return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'setup', status: 'missing', reason: legacy ? 'legacy_wrong_tf' : 'legacy_missing', error: null };
+}
+
+function getActiveTradeSupportSnapshotData(tradeRecord) {
+  const symbol = tradeRecord && tradeRecord.symbol;
+  const tf = getActiveTradeSupportTf(tradeRecord);
+  const tradeId = tradeRecord && tradeRecord.id;
+  const diag = (tradeId != null) ? _tradeDiag(tradeId) : _emptyTradeDiagnostic();
+
+  if (!symbol || !tf) {
+    return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'support', status: 'missing', reason: 'unsupported_timeframe', error: null };
+  }
+
+  if (!DIAG.tradeSupportSnapshotReader) {
+    const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+    return { data: legacy || null, snapshot: null, source: legacy ? 'legacy_fallback' : 'missing', symbol: symbol, tf: tf, role: 'support', status: legacy ? 'fresh' : 'missing', reason: null, error: null };
+  }
+
+  const snapshot = getTimeframeSnapshot(symbol, tf);
+  if (snapshot) {
+    const provenanceOk =
+      snapshot.symbol === symbol && snapshot.tf === tf && snapshot.buildTf === tf &&
+      !!snapshot.data && (snapshot.data.tf == null || String(snapshot.data.tf).toLowerCase() === String(tf).toLowerCase());
+    if (provenanceOk) {
+      const status = diag.supportLastError && (diag.supportLastSuccess == null || (diag.supportCompletedAt || 0) > diag.supportLastSuccess) ? 'stale' : 'fresh';
+      return { data: snapshot.data, snapshot: snapshot, source: 'registry', symbol: symbol, tf: tf, role: 'support', status: status, reason: null, error: diag.supportLastError };
+    }
+  }
+
+  const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+  if (legacy && legacy.tf != null && String(legacy.tf).toLowerCase() === String(tf).toLowerCase()) {
+    return { data: legacy, snapshot: null, source: 'legacy_fallback', symbol: symbol, tf: tf, role: 'support', status: 'fresh', reason: 'registry_missing', error: null };
+  }
+  if (diag.supportPending) return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'support', status: 'pending', reason: 'request_in_flight', error: null };
+  if (diag.supportLastError) return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'support', status: 'error', reason: 'refresh_failed', error: diag.supportLastError };
+  return { data: null, snapshot: null, source: 'missing', symbol: symbol, tf: tf, role: 'support', status: 'missing', reason: legacy ? 'legacy_wrong_tf' : 'legacy_missing', error: null };
+}
+
+function _collectRequiredActiveTradeSnapshotPairs() {
+  const seen = new Map();
+  journal.filter(isActiveTrade).forEach(function (j) {
+    const setupTf = getActiveTradeSetupTf(j);
+    const supportTf = getActiveTradeSupportTf(j);
+    if (j.symbol && setupTf) {
+      const k = _snapshotKey(j.symbol, setupTf);
+      if (!seen.has(k)) seen.set(k, { symbol: j.symbol, tf: setupTf, roles: new Set() });
+      seen.get(k).roles.add('setup');
+    }
+    if (j.symbol && supportTf) {
+      const k = _snapshotKey(j.symbol, supportTf);
+      if (!seen.has(k)) seen.set(k, { symbol: j.symbol, tf: supportTf, roles: new Set() });
+      seen.get(k).roles.add('support');
+    }
+  });
+  return Array.from(seen.values()).map(function (v) { return { symbol: v.symbol, tf: v.tf, roles: Array.from(v.roles) }; });
+}
+
+let _tradeRefreshBusy = false;
+async function _refreshActiveTradeSnapshots(reason) {
+  if (!DIAG.tradeSnapshotRefresh) return;
+  if (_tradeRefreshBusy) return;
+  const pairs = _collectRequiredActiveTradeSnapshotPairs();
+  if (!pairs.length) return;
+  _tradeRefreshBusy = true;
+  try {
+    await Promise.allSettled(pairs.map(function (p) {
+      return requestTimeframeSnapshot(p.symbol, p.tf, reason || 'tradeAutoRefresh').then(function (result) {
+        journal.filter(isActiveTrade).forEach(function (j) {
+          const setupTf = getActiveTradeSetupTf(j);
+          const supportTf = getActiveTradeSupportTf(j);
+          const touchesThisTrade = (j.symbol === p.symbol) && (setupTf === p.tf || supportTf === p.tf);
+          if (!touchesThisTrade) return;
+          const rec = _tradeDiag(j.id);
+          rec.tradeId = j.id; rec.symbol = j.symbol; rec.storedTf = j.tf; rec.setupTf = setupTf; rec.supportTf = supportTf;
+          if (setupTf === p.tf) {
+            rec.setupPending = false; rec.setupLastSuccess = Date.now(); rec.setupLastError = null;
+            rec.setupSource = 'registry'; rec.setupGeneration = result.token && result.token.generation;
+            rec.setupBuildTf = result.token && result.token.buildTf; rec.setupBuiltAt = result.snapshot && result.snapshot.builtAt;
+          }
+          if (supportTf === p.tf) {
+            rec.supportPending = false; rec.supportLastSuccess = Date.now(); rec.supportLastError = null;
+            rec.supportSource = 'registry'; rec.supportGeneration = result.token && result.token.generation;
+            rec.supportBuildTf = result.token && result.token.buildTf; rec.supportBuiltAt = result.snapshot && result.snapshot.builtAt;
+          }
+          _tradeSnapshotDiagnostics.set(j.id, rec);
+          const el = document.getElementById('otcard-' + j.id);
+          if (el && typeof renderOrderTicketCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderOrderTicketCard(j); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+        });
+      }).catch(function (err) {
+        journal.filter(isActiveTrade).forEach(function (j) {
+          const setupTf = getActiveTradeSetupTf(j);
+          const supportTf = getActiveTradeSupportTf(j);
+          const touchesThisTrade = (j.symbol === p.symbol) && (setupTf === p.tf || supportTf === p.tf);
+          if (!touchesThisTrade) return;
+          const rec = _tradeDiag(j.id);
+          rec.tradeId = j.id; rec.symbol = j.symbol;
+          if (setupTf === p.tf) { rec.setupPending = false; rec.setupLastError = (err && err.message) || String(err); }
+          if (supportTf === p.tf) { rec.supportPending = false; rec.supportLastError = (err && err.message) || String(err); }
+          _tradeSnapshotDiagnostics.set(j.id, rec);
+        });
+      });
+    }));
+  } finally {
+    _tradeRefreshBusy = false;
+  }
+}
+
+function _requestActiveTradeSnapshotsNow(tradeRecord, reason) {
+  if (!DIAG.tradeSnapshotRefresh || !tradeRecord || !tradeRecord.symbol) return;
+  const setupTf = getActiveTradeSetupTf(tradeRecord);
+  const supportTf = getActiveTradeSupportTf(tradeRecord);
+  [setupTf, supportTf].forEach(function (tf) {
+    if (!tf) return;
+    requestTimeframeSnapshot(tradeRecord.symbol, tf, reason || 'tradeCreate').then(function (result) {
+      const rec = _tradeDiag(tradeRecord.id);
+      rec.tradeId = tradeRecord.id; rec.symbol = tradeRecord.symbol; rec.storedTf = tradeRecord.tf; rec.setupTf = setupTf; rec.supportTf = supportTf;
+      if (tf === setupTf) { rec.setupPending = false; rec.setupLastSuccess = Date.now(); rec.setupLastError = null; rec.setupGeneration = result.token && result.token.generation; rec.setupBuildTf = result.token && result.token.buildTf; }
+      if (tf === supportTf) { rec.supportPending = false; rec.supportLastSuccess = Date.now(); rec.supportLastError = null; rec.supportGeneration = result.token && result.token.generation; rec.supportBuildTf = result.token && result.token.buildTf; }
+      _tradeSnapshotDiagnostics.set(tradeRecord.id, rec);
+      const el = document.getElementById('otcard-' + tradeRecord.id);
+      if (el && typeof renderOrderTicketCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderOrderTicketCard(tradeRecord); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+    }).catch(function (err) {
+      const rec = _tradeDiag(tradeRecord.id);
+      rec.tradeId = tradeRecord.id; rec.symbol = tradeRecord.symbol;
+      if (tf === setupTf) { rec.setupPending = false; rec.setupLastError = (err && err.message) || String(err); }
+      if (tf === supportTf) { rec.supportPending = false; rec.supportLastError = (err && err.message) || String(err); }
+      _tradeSnapshotDiagnostics.set(tradeRecord.id, rec);
+    });
+  });
+}
+
+function getTradeSnapshotDiagnostic(tradeId) {
+  return _tradeSnapshotDiagnostics.has(tradeId) ? Object.assign({}, _tradeSnapshotDiagnostics.get(tradeId)) : null;
+}
+function clearTradeSnapshotDiagnostics() {
+  _tradeSnapshotDiagnostics.clear();
 }
 
 
@@ -10321,6 +10527,9 @@ const DIAG = {
   scannerSnapshotReader: true, // TDAS V4.10.4E — controls ONLY whether getScannerSnapshotData() (the Scanner compatibility reader) may resolve the selected-timeframe registry snapshot. When false, it reads legacy currentScanData[symbol] directly with no registry involvement, exactly as V4.10.4D. Affects Scanner-surface reads only — never registry writes, the coordinator, Watch, Trade Desk, Full Analysis, Journal, Confluence, or alerts. Rollback: set back to false to instantly restore V4.10.4D Scanner read behaviour.
   watchSnapshotReader: true, // TDAS V4.10.4F — controls ONLY whether getWatchSnapshotData() resolves the Watch's exact stored symbol+watch.tf registry snapshot. When false, renderWatchCard() reads legacy currentScanData[e.symbol] directly with no registry involvement, exactly as V4.10.4E/V4.10.3R. Never affects Scanner, Trade Desk, or Full Analysis reads.
   watchSnapshotRefresh: true, // TDAS V4.10.4F — controls ONLY whether Watch records independently request their own symbol+tf snapshots (creation, restoration, and the 5-minute Watch refresh cycle). When false, no new Watch-owned full-calculation requests occur; Watches remain dependent on Scanner/Trade Desk scans happening to cover their timeframe, exactly as before this release.
+  tradeSnapshotReader: true, // TDAS V4.10.4G — controls ONLY whether getActiveTradeSnapshotData() resolves an active Trade's exact setup-timeframe (trade.tf) registry snapshot. When false, renderOrderTicketCard() reads legacy currentScanData[e.symbol] directly, exactly as V4.10.4F. Never affects Scanner, Watch, or Full Analysis reads.
+  tradeSupportSnapshotReader: true, // TDAS V4.10.4G — controls ONLY whether getActiveTradeSupportSnapshotData() resolves an active Trade's exact adjacent-timeframe (support) registry snapshot, used for support-only pending/error diagnostics. Independent of tradeSnapshotReader.
+  tradeSnapshotRefresh: true, // TDAS V4.10.4G — controls ONLY whether active Trades independently request their own setup+support symbol+tf snapshots (creation, restoration, and the shared 5-minute managed-surface refresh cycle). When false, no new Trade-owned full-calculation requests occur.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -15848,6 +16057,15 @@ function buildV1Entry(symbol, d, decision, overrides) {
     _requestWatchSnapshotNow(entry.symbol, entry.tf, 'watchCreate');
   }
 
+  // TDAS V4.10.4G — same canonical-builder hook pattern as the Watch hook
+  // immediately above, for 'took' (active Trade) decisions only. Never
+  // fires for watching/skipped/missed/cancelled — buildV1Entry()'s own
+  // decision parameter is checked directly, so this cannot be triggered
+  // by Watch creation or closed-decision paths.
+  if (decision === 'took' && entry.symbol && entry.tf) {
+    _requestActiveTradeSnapshotsNow(entry, 'tradeCreate');
+  }
+
   return entry;
 }
 
@@ -17333,7 +17551,32 @@ function renderWatchCard(e){
 }
 
 function renderOrderTicketCard(e){
-  const liveData=currentScanData[e.symbol];
+  // TDAS V4.10.4G — Timeframe-Isolated Active Trade Data Migration.
+  // liveData now comes from the exact symbol+trade.tf (setup timeframe)
+  // registry snapshot via getActiveTradeSnapshotData(), never from
+  // whichever timeframe currentScanData[e.symbol] happened to hold last.
+  // buildAdvisory(liveData, {openTrade:e}) below is completely unchanged
+  // — it already only ever consumed whatever this line produced, so this
+  // single substitution migrates primary lifecycle, Trade Stage, HOLD/
+  // REVIEW, TEMA/UT/ADX/RSI interpretation, and HTF confirmation wording
+  // together. HTF/1D confirmation is already embedded in this SAME
+  // setup-timeframe calcPair() result (calcPair() fetches both tf and htf
+  // klines in one call) — no separate snapshot is needed or fabricated
+  // for that. The genuinely separate 1H execution-timing warning for 4H
+  // trades continues to flow through _1hTiming (liveData._1hTiming below),
+  // already correctly timeframe-isolated by V4.10.4F's
+  // _applyTimingUpdateToRegistry().
+  const _tradeRead = getActiveTradeSnapshotData(e);
+  const liveData = _tradeRead.data;
+  // TDAS V4.10.4G — compact support-only status. Never hides a valid
+  // setup card — only ever adds a small informational line when the
+  // adjacent-timeframe support snapshot is not yet available, using the
+  // wording the spec requires per setup direction (1H trade awaits 4H;
+  // 4H trade awaits 1H).
+  const _supportRead = getActiveTradeSupportSnapshotData(e);
+  const _supportStatusHtml = (_supportRead.data == null && (_supportRead.status === 'pending' || _supportRead.status === 'missing'))
+    ? `<div style="font-size:10px;margin-bottom:6px;color:var(--text3);opacity:0.85;">${(_supportRead.tf||'').toUpperCase()} ${e.tf === '1h' ? 'confirmation' : 'execution'} data pending.</div>`
+    : '';
   const livePrice=liveData?liveData.price:null;
   const entryPx=e.actualEntry||e.price;
   let pnlHtml='';
@@ -17451,9 +17694,16 @@ function renderOrderTicketCard(e){
     </div>
     ${advisoryHtml}
     ${pnlHtml}
+    ${_supportStatusHtml}
     ${e.tradeStage ? `<div style="font-size:10px;margin:4px 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
     ${(()=>{
-      const _t = currentScanData[e.symbol] && currentScanData[e.symbol]._1hTiming;
+      // TDAS V4.10.4G — reads liveData (already resolved above via
+      // getActiveTradeSnapshotData(e)) instead of a fresh direct
+      // currentScanData[e.symbol] lookup — same exact-setup-timeframe
+      // source as the rest of this card. The 1H timing evidence itself
+      // remains the same _1hTiming mechanism, already registry-isolated
+      // via V4.10.4F's _applyTimingUpdateToRegistry().
+      const _t = liveData && liveData._1hTiming;
       if(!_t||!_t.state) return '';
       const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
       return `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">1H Timing: <span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
@@ -20443,16 +20693,24 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
   setInterval(_ensureActiveTradeLivePricing, TRADE_DESK_REFRESH_MS);
   setTimeout(_ensureActiveTradeLivePricing, 3000);
 
-  // TDAS V4.10.4F — Watch-owned snapshot refresh, tab-independent, same
-  // established pattern as _ensureActiveTrade1HTiming() immediately above
-  // (setInterval for the ongoing 5-minute cadence + a staggered setTimeout
-  // for prompt initial population). Staggered to 5s (after the 3s trade-
-  // timing/pricing kicks above) specifically so Watch restoration never
-  // competes with or blocks the Scanner's own initial runScan() — it is
-  // requested, not awaited, and shares in-flight deduplication with
-  // Scanner/Trade via the coordinator regardless of exact timing.
-  setInterval(function(){ _refreshWatchSnapshots('watchAutoRefresh'); }, TIMING_REFRESH_MS);
-  setTimeout(function(){ _refreshWatchSnapshots('watchRestore'); }, 5000);
+  // TDAS V4.10.4F/G — one shared managed-surface (Watch + active Trade)
+  // snapshot refresh tick, tab-independent, same established pattern as
+  // _ensureActiveTrade1HTiming() immediately above (setInterval for the
+  // ongoing 5-minute cadence + a staggered setTimeout for prompt initial
+  // population). V4.10.4G deliberately consolidates the active-Trade
+  // refresh into this SAME tick rather than adding a second parallel
+  // timer — both calls share in-flight deduplication with each other, the
+  // Scanner, and one another via the coordinator regardless of call
+  // order, so firing them together (rather than at two independently
+  // staggered moments) is strictly safer, not riskier: any overlapping
+  // symbol+tf pair (e.g. a Watch and an active Trade on the same
+  // symbol/timeframe) is guaranteed to be requested in the same tick and
+  // therefore always joins one calculation, never two near-simultaneous
+  // ones. Staggered to 5s (after the 3s trade-timing/pricing kicks above)
+  // so restoration never competes with or blocks the Scanner's own
+  // initial runScan() — both calls are requested, not awaited.
+  setInterval(function(){ _refreshWatchSnapshots('watchAutoRefresh'); _refreshActiveTradeSnapshots('tradeAutoRefresh'); }, TIMING_REFRESH_MS);
+  setTimeout(function(){ _refreshWatchSnapshots('watchRestore'); _refreshActiveTradeSnapshots('tradeRestore'); }, 5000);
 })();
 </script>
 
