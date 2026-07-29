@@ -1671,7 +1671,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V4.10.4G';
+const APP_BUILD = 'V4.10.4H';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2689,6 +2689,12 @@ function _commitTimeframeSnapshot(d, token) {
   rec.source = snapshot.source;
   _tfSnapshotRegistryDiagnostics.set(key, rec);
 
+  // TDAS V4.10.4H — smallest safe same-key live-update mechanism: notify
+  // an open Full Analysis panel only if this exact committed key matches
+  // its currently open request. See _notifyFullAnalysisOfCommit()'s own
+  // header comment. No-op (guarded internally) if no panel is open, or if
+  // the function itself is not yet defined for a given test sandbox.
+  if (typeof _notifyFullAnalysisOfCommit === 'function') _notifyFullAnalysisOfCommit(token.symbol, token.tf);
   return { committed: true, reason: 'committed', snapshot: snapshot };
 }
 
@@ -3551,6 +3557,166 @@ function getTradeSnapshotDiagnostic(tradeId) {
 }
 function clearTradeSnapshotDiagnostics() {
   _tradeSnapshotDiagnostics.clear();
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V4.10.4H — Timeframe-Explicit Full Analysis Migration             ║
+// ║                                                                          ║
+// ║  Same root defect as V4.10.4F/G, now for Full Analysis: symbol-only     ║
+// ║  openAnalysisPanel(symbol) could open against whichever timeframe last  ║
+// ║  occupied currentScanData[symbol], not necessarily the exact card/      ║
+// ║  Watch/Trade that launched it. The panel now carries an explicit        ║
+// ║  {symbol, tf, consumer, consumerId, direction, snapshotRole} request,   ║
+// ║  resolved through the exact same registry-first/same-tf-legacy-fallback ║
+// ║  contract already proven for Watch (V4.10.4F) and Trade (V4.10.4G).     ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+let _currentFullAnalysisRequest = null; // the single open panel's complete request context
+const _faSnapshotDiagnostics = new Map(); // bounded, one entry per _snapshotKey(symbol, tf) — most recent request only
+let _faRequestSeq = 0; // monotonic id, distinguishes successive requests for the SAME key (stale-completion guard)
+
+function _emptyFaDiagnostic() {
+  return {
+    requestId: null, symbol: null, tf: null, consumer: null, consumerId: null, snapshotRole: null,
+    sourceUsed: null, generation: null, buildTf: null, builtAt: null,
+    openedAt: null, refreshRequestedAt: null, refreshCompletedAt: null,
+    lastSuccess: null, lastError: null, pending: false,
+    legacyFallbackUsed: false, wrongTimeframeLegacyRejected: false,
+    renderedGeneration: null, staleCompletionRejected: false,
+    sameKeyUpdateAccepted: false, differentKeyUpdateIgnored: false,
+  };
+}
+function _faDiag(key) {
+  return _faSnapshotDiagnostics.get(key) || _emptyFaDiagnostic();
+}
+function getFullAnalysisDiagnostic(symbol, tf) {
+  if (!symbol || !tf) return null;
+  const key = _snapshotKey(symbol, tf);
+  return _faSnapshotDiagnostics.has(key) ? Object.assign({}, _faSnapshotDiagnostics.get(key)) : null;
+}
+function clearFullAnalysisDiagnostics() {
+  _faSnapshotDiagnostics.clear();
+}
+
+// TDAS V4.10.4H — pure request normalizer. Never reads the current
+// Scanner selector, never infers from MarketEvidence.sourceTf. Only
+// 'scanner'|'watch'|'trade' are valid consumers.
+function normalizeFullAnalysisRequest(input) {
+  if (typeof input === 'string') {
+    // Legacy string form — symbol only. Deliberately NOT guessed further
+    // here; the caller (openAnalysisPanel()) applies the documented
+    // legacy-wrapper policy (derive tf from the SAME object's own .tf,
+    // never a different timeframe) and tags consumer:'legacy'. This
+    // function itself only reports what it was actually given.
+    return { symbol: input || null, tf: null, consumer: 'legacy', consumerId: null, direction: null, snapshotRole: 'primary', valid: false, reason: 'legacy_string_input' };
+  }
+  const req = input || {};
+  const symbol = req.symbol || null;
+  const tf = (req.tf === '1h' || req.tf === '4h') ? req.tf : null;
+  const consumer = (req.consumer === 'scanner' || req.consumer === 'watch' || req.consumer === 'trade') ? req.consumer : null;
+  const consumerId = req.consumerId != null ? req.consumerId : null;
+  const direction = req.direction || null;
+  const snapshotRole = (req.snapshotRole === 'setup' || req.snapshotRole === 'primary') ? req.snapshotRole : 'primary';
+  if (!symbol) return { symbol, tf, consumer, consumerId, direction, snapshotRole, valid: false, reason: 'missing_symbol' };
+  if (!tf) return { symbol, tf, consumer, consumerId, direction, snapshotRole, valid: false, reason: 'missing_or_unsupported_tf' };
+  if (!consumer) return { symbol, tf, consumer, consumerId, direction, snapshotRole, valid: false, reason: 'invalid_consumer' };
+  return { symbol, tf, consumer, consumerId, direction, snapshotRole, valid: true, reason: null };
+}
+
+// TDAS V4.10.4H — Full Analysis snapshot reader. Same shape/contract as
+// getWatchSnapshotData()/getActiveTradeSnapshotData(): never consults the
+// selected Scanner timeframe, never returns another timeframe, never
+// mutates, never renders.
+function getFullAnalysisSnapshotData(request) {
+  const req = normalizeFullAnalysisRequest(request);
+  if (!req.valid) {
+    return { data: null, snapshot: null, source: 'invalid', symbol: req.symbol, tf: req.tf, consumer: req.consumer, consumerId: req.consumerId, status: 'invalid', reason: req.reason, error: null };
+  }
+  const { symbol, tf, consumer, consumerId } = req;
+  const key = _snapshotKey(symbol, tf);
+  const diag = _faDiag(key);
+
+  if (!DIAG.fullAnalysisSnapshotReader) {
+    const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+    return { data: legacy || null, snapshot: null, source: legacy ? 'legacy_fallback' : 'missing', symbol, tf, consumer, consumerId, status: legacy ? 'fresh' : 'missing', reason: null, error: null };
+  }
+
+  const snapshot = getTimeframeSnapshot(symbol, tf);
+  if (snapshot) {
+    const provenanceOk =
+      snapshot.symbol === symbol && snapshot.tf === tf && snapshot.buildTf === tf &&
+      !!snapshot.data && (snapshot.data.tf == null || String(snapshot.data.tf).toLowerCase() === String(tf).toLowerCase());
+    if (provenanceOk) {
+      const status = diag.lastError && (diag.lastSuccess == null || (diag.refreshCompletedAt || 0) > diag.lastSuccess) ? 'stale' : 'fresh';
+      return { data: snapshot.data, snapshot: snapshot, source: 'registry', symbol, tf, consumer, consumerId, status: status, reason: null, error: diag.lastError };
+    }
+  }
+  const legacy = (typeof currentScanData !== 'undefined' && currentScanData) ? currentScanData[symbol] : null;
+  if (legacy && legacy.tf != null && String(legacy.tf).toLowerCase() === String(tf).toLowerCase()) {
+    return { data: legacy, snapshot: null, source: 'legacy_fallback', symbol, tf, consumer, consumerId, status: 'fresh', reason: 'registry_missing', error: null };
+  }
+  if (diag.pending) return { data: null, snapshot: null, source: 'missing', symbol, tf, consumer, consumerId, status: 'pending', reason: 'request_in_flight', error: null };
+  if (diag.lastError) return { data: null, snapshot: null, source: 'missing', symbol, tf, consumer, consumerId, status: 'error', reason: 'refresh_failed', error: diag.lastError };
+  return { data: null, snapshot: null, source: 'missing', symbol, tf, consumer, consumerId, status: 'missing', reason: legacy ? 'legacy_wrong_tf' : 'legacy_missing', error: null };
+}
+
+// TDAS V4.10.4H — requests the exact missing/stale snapshot through the
+// shared coordinator. Generation-safe: only repaints if, at completion
+// time, the panel is STILL open on this exact request (symbol+tf+
+// consumer+consumerId all match _currentFullAnalysisRequest) — an older
+// request superseded by a newer one (different symbol/tf, or the panel
+// closed) is silently discarded, never repainting the wrong panel.
+function _requestFullAnalysisSnapshot(req, mySeq) {
+  if (!DIAG.fullAnalysisSnapshotRefresh) return;
+  const key = _snapshotKey(req.symbol, req.tf);
+  const rec = _faDiag(key);
+  rec.pending = true; rec.refreshRequestedAt = Date.now();
+  rec.symbol = req.symbol; rec.tf = req.tf; rec.consumer = req.consumer; rec.consumerId = req.consumerId; rec.snapshotRole = req.snapshotRole;
+  _faSnapshotDiagnostics.set(key, rec);
+  requestTimeframeSnapshot(req.symbol, req.tf, 'fullAnalysis').then(function (result) {
+    const r2 = _faDiag(key);
+    r2.pending = false; r2.refreshCompletedAt = Date.now(); r2.lastSuccess = Date.now(); r2.lastError = null;
+    r2.sourceUsed = 'registry'; r2.generation = result.token && result.token.generation;
+    r2.buildTf = result.token && result.token.buildTf; r2.builtAt = result.snapshot && result.snapshot.builtAt;
+    _faSnapshotDiagnostics.set(key, r2);
+    const stillCurrent = _currentFullAnalysisRequest && mySeq === _currentFullAnalysisRequest._seq &&
+      _currentFullAnalysisRequest.symbol === req.symbol && _currentFullAnalysisRequest.tf === req.tf &&
+      _currentFullAnalysisRequest.consumer === req.consumer && _currentFullAnalysisRequest.consumerId === req.consumerId;
+    if (stillCurrent) {
+      r2.renderedGeneration = r2.generation;
+      _faSnapshotDiagnostics.set(key, r2);
+      openAnalysisPanel(req);
+    } else {
+      r2.staleCompletionRejected = true;
+      _faSnapshotDiagnostics.set(key, r2);
+    }
+  }).catch(function (err) {
+    const r2 = _faDiag(key);
+    r2.pending = false; r2.refreshCompletedAt = Date.now(); r2.lastError = (err && err.message) || String(err);
+    _faSnapshotDiagnostics.set(key, r2);
+    const stillCurrent = _currentFullAnalysisRequest && mySeq === _currentFullAnalysisRequest._seq;
+    if (stillCurrent) openAnalysisPanel(req); // re-render to show the truthful error/last-good state
+  });
+}
+
+// TDAS V4.10.4H — the smallest safe "same-key live update" mechanism: a
+// direct call from _commitTimeframeSnapshot()'s own success path (below),
+// rather than a broader event bus. Refreshes the open panel ONLY when the
+// committed key exactly matches the currently open request's symbol+tf;
+// any other committed key is explicitly ignored and recorded as such.
+function _notifyFullAnalysisOfCommit(symbol, tf) {
+  if (!_currentFullAnalysisRequest) return;
+  const key = _snapshotKey(symbol, tf);
+  const openKey = _snapshotKey(_currentFullAnalysisRequest.symbol, _currentFullAnalysisRequest.tf);
+  const rec = _faDiag(key);
+  if (key === openKey) {
+    rec.sameKeyUpdateAccepted = true;
+    _faSnapshotDiagnostics.set(key, rec);
+    openAnalysisPanel(_currentFullAnalysisRequest);
+  } else {
+    rec.differentKeyUpdateIgnored = true;
+    _faSnapshotDiagnostics.set(key, rec);
+  }
 }
 
 
@@ -10530,6 +10696,9 @@ const DIAG = {
   tradeSnapshotReader: true, // TDAS V4.10.4G — controls ONLY whether getActiveTradeSnapshotData() resolves an active Trade's exact setup-timeframe (trade.tf) registry snapshot. When false, renderOrderTicketCard() reads legacy currentScanData[e.symbol] directly, exactly as V4.10.4F. Never affects Scanner, Watch, or Full Analysis reads.
   tradeSupportSnapshotReader: true, // TDAS V4.10.4G — controls ONLY whether getActiveTradeSupportSnapshotData() resolves an active Trade's exact adjacent-timeframe (support) registry snapshot, used for support-only pending/error diagnostics. Independent of tradeSnapshotReader.
   tradeSnapshotRefresh: true, // TDAS V4.10.4G — controls ONLY whether active Trades independently request their own setup+support symbol+tf snapshots (creation, restoration, and the shared 5-minute managed-surface refresh cycle). When false, no new Trade-owned full-calculation requests occur.
+  fullAnalysisTimeframeExplicit: true, // TDAS V4.10.4H — controls ONLY whether openAnalysisPanel() requires/normalizes an explicit {symbol,tf,consumer,...} request. When false, preserves V4.10.4G symbol-only launch behaviour (openAnalysisPanel(symbol) reads currentScanData[symbol] directly, no normalization, no consumer context).
+  fullAnalysisSnapshotReader: true, // TDAS V4.10.4H — controls ONLY whether getFullAnalysisSnapshotData() resolves the panel's exact symbol+tf registry snapshot. When false, the panel reads legacy currentScanData[symbol] directly.
+  fullAnalysisSnapshotRefresh: true, // TDAS V4.10.4H — controls ONLY whether a missing/stale exact Full Analysis snapshot may be requested through the shared coordinator. When false, the panel renders only whatever data/fallback state already exists.
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -12981,7 +13150,7 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
       <div class="cz-spacer"></div>
       <div class="cz-actions">
         <div class="card-btn-row"><button class="card-btn view-trade" onclick="focusTradeDeskCard('${symbol}')">View Trade \u2192</button></div>
-        <button class="analysis-btn" onclick="openAnalysisPanel('${symbol}')" style="margin-top:6px;">\u25b6 Show full analysis</button>
+        <button class="analysis-btn" onclick="openAnalysisPanel({symbol:'${symbol}',tf:'${openTrade.tf}',consumer:'trade',consumerId:${openTrade.id},direction:'${openTrade.signal}',snapshotRole:'setup'})" style="margin-top:6px;">\u25b6 Show full analysis</button>
       </div>
     `,
   };
@@ -13991,11 +14160,11 @@ function renderCard(symbol,d){
       ? '<button class="card-btn secondary" style="cursor:default;" disabled>\u2713 '+(sameTfRecent.decision==='missed'?'Missed':'Skipped')+'</button>'
       : '<button class="card-btn" onclick="openLogChoice(event,\''+symbol+'\')">+ Log decision</button>';
   } else {
-    actionZone = '<button class="card-btn secondary" onclick="openAnalysisPanel(\''+symbol+'\')">View analysis</button>';
+    actionZone = '<button class="card-btn secondary" onclick="openAnalysisPanel({symbol:\''+symbol+'\',tf:\''+d.tf+'\',consumer:\'scanner\',snapshotRole:\'primary\'})">View analysis</button>';
   }
   // Analysis is an instrument-inspection feature, not a signal-only feature.
   // Show for every rendered card — signal state does not gatekeep analysis access.
-  const analysisBtn = '<button class="analysis-btn" onclick="openAnalysisPanel(\''+symbol+'\')" style="margin-top:6px;">\u25b6 Show full analysis</button>';
+  const analysisBtn = '<button class="analysis-btn" onclick="openAnalysisPanel({symbol:\''+symbol+'\',tf:\''+d.tf+'\',consumer:\'scanner\',snapshotRole:\'primary\'})" style="margin-top:6px;">\u25b6 Show full analysis</button>';
   // TDAS TRADE READY Phase 4 — static front button, scanner (non-active)
   // cards only. Returns '' when not tradeReady, per buildTradeReadyFrontButtonHtml.
   const tradeReadyBtnHtml = (typeof buildTradeReadyFrontButtonHtml==='function')
@@ -15349,8 +15518,72 @@ function _logMarketEvidenceShadowDisagreement(symbol, d, openTrade){
 }
 
 // ── Analysis slide-over panel ─────────────────────────────────────────────
-function openAnalysisPanel(symbol){
-  const d = currentScanData[symbol];
+// TDAS V4.10.4H — minimal, bounded panel state for pending/error/invalid
+// Full Analysis requests. Opens the exact same overlay/panel/title/body
+// elements the full content-rendering path uses, but deliberately does
+// NOT attempt to render any content section (which all assume a fully
+// populated calcPair() result) — shows only the context and the truthful
+// status message, per the required wording.
+function _showFullAnalysisMessage(symbol, tf, consumer, message) {
+  const overlay = document.getElementById('analysisOverlay');
+  const panel   = document.getElementById('analysisPanel');
+  const title   = document.getElementById('apTitle');
+  const body    = document.getElementById('apBody');
+  if(!overlay||!panel||!title||!body) return;
+  const _tfLabel = tf ? tf.toUpperCase() : '—';
+  const _consumerLabel = consumer === 'watch' ? 'Watch' : consumer === 'trade' ? 'Active Trade' : consumer === 'scanner' ? 'Scanner' : '';
+  title.textContent = (LABELS[symbol]||symbol||'—') + (tf ? ' · ' + _tfLabel : '') + (_consumerLabel ? ' · ' + _consumerLabel : '') + ' — Analysis';
+  body.innerHTML = `<div style="padding:24px;color:var(--text3);font-size:13px;">${message}</div>`;
+  overlay.classList.add('open');
+  requestAnimationFrame(()=>{ panel.classList.add('open'); });
+}
+
+function openAnalysisPanel(request){
+  // TDAS V4.10.4H — Timeframe-Explicit Full Analysis Migration. Accepts
+  // either the new {symbol,tf,consumer,consumerId,direction,snapshotRole}
+  // request object, or (legacy string / flag-off) a bare symbol — the
+  // legacy path is byte-identical to V4.10.4G. Every line of content-
+  // building code below this block is completely unchanged and still
+  // operates on the same local `d`/`symbol` variables it always has.
+  let symbol, d;
+  if (!DIAG.fullAnalysisTimeframeExplicit || typeof request === 'string') {
+    symbol = (typeof request === 'string') ? request : (request && request.symbol);
+    d = currentScanData[symbol];
+    if(!d) return;
+    _currentFullAnalysisRequest = null;
+  } else {
+    const req = normalizeFullAnalysisRequest(request);
+    symbol = req.symbol;
+    if (!req.valid) {
+      _openAnalysisSymbol = symbol;
+      _currentFullAnalysisRequest = null;
+      _showFullAnalysisMessage(symbol, req.tf, req.consumer, 'Full Analysis could not open because its timeframe context was missing.');
+      return;
+    }
+    _faRequestSeq++;
+    const _mySeq = _faRequestSeq;
+    _currentFullAnalysisRequest = Object.assign({}, req, { _seq: _mySeq, openedGeneration: _mySeq });
+    const _faRead = getFullAnalysisSnapshotData(req);
+    if (!_faRead.data) {
+      _openAnalysisSymbol = symbol;
+      const diagKey = _snapshotKey(req.symbol, req.tf);
+      const diag = _faDiag(diagKey);
+      if (!diag.pending && DIAG.fullAnalysisSnapshotRefresh) _requestFullAnalysisSnapshot(req, _mySeq);
+      const _tfUp = (req.tf || '').toUpperCase();
+      const _msg = _faRead.status === 'pending' ? `Full Analysis pending — fetching ${symbol}/USDT ${_tfUp} data.`
+        : _faRead.status === 'error' ? `Full Analysis refresh failed — no ${symbol}/USDT ${_tfUp} data is available yet.`
+        : `Full Analysis unavailable — ${symbol}/USDT ${_tfUp} data is not available yet.`;
+      _showFullAnalysisMessage(symbol, req.tf, req.consumer, _msg);
+      return;
+    }
+    if (_faRead.status === 'stale') {
+      const diagKey = _snapshotKey(req.symbol, req.tf);
+      const rec = _faDiag(diagKey);
+      rec.pending = false;
+      _faSnapshotDiagnostics.set(diagKey, rec);
+    }
+    d = _faRead.data;
+  }
   if(!d) return;
   _openAnalysisSymbol = symbol;
   // TDAS Phase 1.5 — late-binding fallback: compute d.evaluation if absent.
@@ -15508,7 +15741,12 @@ function openAnalysisPanel(symbol){
           _liveD.evidence = buildEvidence(_liveD, resolveMarketEvidenceEntry(symbol, _liveD.tf));
           _liveD._evidenceBuiltFrom1hTiming = _liveD._1hTiming;
         }
-        openAnalysisPanel(symbol);
+        // TDAS V4.10.4H — re-open with the SAME request context that was
+        // open when this async continuation began (captured once,
+        // outside this closure, immediately below at continuation start)
+        // rather than degrading to a symbol-only re-open, which would
+        // lose tf/consumer context on every 1H-timing-triggered refresh.
+        openAnalysisPanel(_currentFullAnalysisRequest || symbol);
       }
     });
   }
@@ -15518,7 +15756,13 @@ function openAnalysisPanel(symbol){
   const body    = document.getElementById('apBody');
   if(!overlay||!panel||!title||!body) return;
 
-  title.textContent = (LABELS[symbol]||symbol) + ' — Analysis';
+  // TDAS V4.10.4H — smallest truthful addition: symbol/timeframe/consumer
+  // context, so the user can see exactly which card/Watch/Trade context
+  // this panel is analysing. Falls back to the pre-V4.10.4H title exactly
+  // when no explicit request is current (legacy/flag-off path).
+  title.textContent = _currentFullAnalysisRequest
+    ? (LABELS[symbol]||symbol) + ' · ' + _currentFullAnalysisRequest.tf.toUpperCase() + ' · ' + (_currentFullAnalysisRequest.consumer==='watch'?'Watch':_currentFullAnalysisRequest.consumer==='trade'?'Active Trade':'Scanner') + ' — Analysis'
+    : (LABELS[symbol]||symbol) + ' — Analysis';
 
   // Build the analysis content from cached scan data
   const {
@@ -15850,10 +16094,17 @@ function closeAnalysisPanel(){
 // runs calcPair(symbol, tf) on demand, stores the result, then opens the panel.
 // The calling button is disabled during the fetch to prevent double-taps.
 // On failure a clear status message is shown rather than silent no-op.
-async function openTradeAnalysis(symbol, tf, btnId) {
+// TDAS V4.10.4H — extended with consumer/consumerId/direction so Watch
+// and Trade launchers (its only two callers) can pass explicit Full
+// Analysis request context through to openAnalysisPanel(), instead of
+// degrading to a symbol-only open. All three new params are optional;
+// when DIAG.fullAnalysisTimeframeExplicit is false, openAnalysisPanel()
+// itself falls back to its exact V4.10.4G symbol-only behaviour anyway.
+async function openTradeAnalysis(symbol, tf, btnId, consumer, consumerId, direction) {
+  const _req = { symbol: symbol, tf: tf, consumer: consumer || 'legacy', consumerId: consumerId != null ? consumerId : null, direction: direction || null, snapshotRole: consumer === 'trade' ? 'setup' : 'primary' };
   // Fast path — scan data already present
   if(currentScanData[symbol] && currentScanData[symbol].price) {
-    openAnalysisPanel(symbol);
+    openAnalysisPanel(_req);
     return;
   }
 
@@ -15864,10 +16115,10 @@ async function openTradeAnalysis(symbol, tf, btnId) {
 
   try {
     const _resolvedTf = tf || '4h'; // resolved ONCE — the exact same value is passed to the coordinator, to production assignment, and (implicitly, via currentScanData[symbol].tf) to Full Analysis rendering. Never allowed to diverge between reservation and calculation.
-    const _req = await requestTimeframeSnapshot(symbol, _resolvedTf, 'onDemand');
-    const result = _req.data;
+    const _snap = await requestTimeframeSnapshot(symbol, _resolvedTf, 'onDemand');
+    const result = _snap.data;
     currentScanData[symbol] = result;
-    openAnalysisPanel(symbol);
+    openAnalysisPanel(_req);
   } catch(err) {
     console.warn('[TradeAnalysis] calcPair failed for', symbol, err.message);
     _setSyncStatus('⚠ Analysis unavailable — check connection');
@@ -17546,7 +17797,7 @@ function renderWatchCard(e){
       </button>
       <button class="watch-cancel-btn" onclick="closeWatch(${e.id})">✗ Cancel</button>
     </div>
-    <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}')" style="margin-top:6px;">&#9654; Show full analysis</button>
+    <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','watch',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
   </div>`;
 }
 
@@ -17719,7 +17970,7 @@ function renderOrderTicketCard(e){
     <button class="close-trade-btn ${isLong?'close-long':'close-short'}" onclick="openOutcomeModal(${e.id},null)">
       ✕ Close ${isLong?'long':'short'} → log to journal
     </button>
-    <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}')" style="margin-top:6px;">&#9654; Show full analysis</button>
+    <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','trade',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
   </div>`;
 }
 
@@ -19995,7 +20246,7 @@ function renderNeutralCompact(symbol, d){
     +'<span class="'+adxClass+'">ADX '+adxVal+'</span>'
     +'<span class="nc-tema-state" style="color:'+temaColor+';">'+temaState+'</span>'
     +'<span class="nc-spacer"></span>'
-    +'<button class="nc-analysis-btn" data-sym="'+symbol+'" onclick="event.stopPropagation();openAnalysisPanel(this.dataset.sym);">▶ Analysis</button>';
+    +'<button class="nc-analysis-btn" data-sym="'+symbol+'" data-tf="'+d.tf+'" onclick="event.stopPropagation();openAnalysisPanel({symbol:this.dataset.sym,tf:this.dataset.tf,consumer:\'scanner\',snapshotRole:\'primary\'});">▶ Analysis</button>';
 }
 
 // ── Grid skeleton ────────────────────────────────────────────────────────
