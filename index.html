@@ -1439,15 +1439,23 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     </div>
   </div>
   <div class="summary-status-row">
+    <div id="watch-page-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0;"></div>
     <div id="watchLastSync" class="tdas-status-block" style="display:none;"></div>
   </div>
-  <div class="trade-col" id="watchCol">
-    <div class="trade-col-header">👁 Watching <span id="watchColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
-    <div id="watchCards" class="trade-cards-grid"></div>
+  <div id="watchEmptyAll" class="trade-col-empty" style="display:none;">No setups currently being watched</div>
+  <div class="trade-desk-grid" id="watchGrid">
+    <div class="trade-col" id="watch1hCol">
+      <div class="trade-col-header">1H Watches <span id="watch1hColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
+      <div id="watch1hCards" class="trade-cards-grid"></div>
+    </div>
+    <div class="trade-col" id="watch4hCol">
+      <div class="trade-col-header">4H Watches <span id="watch4hColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
+      <div id="watch4hCards" class="trade-cards-grid"></div>
+    </div>
   </div>
 </div>
 
-<!-- Trade tab — v2.0 live monitoring desk (V5.0.0C: active trades only) -->
+<!-- Trade tab — v2.0 live monitoring desk (V5.0.0C: active trades only; V5.0.0D: 1H/4H twin columns) -->
 <div id="tab-trade" class="tab-panel">
   <div class="trade-desk-header">
     <div>
@@ -1462,21 +1470,27 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div id="trade-desk-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0;"></div>
     <div id="tdLastSync" class="tdas-status-block" style="display:none;"></div>
   </div>
-  <!-- TF-0: setup-timeframe display filter — same pill row pattern as the Journal filter bar. Display-only: filters which trades render; never triggers a scan or fetch. -->
+  <!-- TF-0: setup-timeframe display filter — same pill row pattern as the Journal filter bar. Display-only: controls which of the two sections below are shown; never triggers a scan or fetch. -->
   <div class="journal-filter-bar" id="tradeDeskFilterBar">
     <button class="jf-btn active" data-tdfilter="all" onclick="setTradeDeskSetupFilter('all')">All</button>
     <button class="jf-btn" data-tdfilter="1h" onclick="setTradeDeskSetupFilter('1h')">1H Setups</button>
     <button class="jf-btn" data-tdfilter="4h" onclick="setTradeDeskSetupFilter('4h')">4H Setups</button>
-    <span id="activeTfTradeDesk" class="htf-note" style="margin-left:4px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span>
   </div>
-  <div class="trade-col" id="activeCol">
-    <div class="trade-col-header">⚡ Active trades <span id="activeColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
-    <div id="activeTradeCards" class="trade-cards-grid"></div>
+  <div class="trade-desk-grid" id="tradeGrid">
+    <div class="trade-col" id="trade1hCol">
+      <div class="trade-col-header">1H Active Trades <span id="trade1hColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
+      <div id="trade1hCards" class="trade-cards-grid"></div>
+    </div>
+    <div class="trade-col" id="trade4hCol">
+      <div class="trade-col-header">4H Active Trades <span id="trade4hColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
+      <div id="trade4hCards" class="trade-cards-grid"></div>
+    </div>
   </div>
   <!-- Closed trades history table -->
   <div id="closedTradesSection" style="margin-top:24px;">
     <div style="font-size:13px;font-weight:500;color:var(--text2);margin-bottom:12px;padding-top:16px;border-top:1px solid var(--border);">Closed trades</div>
     <div id="tradeCards"></div>
+
   </div>
 </div>
 
@@ -1681,7 +1695,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0C1';
+const APP_BUILD = 'V5.0.0D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -17491,39 +17505,133 @@ function _tdSetupFilterMatch(j){
   if(_tradeDeskSetupFilter === 'all') return true;
   return String(j.tf||'').toLowerCase() === _tradeDeskSetupFilter;
 }
+// TDAS V5.0.0D — Watch and Trade Workspace Layout. The Trade page now has
+// two permanent sections (1H Active Trades / 4H Active Trades) instead of
+// one filtered list, so the filter's job changes from filtering individual
+// cards to toggling which section(s) are visible: All shows both, 1H/4H
+// shows only that section. _tdSetupFilterMatch() itself is left
+// unchanged/unused by renderTradeDesk() below (several retained tests
+// assert its presence and behaviour, and it costs nothing to keep).
 function setTradeDeskSetupFilter(f){
   _tradeDeskSetupFilter = f;
   document.querySelectorAll('#tradeDeskFilterBar .jf-btn').forEach(b=>b.classList.toggle('active',b.dataset.tdfilter===f));
   renderTradeDesk(); // re-render immediately from existing data — no scan, no fetch
 }
-// TDAS V5.0.0C — Dedicated Watch Page. Extracted from the former combined
-// renderTradeDesk() — this now owns the Watch column exclusively. No TF-0
-// filter here per this phase's scope lock ("simple relocated list, no
-// new filters") — the existing TF-0 filter bar remains Trade-only, on
-// the Trade page, filtering active trades exactly as it already did.
-function renderWatchPage(){
-  const watchesAll=journal.filter(j=>isActiveWatch(j));
 
-  const watchEl=document.getElementById('watchCards');
-  const watchCount=document.getElementById('watchColCount');
-  if(watchCount) watchCount.textContent=watchesAll.length?`(${watchesAll.length})`:'';
-  if(!watchesAll.length){
-    if(watchEl) watchEl.innerHTML='<div class="trade-col-empty">No watches active.<br>Hit <strong>Log decision → Watch</strong> on a scanner card.</div>';
+// TDAS V5.0.0D — shared twin-column section renderer, reused by both the
+// Watch page (1H/4H Watches) and the Trade page (1H/4H Active Trades) —
+// one rendering path, not two near-duplicate ones. `renderCardFn` is
+// whichever existing, unchanged card renderer (renderWatchCard /
+// renderOrderTicketCard) the caller already used.
+function _renderCardSection(cardsId, countId, list, emptyMsg, renderCardFn){
+  const el = document.getElementById(cardsId);
+  const countEl = document.getElementById(countId);
+  if(countEl) countEl.textContent = list.length ? `(${list.length})` : '';
+  if(!list.length){
+    if(el) el.innerHTML = `<div class="trade-col-empty">${emptyMsg}</div>`;
   } else {
     // Phantom cards ensure the column always renders at correct width (min 1 phantom)
-    const phantomCount=Math.max(0,1-watchesAll.length);
-    const phantoms='<div class="trade-phantom"></div>'.repeat(phantomCount);
-    if(watchEl) watchEl.innerHTML=watchesAll.map(e=>renderWatchCard(e)).join('')+phantoms;
+    const phantomCount = Math.max(0, 1 - list.length);
+    const phantoms = '<div class="trade-phantom"></div>'.repeat(phantomCount);
+    if(el) el.innerHTML = list.map(e=>renderCardFn(e)).join('') + phantoms;
+  }
+}
+
+// TDAS V5.0.0D correction — Watch-card entry-quality calculation,
+// extracted from renderWatchCard()'s own inline entry-quality-row block
+// into a single shared, reusable function. Both the card's own
+// "Better long/short entry (+X.X%)" message and the Watch page summary's
+// "Better entry" count now derive from this one canonical calculation —
+// never duplicated, never approximated from _1hTiming text or rendered
+// copy. Returns the raw improvement percentage (direction-aware: long
+// compares entry-down-to-current, short compares current-up-from-entry),
+// or null when the comparison cannot be made (no current price, or no
+// recorded entry/signal price) — callers decide their own threshold.
+function _computeWatchEntryImprovementPct(e, currentPrice){
+  const _sp = e.signalPrice || e.price;
+  if(!currentPrice || !_sp) return null;
+  return e.signal === 'long'
+    ? (_sp - currentPrice) / _sp * 100
+    : (currentPrice - _sp) / _sp * 100;
+}
+
+// TDAS V5.0.0D — Watch page summary boxes. Reuses the exact same
+// evidence-model functions renderWatchCard() already calls for each
+// card (getWatchSnapshotData / adaptAuthoritativeWatchInputs /
+// buildWatchEvidenceModel) — no new evidence computation, no new source
+// of truth.
+// TDAS V5.0.0D correction — "Improving" (which read liveData._1hTiming.state
+// text) replaced with "Better entry", counted via _computeWatchEntryImprovementPct()
+// above — the same canonical, direction-aware price comparison the card's
+// own "Better long/short entry (+X.X%)" message already uses. A Watch
+// counts as Better entry when the current price genuinely offers a better
+// entry than the recorded entry/signal price in its own signal direction
+// (_improvement > 0) — Pending/missing-price Watches (null) never count.
+// "Avg progress" excludes Watches without valid (timeframe-matched)
+// evidence from the average, rather than fabricating a 0% for a Pending
+// card — same "never fabricate" principle evidence.valid/_progressCountHtml
+// already apply on the card itself.
+function _computeWatchSummary(watchesAll){
+  const oneH = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='1h').length;
+  const fourH = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='4h').length;
+  let betterEntry = 0, progressSum = 0, progressCount = 0;
+  watchesAll.forEach(e=>{
+    const liveData = getWatchSnapshotData(e).data;
+    const currentPrice = liveData ? liveData.price : null;
+    const _improvement = _computeWatchEntryImprovementPct(e, currentPrice);
+    if(_improvement !== null && _improvement >= 1.0){
+      betterEntry++;
+    }
+    const watchEvidenceInput = adaptAuthoritativeWatchInputs(liveData, e);
+    const evidence = buildWatchEvidenceModel(watchEvidenceInput, e);
+    if(evidence.valid){
+      progressSum += evidence.passed;
+      progressCount++;
+    }
+  });
+  const avgProgressPct = progressCount ? Math.round((progressSum / progressCount) / 5 * 100) : null;
+  return { total: watchesAll.length, oneH, fourH, betterEntry, avgProgressPct };
+}
+
+function renderWatchPage(){
+  const watchesAll=journal.filter(j=>isActiveWatch(j));
+  const oneH = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='1h');
+  const fourH = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='4h');
+
+  const summary = _computeWatchSummary(watchesAll);
+  const statsEl = document.getElementById('watch-page-stats');
+  if(statsEl) statsEl.innerHTML = [
+    `<div class="log-stat">Watching<span>${summary.total}</span></div>`,
+    `<div class="log-stat">1H Watches<span>${summary.oneH}</span></div>`,
+    `<div class="log-stat">4H Watches<span>${summary.fourH}</span></div>`,
+    `<div class="log-stat">Better entry<span style="color:var(--green-text);">${summary.betterEntry}</span></div>`,
+    `<div class="log-stat">Avg progress<span>${summary.avgProgressPct!==null?summary.avgProgressPct+'%':'—'}</span></div>`,
+  ].join('');
+
+  // "No setups currently being watched" replaces the twin-column grid
+  // entirely when there are genuinely none at all, rather than showing
+  // two redundant per-section empty messages side by side.
+  const gridEl = document.getElementById('watchGrid');
+  const emptyAllEl = document.getElementById('watchEmptyAll');
+  if(!watchesAll.length){
+    if(gridEl) gridEl.style.display='none';
+    if(emptyAllEl) emptyAllEl.style.display='block';
+  } else {
+    if(gridEl) gridEl.style.display='';
+    if(emptyAllEl) emptyAllEl.style.display='none';
+    _renderCardSection('watch1hCards','watch1hColCount', oneH, 'No active 1H Watches', renderWatchCard);
+    _renderCardSection('watch4hCards','watch4hColCount', fourH, 'No active 4H Watches', renderWatchCard);
   }
   updateWatchCount();
 }
 
 function renderTradeDesk(){
   const activeAll=journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome);
+  const oneH = activeAll.filter(j=>String(j.tf||'').toLowerCase()==='1h');
+  const fourH = activeAll.filter(j=>String(j.tf||'').toLowerCase()==='4h');
 
-  // TF-0 pill counts — TDAS V5.0.0C: active-trades-only now that Watch has
-  // moved to its own page (renderWatchPage() above) and no longer uses
-  // this filter bar.
+  // TF-0 pill counts — unchanged computation (still full, unfiltered
+  // per-timeframe totals across all active trades).
   const _tfCount = tf => activeAll.filter(j=>String(j.tf||'').toLowerCase()===tf).length;
   const _pillCounts = { all: activeAll.length, '1h': _tfCount('1h'), '4h': _tfCount('4h') };
   document.querySelectorAll('#tradeDeskFilterBar .jf-btn').forEach(b=>{
@@ -17533,22 +17641,26 @@ function renderTradeDesk(){
     b.textContent = n ? label+' ('+n+')' : label;
   });
 
-  const active=activeAll.filter(_tdSetupFilterMatch);
+  // TDAS V5.0.0D — the filter now toggles which section(s) are visible:
+  // All shows both; 1H/4H shows only that section. Empty sections that
+  // ARE shown still render their own compact empty message (per spec) —
+  // only a section hidden by the filter is display:none.
+  const show1h = _tradeDeskSetupFilter === 'all' || _tradeDeskSetupFilter === '1h';
+  const show4h = _tradeDeskSetupFilter === 'all' || _tradeDeskSetupFilter === '4h';
+  const col1hEl = document.getElementById('trade1hCol');
+  const col4hEl = document.getElementById('trade4hCol');
+  if(col1hEl) col1hEl.style.display = show1h ? '' : 'none';
+  if(col4hEl) col4hEl.style.display = show4h ? '' : 'none';
 
-  // Active trade column
-  const activeEl=document.getElementById('activeTradeCards');
-  const activeCount=document.getElementById('activeColCount');
-  if(activeCount) activeCount.textContent=active.length?`(${active.length})`:'';
-  if(!active.length){
-    if(activeEl) activeEl.innerHTML='<div class="trade-col-empty">No active trades.<br>Log a <strong>Trade</strong> on a scanner card to start tracking.</div>';
-  } else {
-    const phantomCount=Math.max(0,1-active.length);
-    const phantoms='<div class="trade-phantom"></div>'.repeat(phantomCount);
-    if(activeEl) activeEl.innerHTML=active.map(e=>renderOrderTicketCard(e)).join('')+phantoms;
-  }
+  _renderCardSection('trade1hCards','trade1hColCount', oneH, 'No active 1H trades', renderOrderTicketCard);
+  _renderCardSection('trade4hCards','trade4hColCount', fourH, 'No active 4H trades', renderOrderTicketCard);
 
   // Stats bar — TDAS V5.0.0C: "Watching" pill removed (Trade page no
   // longer has any watches to report; see renderWatchPage() for that).
+  // TDAS V5.0.0D: "Active" now shows the true unfiltered total
+  // (activeAll.length) rather than whatever the filter happened to leave
+  // visible — with two permanent sections instead of one filtered list,
+  // the stable, honest total is the more meaningful number here.
   const closed=journal.filter(j=>!j.deleted&&j.decision==='took'&&j.outcome&&j.outcome!=='cancelled');
   const wins=closed.filter(j=>j.outcome==='win'||(j.outcome==='manual'&&j.rMultiple>0)).length;
   const losses=closed.filter(j=>j.outcome==='loss'||(j.outcome==='manual'&&j.rMultiple<=0)).length;
@@ -17558,7 +17670,7 @@ function renderTradeDesk(){
     :null;
   const statsEl=document.getElementById('trade-desk-stats');
   if(statsEl) statsEl.innerHTML=[
-    `<div class="log-stat">Active<span style="color:var(--green-text);">${active.length}</span></div>`,
+    `<div class="log-stat">Active<span style="color:var(--green-text);">${activeAll.length}</span></div>`,
     `<div class="log-stat">Closed<span>${closed.length}</span></div>`,
     `<div class="log-stat">Win rate<span>${wr!==null?wr+'%':'—'}</span></div>`,
     `<div class="log-stat">Avg R<span>${avgR||'—'}</span></div>`,
@@ -17854,12 +17966,13 @@ function renderWatchCard(e){
     <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span class="watch-progress-count" style="color:${condColor};font-weight:${condWeight};">${_progressCountHtml}</span>${condStarHtml}</div>
     <div class="entry-quality-row">${(()=>{
       // Entry Quality — Trade Desk only. Fixed-height container always rendered.
-      const _sp = e.signalPrice || e.price;
-      if(!currentPrice || !_sp) return '';
-      const _improvement = e.signal === 'long'
-        ? (_sp - currentPrice) / _sp * 100
-        : (currentPrice - _sp) / _sp * 100;
-      if(_improvement < 1.0) return '';
+      // TDAS V5.0.0D correction — now calls the shared
+      // _computeWatchEntryImprovementPct() (defined above, near
+      // _computeWatchSummary()) instead of computing this inline; the
+      // formula, price fields, and this card's own >=1.0% display
+      // threshold are all unchanged from before.
+      const _improvement = _computeWatchEntryImprovementPct(e, currentPrice);
+      if(_improvement === null || _improvement < 1.0) return '';
       const _label = e.signal === 'long' ? 'Better long entry' : 'Better short entry';
       return `🟢 ${_label} (+${_improvement.toFixed(1)}%)`;
     })()}</div>
