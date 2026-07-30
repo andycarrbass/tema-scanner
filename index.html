@@ -1197,6 +1197,26 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 /* Order ticket card */
 .order-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;border-left:3px solid var(--border2);transition:border-color 0.2s,box-shadow 0.2s;min-height:220px;}
+/* TDAS V5.0.0F — Twin-Sided Active Trade Card Foundation. Unlike Trade
+   Ready's flip (.tdas-card-front/.tdas-card-back), which deliberately has
+   NO fixed height/ceiling (see that rule's own comment), this card
+   requires front and rear to share a genuinely FIXED, equal height so
+   flipping never causes a layout jump. Scoped to .order-card.twin-sided
+   only — the base .order-card rule above (used elsewhere) is untouched. */
+.order-card.twin-sided{
+  height:500px;
+  display:flex;flex-direction:column;
+  overflow:hidden;
+}
+.order-card.twin-sided .otc-header{flex-shrink:0;}
+.otc-face{
+  flex:1;min-height:0;
+  display:flex;flex-direction:column;
+  overflow-y:auto;
+}
+.otc-face-back{display:none;}
+.order-card.twin-sided.is-flipped .otc-face-front{display:none;}
+.order-card.twin-sided.is-flipped .otc-face-back{display:flex;}
 .order-card.active-long{border-left-color:var(--green-text);box-shadow:0 0 0 1px rgba(29,158,117,0.15) inset;}
 .order-card.active-short{border-left-color:var(--red-text);box-shadow:0 0 0 1px rgba(192,67,42,0.15) inset;}
 /* TDAS advisory state — takes over the left rail colour from the plain
@@ -1695,7 +1715,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0E';
+const APP_BUILD = 'V5.0.0F';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -18029,6 +18049,20 @@ function renderWatchCard(e){
   </div>`;
 }
 
+// TDAS V5.0.0F — Twin-Sided Active Trade Card Foundation. Front face
+// ("Trade Overview") mirrors the existing Scanner active-trade placeholder
+// card (buildActiveScannerPlaceholderHtml) — same HTF badge, session/
+// setup-tf/candle-timer row, price+direction pill, advisory block, P&L+R
+// display. Rear face ("Manage Trade") is a hybrid of this card's own prior
+// single-face content (ticket-levels grid, trade stage, 1H timing, Close/
+// Log) and the Trade Ready rear card's visual density/hierarchy (row-based
+// grouping, not its gold theme — gold stays reserved for Trade Ready).
+// Flip is a simple class toggle (flipOrderTicketCard(), same is-flipped
+// pattern as flipTradeReadyCard()) — no persistence, resets to front on
+// every re-render, exactly like Trade Ready's own documented behaviour.
+// Advisory computation, BE trigger/persistence/confirmation flow, breach
+// handling and Close/Log behaviour are all completely unchanged — only
+// WHERE their already-computed HTML is placed (front vs rear) differs.
 function renderOrderTicketCard(e){
   // TDAS V4.10.4G — Timeframe-Isolated Active Trade Data Migration.
   // liveData now comes from the exact symbol+trade.tf (setup timeframe)
@@ -18072,6 +18106,8 @@ function renderOrderTicketCard(e){
   // TDAS advisory — same buildAdvisory(d, {openTrade}) invocation pattern
   // already used by the active scanner placeholder. liveData is the same
   // currentScanData[symbol] object buildAdvisory reads d._1hTiming from.
+  // Completely unchanged from before this release — advisory logic and
+  // wording are explicitly out of scope for V5.0.0F.
   let advisory = null;
   if(liveData){
     try{ advisory = (typeof buildAdvisory==='function') ? buildAdvisory(liveData, {openTrade:e}) : null; }
@@ -18084,12 +18120,7 @@ function renderOrderTicketCard(e){
     : advisory.action==='REVIEW' ? 'tdas-state-review'
     : 'tdas-state-hold';
   // TP1 — Fib 1.618 target reached (TDAS V4.5 Task 4, V1: display-only, no
-  // persistence, not clickable). Uses e.target — the exact same value shown
-  // in the "1st Target Fib 1.618" ticket-levels field — and livePrice, the
-  // same current price already driving Live P&L above. The e.target vs
-  // entryPx comparison doubles as the "wrong side of entry" validation: a
-  // long's target must be above entry, a short's below, or the field is
-  // treated as invalid/absent rather than trusted blindly.
+  // persistence, not clickable). Unchanged from before this release.
   const _tp1Reached = (
     livePrice!=null && e.target!=null &&
     (isLong ? (e.target > entryPx && livePrice >= e.target)
@@ -18099,27 +18130,15 @@ function renderOrderTicketCard(e){
     ? `<span class="tp1-pill" title="Fib 1.618 target reached. Consider partial profit or tightening stop.">TP1</span>`
     : '';
 
-  // SL to BE — small secondary risk-management prompt (TDAS V4.5 Task 1;
-  // moved into the advisory header row in the Task 1 follow-up). Reuses
-  // pnlR (the exact same live R already shown in the Live P&L bar below) —
-  // not recalculated. Suppressed whenever advisory.action is 'CLOSE': this
-  // covers both a genuine stop-loss breach (getStopBreachState, checked
-  // first inside _buildActiveTradeAdvisory, highest priority) and the
-  // ladder's own structural CLOSE signal — advisory.action doesn't
-  // distinguish the two, but suggesting "move stop to break even" makes no
-  // sense once the advisory is already telling the trade to close entirely,
-  // so gating on CLOSE broadly is the correct, safe behaviour either way.
-  // Also suppressed once TP1 has been reached — priority is CLOSE > TP1 >
-  // SL to BE, since past TP1 the relevant prompt is partial profit / tighten
-  // stop, not simply moving to break even. Never replaces or alters the
-  // main advisory headline/detail text.
-  // TDAS V4.7.0 — persistent confirmed state (see this version's delivery
-  // note, §6): once confirmed, "✓ SL at BE" always shows regardless of
-  // CLOSE/TP1/advisory changes — a historical user action, not a
-  // recalculated indicator. Trade Desk is one of the two surfaces (with
-  // Full Analysis) where Undo is permitted, so the confirmed pill here is
-  // clickable and opens undoBeStop()'s confirmation dialog. The
-  // unconfirmed prompt is now clickable too, opening confirmBeStop().
+  // SL to BE — trigger condition, persistence field, confirm/undo button
+  // behaviour and breach handling are all completely unchanged from
+  // before this release (see confirmBeStop()/undoBeStop() — untouched).
+  // TDAS V5.0.0F only changes WHERE these two already-computed HTML
+  // strings are placed: beConfirmedHtml (a passive status pill) now shows
+  // on BOTH faces (front: quick glance; rear: management context) —
+  // slToBeHtml (the actionable, unconfirmed prompt) now shows ONLY on the
+  // rear Manage Trade face, within its management area, never on the
+  // front overview.
   const _beConfirmed = !!e.beStopConfirmed;
   const beConfirmedHtml = _beConfirmed
     ? `<span class="sl-be-pill sl-be-confirmed sl-be-clickable" title="Stop confirmed at break-even (${e.beStopLevel!=null?fmt(e.beStopLevel):'—'}). Click to undo." onclick="event.stopPropagation();undoBeStop(${e.id});">\u2713 SL at BE</span>`
@@ -18129,19 +18148,28 @@ function renderOrderTicketCard(e){
     ? `<span class="sl-be-pill sl-be-clickable" title="Price has moved +1R. Click to confirm you have moved your stop to break-even." onclick="event.stopPropagation();confirmBeStop(${e.id});">SL to BE</span>`
     : '';
 
+  // Front advisory header row: headline + TP1 + confirmed-BE pill only —
+  // the unconfirmed SL-to-BE action prompt is deliberately never shown on
+  // the front (it lives on the rear's management area instead, below).
   const advisoryHtml = advisory
     ? `<div class="tdas-advisory-block ${stateClass}">`
       + `<div class="tdas-advisory-header-row">`
       + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
       + tp1Html
       + beConfirmedHtml
-      + slToBeHtml
       + `</div>`
       + (advisory.detail ? `<div class="tdas-advisory-detail">${advisory.detail}</div>` : '')
       + `</div>`
     : '';
 
-  const cardClass=`order-card ${isLong?'active-long':'active-short'} ${stateClass}`;
+  // Rear management area: confirmed pill OR the actionable prompt —
+  // mutually exclusive via the same existing conditions above, just
+  // rendered as its own labelled row instead of nested in the advisory.
+  const slBeManageHtml = (beConfirmedHtml || slToBeHtml)
+    ? `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">SL/BE: ${beConfirmedHtml || slToBeHtml}</div>`
+    : '';
+
+  const cardClass=`order-card twin-sided ${isLong?'active-long':'active-short'} ${stateClass}`;
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   // SL Risk — replaces the unused Fib Stop display (TDAS V4.4.2). Uses the
   // same entryPx (e.actualEntry||e.price) already used for P&L above, and
@@ -18149,7 +18177,8 @@ function renderOrderTicketCard(e){
   // Absolute value by design: if a stop is ever found on the "wrong" side
   // of entry (e.g. mid-adjustment), this still shows a safe, non-breaking
   // magnitude rather than a confusing negative number or a "—" that would
-  // hide otherwise-available data.
+  // hide otherwise-available data. Unchanged from before this release —
+  // shown on the rear face now (was on the single face before).
   const _slRiskPts = (entryPx!=null && e.stop!=null)
     ? Math.abs(isLong ? (entryPx - e.stop) : (e.stop - entryPx))
     : null;
@@ -18159,6 +18188,19 @@ function renderOrderTicketCard(e){
   const _slRiskHtml = (_slRiskPts!=null && _slRiskPct!=null)
     ? (_slRiskPct.toFixed(2)+'% / '+fmtPts(_slRiskPts)+'pts')
     : '—';
+
+  // Front face fields, mirroring buildActiveScannerPlaceholderHtml's own
+  // HTF badge / session-candle row / price-pill row exactly (same source
+  // fields, same classes) — liveData is the same exact-timeframe snapshot
+  // object that function reads from.
+  const _htfState = (typeof buildHtfBadgeState==='function' && liveData) ? buildHtfBadgeState(liveData, e.signal) : 'unknown';
+  const htfText = liveData ? `HTF ${(liveData.htf||'').toUpperCase()} ${HTF_BADGE_GLYPH[_htfState]||''}` : '';
+  const _hasCandleTimer = liveData && liveData.minsRemaining!=null && liveData.secsRemaining!=null;
+  const countdownUrgent = _hasCandleTimer && liveData.candleClosePct>=90;
+  const minsStr = _hasCandleTimer ? String(liveData.minsRemaining).padStart(2,'0') : '--';
+  const secsStr = _hasCandleTimer ? String(liveData.secsRemaining).padStart(2,'0') : '--';
+  const dirWord = isLong ? 'LONG' : 'SHORT';
+
   return `<div class="${cardClass}" id="otcard-${e.id}">
     <div class="otc-header">
       <div class="otc-line1">
@@ -18171,36 +18213,69 @@ function renderOrderTicketCard(e){
       </div>
       <div class="otc-meta">Entered ${ts} · ${e.tf.toUpperCase()} setup</div>
     </div>
-    ${advisoryHtml}
-    ${pnlHtml}
-    ${_supportStatusHtml}
-    ${e.tradeStage ? `<div style="font-size:10px;margin:4px 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
-    ${(()=>{
-      // TDAS V4.10.4G — reads liveData (already resolved above via
-      // getActiveTradeSnapshotData(e)) instead of a fresh direct
-      // currentScanData[e.symbol] lookup — same exact-setup-timeframe
-      // source as the rest of this card. The 1H timing evidence itself
-      // remains the same _1hTiming mechanism, already registry-isolated
-      // via V4.10.4F's _applyTimingUpdateToRegistry().
-      const _t = liveData && liveData._1hTiming;
-      if(!_t||!_t.state) return '';
-      const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
-      return `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">1H Timing: <span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
-    })()}
-    <div class="ticket-levels">
-      <div class="tl-item"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
-      <div class="tl-item"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
-      <div class="tl-item"><div class="tl-label">ATR Stop</div><div class="tl-val" style="color:var(--red-text);">${e.stop!=null?fmt(e.stop):'—'}</div></div>
-      <div class="tl-item"><div class="tl-label">SL Risk</div><div class="tl-val" style="color:#a78bfa;">${_slRiskHtml}</div></div>
-      <div class="tl-item"><div class="tl-label">1st Target <span style="font-size:9px;color:var(--text3);">Fib 1.618</span></div><div class="tl-val" style="color:var(--green-text);">${e.target!=null?fmt(e.target):'—'}</div></div>
-      <div class="tl-item"><div class="tl-label">Score</div><div class="tl-val">${e.score}%</div></div>
+    <div class="otc-face otc-face-front">
+      ${liveData ? `<div class="session-candle-row" style="margin-bottom:6px;">
+        <span class="htf-badge ${_htfState}">${htfText}</span>
+        ${liveData.session ? `<span class="session-pill" style="color:${liveData.sessionColor||'var(--text2)'};">${liveData.session}${liveData.overlap?' \u26a1':''}</span>` : ''}
+        ${_hasCandleTimer ? `<span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>` : ''}
+      </div>` : ''}
+      <div class="cz-price" style="padding:2px 0 6px;">
+        <div class="price-pill-row">
+          <span class="price">${livePrice?fmt(livePrice):'—'}</span>
+          <span class="sig-pill pill-trade">${isLong?'\u25b2':'\u25bc'} ${dirWord} ACTIVE</span>
+        </div>
+      </div>
+      ${advisoryHtml}
+      ${pnlHtml}
+      ${_supportStatusHtml}
+      <div class="cz-spacer"></div>
+      <button class="card-btn view-trade" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">\ud83d\udd04 Manage Trade</button>
+      <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','trade',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
     </div>
-    <button class="close-trade-btn ${isLong?'close-long':'close-short'}" onclick="openOutcomeModal(${e.id},null)">
-      ✕ Close ${isLong?'long':'short'} → log to journal
-    </button>
-    <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','trade',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
+    <div class="otc-face otc-face-back">
+      ${e.tradeStage ? `<div style="font-size:10px;margin:0 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
+      ${(()=>{
+        // TDAS V4.10.4G — reads liveData (already resolved above via
+        // getActiveTradeSnapshotData(e)) instead of a fresh direct
+        // currentScanData[e.symbol] lookup — same exact-setup-timeframe
+        // source as the rest of this card. The 1H timing evidence itself
+        // remains the same _1hTiming mechanism, already registry-isolated
+        // via V4.10.4F's _applyTimingUpdateToRegistry(). Unchanged from
+        // before this release — shown on the rear face now.
+        const _t = liveData && liveData._1hTiming;
+        if(!_t||!_t.state) return '';
+        const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
+        return `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">1H Timing: <span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
+      })()}
+      ${slBeManageHtml}
+      <div class="ticket-levels">
+        <div class="tl-item"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">ATR Stop</div><div class="tl-val" style="color:var(--red-text);">${e.stop!=null?fmt(e.stop):'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">SL Risk</div><div class="tl-val" style="color:#a78bfa;">${_slRiskHtml}</div></div>
+        <div class="tl-item"><div class="tl-label">1st Target <span style="font-size:9px;color:var(--text3);">Fib 1.618</span></div><div class="tl-val" style="color:var(--green-text);">${e.target!=null?fmt(e.target):'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">Score</div><div class="tl-val">${e.score}%</div></div>
+      </div>
+      <div class="cz-spacer"></div>
+      <button class="close-trade-btn ${isLong?'close-long':'close-short'}" onclick="event.stopPropagation();openOutcomeModal(${e.id},null)">
+        ✕ Close ${isLong?'long':'short'} → log to journal
+      </button>
+      <button class="card-btn view-trade" style="margin-top:6px;" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">\ud83d\udd04 Trade Overview</button>
+    </div>
   </div>`;
 }
+
+// TDAS V5.0.0F — Twin-Sided Active Trade Card Foundation. Toggles the
+// flipped state for a single active-trade card. Same simple class-toggle
+// pattern as flipTradeReadyCard() (no persistence across scans/reloads —
+// a re-render, e.g. from _tdSignalRefresh or updateTradeDeskPnL, naturally
+// resets to the front face since these rebuild the card's DOM in place).
+function flipOrderTicketCard(id){
+  const el = document.getElementById('otcard-'+id);
+  if(!el) return;
+  el.classList.toggle('is-flipped');
+}
+
 
 // V3: convertWatchToTrade() DISABLED — it wrote directly to saveJournal()
 // bypassing commitJournalChange, sessionDirtyIds, and Sheets sync.
