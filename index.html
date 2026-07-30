@@ -1134,6 +1134,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .trade-col-header{font-size:12px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--text3);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border2);}
 /* Inner card grid — tiles cards at same width as scanner (270px min) */
 .trade-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:11px;align-items:start;}
+/* TDAS V5.0.0G2 §1 — Trade page's active-trade columns specifically
+   matched to the Scanner grid's own spacing (280px min-width, 12px gap;
+   see .grid above). Scoped to #trade1hCards/#trade4hCards only — the
+   shared .trade-cards-grid rule above (also used by Watch's columns)
+   stays at its original 270px/11px, so Watch cards are unaffected. */
+#trade1hCards.trade-cards-grid,#trade4hCards.trade-cards-grid{grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}
 
 /* Watch card */
 .watch-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;border-left:3px solid var(--amber);position:relative;opacity:0.92;min-height:220px;}
@@ -1196,22 +1202,26 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .watch-cancel-btn{padding:8px 12px;font-size:13px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;}
 
 /* Order ticket card */
-.order-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;border-left:3px solid var(--border2);transition:border-color 0.2s,box-shadow 0.2s;min-height:220px;}
+/* TDAS V5.0.0G2 — Trade Card Dimensional and State Refinement. Padding
+   changed from 15px 16px to 14px 14px, matching the Scanner card's own
+   consistent 14px horizontal-padding convention (.cz/.cz-top/.cz-price/
+   etc. all use 14px) — the authoritative dimensional reference for this
+   correction. */
+.order-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:14px 14px;border-left:3px solid var(--border2);transition:border-color 0.2s,box-shadow 0.2s;min-height:220px;}
 /* TDAS V5.0.0F — Twin-Sided Active Trade Card Foundation. Unlike Trade
    Ready's flip (.tdas-card-front/.tdas-card-back), which deliberately has
    NO fixed height/ceiling (see that rule's own comment), this card
    requires front and rear to share a genuinely FIXED, equal height so
    flipping never causes a layout jump. Scoped to .order-card.twin-sided
    only — the base .order-card rule above (used elsewhere) is untouched.
-   TDAS V5.0.0G1 — height reduced from V5.0.0G's 640px: the large embedded
-   Stop Management form (title, mode-toggle row, two field blocks, confirm
-   button) is gone, replaced by a single compact pill row — the rear no
-   longer needs anywhere near that much space. 560px keeps comfortable
-   spacing (a readable Entered line, unclipped advisory wording, Context/
-   1H Timing/Close-Log/Trade-Overview all fully visible) without the
-   V5.0.0G bloat. */
+   TDAS V5.0.0G2 — height matched directly to the Scanner card's own
+   authoritative min-height (460px, see .card above) — the V5.0.0G1
+   embedded-form removal already eliminated the bulk of the excess space;
+   this correction redistributes the remaining rear content (§3) to fit
+   Scanner's own reference height rather than keeping V5.0.0G1's interim
+   560px. */
 .order-card.twin-sided{
-  height:560px;
+  height:460px;
   display:flex;flex-direction:column;
   overflow:hidden;
 }
@@ -1226,22 +1236,31 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .order-card.twin-sided.is-flipped .otc-face-back{display:flex;}
 /* TDAS V5.0.0G — per-face header rows (front: symbol/HTF/copy, session/
    setup-tf, Paper/candle-timer; rear: symbol/direction-pill/copy only).
-   Replaces V5.0.0F's single shared header outside the flip area, since
-   this build's settled hierarchy requires the two faces to show
-   genuinely different header content. */
-.otc-face-header-row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px;}
+   TDAS V5.0.0G2 — justify-content:space-between removed in favour of gap
+   + .snap-btn's own existing margin-left:auto: with three flex children,
+   space-between could let the middle pill crowd or clip the copy icon
+   against the card edge under long symbol names/narrow widths. .otc-symbol
+   now truncates with an ellipsis (min-width:0) rather than push other
+   items off-edge; the HTF/direction pill and copy icon never shrink
+   (flex-shrink:0), so neither is ever squeezed or clipped. */
+.otc-face-header-row{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
 .otc-face-header-row:last-of-type{margin-bottom:8px;}
-.otc-symbol{font-size:16px;font-weight:600;color:var(--text);}
+.otc-symbol{font-size:16px;font-weight:600;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:1;}
+.otc-face-header-row .htf-badge,.otc-face-header-row .sig-pill{flex-shrink:0;}
 /* Entered line — must read clearly, not as faded microcopy (V5.0.0G §Entered line). */
 .otc-entered-line{font-size:12px;color:var(--text2);margin-bottom:8px;}
 /* Single top-right management-status pill inside the advisory box —
    compact, same visual family as the existing sl-be-pill (confirmed
    variant), non-clickable (revision happens via the compact stop-control
-   pills on the rear, not by clicking this pill). */
+   pills on the rear, not by clicking this pill). TDAS V5.0.0G2 §11 —
+   flex-shrink:0 and margin-left:8px so it never collides with the
+   headline/body text; .tdas-advisory-header-row (below, pre-existing)
+   already wraps on narrow layouts via flex-wrap. */
 .mgmt-status-pill{
   display:inline-flex;align-items:center;height:20px;padding:0 8px;
   border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap;
   background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-bg);
+  flex-shrink:0;margin-left:8px;
 }
 /* TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Two compact action
    pills (replacing V5.0.0G's large embedded amber form) — reuses the
@@ -1255,8 +1274,8 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    .pill-trade class, which used the same colour for both directions. */
 .sig-pill.pill-trade-long{background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-text);}
 .sig-pill.pill-trade-short{background:var(--red-dim);color:var(--red-text);border:1px solid var(--red-text);}
-/* Fields reused inside the Set to B/E / Set Manual SL dialogs (formerly
-   inside the V5.0.0G embedded panel — same styling, new context). */
+/* Fields reused inside the Set SL / SL to B/E dialogs (formerly inside
+   the V5.0.0G embedded panel — same styling, new context). */
 .stop-mgmt-field{margin-bottom:8px;}
 .stop-mgmt-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:3px;}
 .stop-mgmt-recommended{font-family:var(--mono);font-size:13px;color:var(--text2);}
@@ -1266,6 +1285,39 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   padding:6px 8px;box-sizing:border-box;
 }
 .stop-mgmt-actual-input:focus{outline:1px solid rgba(186,117,23,0.5);border-color:rgba(186,117,23,0.5);}
+/* TDAS V5.0.0G2 §6 — Clear confirmation. A restrained, secondary-styled
+   inline action inside the dialog body (not the modal's own primary
+   action-button slot), only shown when reopening a dialog whose mode
+   matches the trade's currently-confirmed source. */
+.stop-mgmt-clear-btn{
+  width:100%;margin-top:4px;padding:7px 10px;font-size:12px;font-weight:600;
+  border-radius:var(--radius-sm);cursor:pointer;
+  background:transparent;color:var(--text3);border:1px solid var(--border2);
+  transition:color 0.15s,border-color 0.15s;
+}
+.stop-mgmt-clear-btn:hover{color:var(--text2);border-color:var(--border);}
+/* TDAS V5.0.0G2 §3 — bottom action-zone, matching the Scanner card's own
+   .cz-actions convention (top border separator + dedicated padding)
+   rather than buttons sitting directly against the flexible spacer with
+   no distinct zone. */
+.otc-action-zone{padding-top:10px;margin-top:auto;border-top:1px solid var(--border);}
+/* TDAS V5.0.0G2 §8 — Context / 1H Timing presented as one aligned compact
+   block (fixed label width so both lines line up), instead of two
+   independently-margined lines. */
+.otc-context-block{margin:2px 0 8px;}
+.otc-context-row{display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:3px;}
+.otc-context-row:last-child{margin-bottom:0;}
+.otc-context-label{color:var(--text3);flex-shrink:0;min-width:58px;}
+/* TDAS V5.0.0G2 §10 — Risk & Levels visual hierarchy: Entry/Current/
+   Actual stop get slightly more emphasis; Recommended stop/Risk %/Risk
+   points stay more secondary. Values/calculations/persistence unchanged
+   — presentation only. */
+.tl-item.tl-primary .tl-val{font-size:16px;font-weight:600;}
+.tl-item.tl-secondary .tl-val{font-size:13px;opacity:0.8;}
+/* TDAS V5.0.0G2 §9 — flip-card icon sizing (inline SVG, replaces the
+   V5.0.0G ⇄ Unicode glyph). currentColor inherits the button's own text
+   colour automatically, so button colour is unaffected. */
+.otc-flip-icon{vertical-align:middle;margin-right:5px;margin-top:-2px;flex-shrink:0;}
 .otc-risk-basis-note{font-size:10px;color:var(--text3);margin-top:-6px;margin-bottom:8px;}
 .order-card.active-long{border-left-color:var(--green-text);box-shadow:0 0 0 1px rgba(29,158,117,0.15) inset;}
 .order-card.active-short{border-left-color:var(--red-text);box-shadow:0 0 0 1px rgba(192,67,42,0.15) inset;}
@@ -1765,7 +1817,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0G1';
+const APP_BUILD = 'V5.0.0G2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -18216,30 +18268,37 @@ function renderOrderTicketCard(e){
   const _beEligible = !_mgmt.confirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
 
   // TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Two compact
-  // action pills replace the embedded amber form. "Set to B/E" hides
+  // action pills replace the embedded amber form. "SL to B/E" hides
   // entirely before eligibility (matching the original pre-V5.0.0G "SL to
   // BE" prompt's own hide-when-ineligible behaviour — V5.0.0G1 §2:
   // "Prefer hiding it before eligibility"), but stays visible once either
   // eligible OR already confirmed as BE, so a confirmed BE stop can still
-  // be revised. "Set Manual SL" is always available (V5.0.0G1 §3), and
-  // both pills remain clickable after confirmation so the stop can be
-  // revised via either path at any time (V5.0.0G1 §4).
+  // be revised. "Set SL" is always available (V5.0.0G1 §3), and both
+  // pills remain clickable after confirmation so the stop can be revised
+  // via either path at any time (V5.0.0G1 §4).
+  // TDAS V5.0.0G2 §4/§5 — wording corrected to the exact required labels
+  // ("Set SL" / "\u2713 SL set" / "SL to B/E" / "\u2713 SL at B/E" — the
+  // word "Manual" never appears in the card UI, though the underlying
+  // slConfirmedSource value is still literally 'MANUAL' when applicable —
+  // persistence/source values are unchanged, presentation only) and pill
+  // order corrected to Set SL first, SL to B/E second, matching the
+  // settled spec's own ordering in every example.
   const _bePillConfirmed = _mgmt.confirmed && _mgmt.source==='BE';
   const _showBePill = _bePillConfirmed || _beEligible;
   const bePillHtml = _showBePill
-    ? `<span class="sl-be-pill sl-be-clickable${_bePillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetToBeDialog(${e.id});"${_bePillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_bePillConfirmed?'\u2713 SL at B/E':'Set to B/E'}</span>`
+    ? `<span class="sl-be-pill sl-be-clickable${_bePillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetToBeDialog(${e.id});"${_bePillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_bePillConfirmed?'\u2713 SL at B/E':'SL to B/E'}</span>`
     : '';
   const _manualPillConfirmed = _mgmt.confirmed && _mgmt.source!=='BE';
-  const manualPillHtml = `<span class="sl-be-pill sl-be-clickable${_manualPillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetManualSlDialog(${e.id});"${_manualPillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_manualPillConfirmed?'\u2713 Manual SL':'Set Manual SL'}</span>`;
+  const manualPillHtml = `<span class="sl-be-pill sl-be-clickable${_manualPillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetManualSlDialog(${e.id});"${_manualPillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_manualPillConfirmed?'\u2713 SL set':'Set SL'}</span>`;
 
   // Single top-right management-status pill — only one of the two
   // supported states for this build may display (V5.0.0G §Advisory box).
-  // TDAS V5.0.0G1 — casing corrected to match the settled spec ("SL at
-  // B/E" / "Manual SL", not the V5.0.0G all-caps wording).
+  // TDAS V5.0.0G2 §4/§5 — front status wording corrected: "\u2713 SL set"
+  // (was "\u2713 Manual SL") for a confirmed non-BE stop.
   const mgmtStatusPillHtml = _mgmt.confirmed
     ? (_mgmt.source==='BE'
         ? `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL at B/E</span>`
-        : `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 Manual SL</span>`)
+        : `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL set</span>`)
     : '';
 
   const advisoryHtml = advisory
@@ -18286,11 +18345,13 @@ function renderOrderTicketCard(e){
   const dirArrow = isLong ? '\u25b2' : '\u25bc';
 
   const copyBtnHtml = `<button class="snap-btn" type="button" title="Copy snapshot" data-tid="${e.id}" onclick="event.stopPropagation();event.preventDefault();copySnapshotFromTrade(+this.dataset.tid,this);"><span class="snap-icon"></span></button>`;
-  // TDAS V5.0.0G — flip icon replaced (both buttons use the same compact
-  // glyph, consistent with the Trade Ready rear card's own control style,
-  // instead of the 🔄 refresh-style emoji). Icon-only change — button
-  // size, colour, placement and flip behaviour are unchanged.
-  const flipGlyph = '\u21c4';
+  // TDAS V5.0.0G2 §9 — custom inline SVG flip-card icon (rounded-rectangle
+  // card outline + a wrapping arrow), replacing V5.0.0G's ⇄ Unicode
+  // glyph. currentColor inherits the button's own text colour
+  // automatically, so button colour is unaffected. Same icon on both
+  // Manage Trade and Trade Overview (icon-only change — button size,
+  // colour, placement and flip behaviour are unchanged).
+  const flipIconSvg = '<svg class="otc-flip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M12 5.5C13.2 6.3 14 7.6 14 9C14 11.2 12.2 13 10 13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M10 11.3L10 13L11.7 13.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
 
   return `<div class="${cardClass}" id="otcard-${e.id}">
     <div class="otc-face otc-face-front">
@@ -18320,8 +18381,10 @@ function renderOrderTicketCard(e){
       ${pnlHtml}
       ${_supportStatusHtml}
       <div class="cz-spacer"></div>
-      <button class="card-btn view-trade" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">${flipGlyph} Manage Trade</button>
-      <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','trade',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
+      <div class="otc-action-zone">
+        <button class="card-btn view-trade" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">${flipIconSvg}Manage Trade</button>
+        <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','trade',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
+      </div>
     </div>
     <div class="otc-face otc-face-back">
       <div class="otc-face-header">
@@ -18334,30 +18397,33 @@ function renderOrderTicketCard(e){
       ${pnlHtml}
       <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin:6px 0 4px;">Risk &amp; Levels</div>
       <div class="ticket-levels">
-        <div class="tl-item"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">Recommended stop</div><div class="tl-val" style="color:var(--text2);">${_recommendedStop!=null?fmt(_recommendedStop):'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">Actual stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--red-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
-        <div class="tl-item"><div class="tl-label">Risk %</div><div class="tl-val" style="color:#a78bfa;">${_riskPct!=null?_riskPct.toFixed(2)+'%':'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">Risk points</div><div class="tl-val" style="color:#a78bfa;">${_riskPts!=null?fmtPts(_riskPts)+'pts':'—'}</div></div>
+        <div class="tl-item tl-primary"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
+        <div class="tl-item tl-primary"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
+        <div class="tl-item tl-secondary"><div class="tl-label">Recommended stop</div><div class="tl-val" style="color:var(--text2);">${_recommendedStop!=null?fmt(_recommendedStop):'—'}</div></div>
+        <div class="tl-item tl-primary"><div class="tl-label">Actual stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--red-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
+        <div class="tl-item tl-secondary"><div class="tl-label">Risk %</div><div class="tl-val" style="color:#a78bfa;">${_riskPct!=null?_riskPct.toFixed(2)+'%':'—'}</div></div>
+        <div class="tl-item tl-secondary"><div class="tl-label">Risk points</div><div class="tl-val" style="color:#a78bfa;">${_riskPts!=null?fmtPts(_riskPts)+'pts':'—'}</div></div>
       </div>
-      ${!_hasActualStop && _riskPct!=null ? `<div class="otc-risk-basis-note">Based on recommended stop \u2014 not yet confirmed on exchange.</div>` : ''}
       <div class="otc-stop-pill-row">
-        ${bePillHtml}
         ${manualPillHtml}
+        ${bePillHtml}
       </div>
-      ${e.tradeStage ? `<div style="font-size:10px;margin:2px 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
-      ${(()=>{
-        const _t = liveData && liveData._1hTiming;
-        if(!_t||!_t.state) return '';
-        const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
-        return `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">1H Timing: <span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
-      })()}
+      <div class="otc-context-block">
+        ${e.tradeStage ? `<div class="otc-context-row"><span class="otc-context-label">Context:</span><span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
+        ${(()=>{
+          const _t = liveData && liveData._1hTiming;
+          if(!_t||!_t.state) return '';
+          const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
+          return `<div class="otc-context-row"><span class="otc-context-label">1H Timing:</span><span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
+        })()}
+      </div>
       <div class="cz-spacer"></div>
-      <button class="close-trade-btn ${isLong?'close-long':'close-short'}" onclick="event.stopPropagation();openOutcomeModal(${e.id},null)">
-        ✕ Close ${isLong?'long':'short'} → log to journal
-      </button>
-      <button class="card-btn view-trade" style="margin-top:6px;" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">${flipGlyph} Trade Overview</button>
+      <div class="otc-action-zone">
+        <button class="close-trade-btn ${isLong?'close-long':'close-short'}" onclick="event.stopPropagation();openOutcomeModal(${e.id},null)">
+          ✕ Close ${isLong?'long':'short'} → log to journal
+        </button>
+        <button class="card-btn view-trade" style="margin-top:6px;" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">${flipIconSvg}Trade Overview</button>
+      </div>
     </div>
   </div>`;
 }
@@ -18404,11 +18470,21 @@ function openSetToBeDialog(id){
   if(!entry){ alert('Trade not found.'); return; }
   const entryPx = entry.actualEntry!=null ? entry.actualEntry
                 : (entry.entryPrice!=null ? entry.entryPrice : entry.price);
+  // TDAS V5.0.0G2 §6 — Clear confirmation. Shown only when reopening this
+  // dialog for a trade currently confirmed via THIS source (BE) — a
+  // restrained, explicit-click-only action inside the dialog body (not
+  // the modal's own primary action-button slot), so it can never be
+  // triggered by mistake alongside the normal confirm flow.
+  const _mgmtNow = _computeStopManagementState(entry);
+  const _clearBtnHtml = (_mgmtNow.confirmed && _mgmtNow.source==='BE')
+    ? '<button type="button" class="stop-mgmt-clear-btn" onclick="event.stopPropagation();clearStopConfirmation('+id+');_tdasConfirmCancel();">Clear confirmation</button>'
+    : '';
   openTdasConfirmModal({
     title: 'Set Stop to Break Even',
     bodyHtml:
       '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Recommended level</div><div class="stop-mgmt-recommended">'+(entryPx!=null?fmt(entryPx):'—')+'</div></div>'
-      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(entryPx!=null?entryPx:'')+'"></div>',
+      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(entryPx!=null?entryPx:'')+'"></div>'
+      + _clearBtnHtml,
     confirmLabel: 'Confirm placed',
     onConfirm: function(){
       const input = document.getElementById('stopmgmtDialogActual');
@@ -18426,11 +18502,19 @@ function openSetManualSlDialog(id){
   const entry = journal.find(j=>j.id===id);
   if(!entry){ alert('Trade not found.'); return; }
   const recLevel = entry.stop!=null ? entry.stop : null;
+  // TDAS V5.0.0G2 §6 — Clear confirmation, shown only when reopening this
+  // dialog for a trade currently confirmed via THIS source (ATR/MANUAL —
+  // i.e. any non-BE confirmed source).
+  const _mgmtNow = _computeStopManagementState(entry);
+  const _clearBtnHtml = (_mgmtNow.confirmed && _mgmtNow.source!=='BE')
+    ? '<button type="button" class="stop-mgmt-clear-btn" onclick="event.stopPropagation();clearStopConfirmation('+id+');_tdasConfirmCancel();">Clear confirmation</button>'
+    : '';
   openTdasConfirmModal({
-    title: 'Set Manual Stop Loss',
+    title: 'Set Stop Loss',
     bodyHtml:
       '<div class="stop-mgmt-field"><div class="stop-mgmt-label">TDAS recommended stop</div><div class="stop-mgmt-recommended">'+(recLevel!=null?fmt(recLevel):'—')+'</div></div>'
-      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(recLevel!=null?recLevel:'')+'"></div>',
+      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(recLevel!=null?recLevel:'')+'"></div>'
+      + _clearBtnHtml,
     confirmLabel: 'Confirm placed',
     onConfirm: function(){
       const input = document.getElementById('stopmgmtDialogActual');
@@ -18535,6 +18619,43 @@ function confirmStopPlacement(id, mode, actualValRaw){
   const _sym = entry.symbol;
   console.log('[WRITE] action started: confirmStopPlacement', _sym, source);
   commitJournalChange('confirmStopPlacement:'+_sym, entry.id).then(()=>{
+    if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+  });
+}
+
+// TDAS V5.0.0G2 §6 — Clear confirmation. Requires an explicit click
+// (reachable only from inside a reopened dialog, never automatic). Clears
+// ONLY TDAS's own confirmed-stop state — both the named schema and the
+// legacy BE mirror, since "one authoritative confirmed stop" is the rule
+// (V5.0.0G2 §6: "Do not add parallel stored SL and B/E states") — never
+// implies TDAS changed or cancelled anything on Bitunix itself. After
+// clearing: the front shows no status pill (mgmtStatusPillHtml is only
+// ever built when _mgmt.confirmed is true), and the rear's two pills
+// naturally return to their appropriate available-action state (the SL
+// pill always available; the B/E pill visible again only if still
+// eligible) — both computed fresh from _computeStopManagementState() on
+// the next render, no special-casing needed here beyond clearing the
+// fields themselves.
+function clearStopConfirmation(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry){ alert('Trade not found.'); return; }
+  entry.mgmtSchemaVersion  = 1;
+  entry.slConfirmed        = false;
+  entry.slConfirmedAt      = null;
+  entry.slRecommendedLevel = null;
+  entry.slConfirmedLevel   = null;
+  entry.slConfirmedSource  = null;
+  entry.beStopConfirmed      = false;
+  entry.beStopConfirmedAt    = null;
+  entry.beStopConfirmedPrice = null;
+  entry.beStopLevel          = null;
+  entry.beStopSource         = null;
+
+  Object.assign(entry, stampUpdate(entry));
+  sessionDirtyIds.add(entry.id);
+  const _sym = entry.symbol;
+  console.log('[WRITE] action started: clearStopConfirmation', _sym);
+  commitJournalChange('clearStopConfirmation:'+_sym, entry.id).then(()=>{
     if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
   });
 }
