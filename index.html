@@ -1411,7 +1411,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div class="summary" id="summary" style="margin-bottom:0;"></div>
     <div id="scannerStatusBar" class="tdas-status-block" style="display:none;"></div>
   </div>
-  <div class="status-row" style="justify-content:flex-start;"><span id="status"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
+  <div class="status-row" style="justify-content:flex-start;"><span id="status"></span><span id="activeTradesPill" class="htf-note" style="margin-left:10px;display:none;cursor:pointer;" onclick="showTab('trade')"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;">Active TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
   <div class="grid" id="grid"></div>
 </div>
 
@@ -1695,7 +1695,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0D1';
+const APP_BUILD = 'V5.0.0E';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2272,6 +2272,7 @@ function renderAllJournalDependentUI(){
   updateLivePnL();
   updateJournalCount();
   updateTradeCount();
+  _updateActiveTradesPill(); // TDAS V5.0.0E — keep the Scanner pill truthful without requiring a fresh scan
   // Re-render Watch page / Trade desk if active
   const watchTab = document.getElementById('tab-watch');
   if(watchTab && watchTab.classList.contains('active')) renderWatchPage();
@@ -20433,6 +20434,20 @@ function renderHistory(){
 // ── Summary ──────────────────────────────────────────────────────────────
 // TDAS V4.5.5 — excludes active-trade symbols from the counts below. See
 // the inline comment on `valid` for the full root-cause explanation.
+// TDAS V5.0.0E — Remove Active Trades from Scanner. Compact clickable pill
+// summarising active trades removed from the grid above. Counts ALL
+// active trades (both 1H and 4H) regardless of the currently selected
+// Scanner timeframe — same hasOpenTrade predicate already used by
+// signalItems/neutralItems/renderSummary above, not a new rule. Hidden
+// entirely when there are none.
+function _updateActiveTradesPill(){
+  const el = document.getElementById('activeTradesPill');
+  if(!el) return;
+  const n = journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome).length;
+  if(!n){ el.style.display='none'; el.textContent=''; return; }
+  el.style.display='';
+  el.textContent = `⚡ ${n} ACTIVE TRADE${n!==1?'S':''}`;
+}
 function renderSummary(results){
   // Root cause of the V4.5.4 count mismatch: calcPair()'s raw .signal
   // reflects current market state only — it has nothing to do with
@@ -20844,13 +20859,21 @@ async function runScan(auto){
   });
 
   // Split into signal/trade cards and neutral cards
-
+  // TDAS V5.0.0E — Remove Active Trades from Scanner. hasOpenTrade symbols
+  // no longer get a signalItems entry at all (previously they did, just
+  // rendered as a compact placeholder card via renderCard's isOpenTrade
+  // branch — see buildActiveScannerPlaceholderHtml, now unreachable from
+  // this path since no <div id="c-{sym}"> element exists for them to
+  // target). They are represented instead by the single "⚡ X ACTIVE
+  // TRADES" pill (see _updateActiveTradesPill()). Watching symbols are
+  // completely unaffected — still included exactly as before.
 
   const signalItems  = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
     const hasOpenTrade = journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
     const watching     = journal.some(j=>j.symbol===sym&&isActiveWatch(j));
-    return hasOpenTrade || watching || (v && v.signal!=='neutral') || r.status==='rejected';
+    if(hasOpenTrade) return false;
+    return watching || (v && v.signal!=='neutral') || r.status==='rejected';
   });
   const neutralItems = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
@@ -20940,6 +20963,7 @@ async function runScan(auto){
     : sigs===1 ? `1 SIGNAL DETECTED ON ${tf.toUpperCase()}`
     : `${sigs} SIGNALS DETECTED ON ${tf.toUpperCase()}`;
   _statusEl.className = sigs>0 ? 'scanner-result-active' : 'scanner-result-neutral';
+  _updateActiveTradesPill();
   const t=nowTime();
   document.getElementById('footerTime').textContent=`Last scan ${t}`;
   // Record scan completion time for status bar signal age display
