@@ -1202,13 +1202,17 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    NO fixed height/ceiling (see that rule's own comment), this card
    requires front and rear to share a genuinely FIXED, equal height so
    flipping never causes a layout jump. Scoped to .order-card.twin-sided
-   only — the base .order-card rule above (used elsewhere) is untouched. */
+   only — the base .order-card rule above (used elsewhere) is untouched.
+   TDAS V5.0.0G — height increased from 500px: the rear face now carries
+   substantially more settled content (Risk & Levels six-field grid plus
+   the new Stop Management panel), and 500px would have clipped or
+   cramped it. */
 .order-card.twin-sided{
-  height:500px;
+  height:640px;
   display:flex;flex-direction:column;
   overflow:hidden;
 }
-.order-card.twin-sided .otc-header{flex-shrink:0;}
+.order-card.twin-sided .otc-face-header{flex-shrink:0;}
 .otc-face{
   flex:1;min-height:0;
   display:flex;flex-direction:column;
@@ -1217,6 +1221,61 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .otc-face-back{display:none;}
 .order-card.twin-sided.is-flipped .otc-face-front{display:none;}
 .order-card.twin-sided.is-flipped .otc-face-back{display:flex;}
+/* TDAS V5.0.0G — per-face header rows (front: symbol/HTF/copy, session/
+   setup-tf, Paper/candle-timer; rear: symbol/direction-pill/copy only).
+   Replaces V5.0.0F's single shared header outside the flip area, since
+   this build's settled hierarchy requires the two faces to show
+   genuinely different header content. */
+.otc-face-header-row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:5px;}
+.otc-face-header-row:last-of-type{margin-bottom:8px;}
+.otc-symbol{font-size:16px;font-weight:600;color:var(--text);}
+/* Entered line — must read clearly, not as faded microcopy (V5.0.0G §Entered line). */
+.otc-entered-line{font-size:12px;color:var(--text2);margin-bottom:8px;}
+/* Single top-right management-status pill inside the advisory box —
+   compact, same visual family as the existing sl-be-pill (confirmed
+   variant), non-clickable (revision happens via the Stop Management
+   panel on the rear, not by clicking this pill). */
+.mgmt-status-pill{
+  display:inline-flex;align-items:center;height:20px;padding:0 8px;
+  border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap;
+  background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-bg);
+}
+/* TDAS V5.0.0G — Stop Management. Amber/yellow, visually related to the
+   advisory box's own REVIEW tone but clearly its own labelled panel, not
+   an advisory state. */
+.stop-mgmt-panel{
+  margin:8px 0;padding:10px 12px;
+  border-radius:var(--radius-sm);
+  border:1px solid rgba(186,117,23,0.35);
+  background:rgba(186,117,23,0.06);
+}
+.stop-mgmt-title{
+  font-size:11px;font-weight:700;letter-spacing:0.5px;color:var(--amber-text);
+  margin-bottom:8px;text-transform:uppercase;
+}
+.stop-mgmt-mode-row{display:flex;gap:6px;margin-bottom:10px;}
+.stop-mgmt-mode-btn{
+  flex:1;padding:7px 8px;font-size:12px;font-weight:600;
+  border-radius:var(--radius-sm);cursor:pointer;
+  background:var(--bg3);color:var(--text2);border:1px solid var(--border2);
+  transition:background 0.15s,color 0.15s,border-color 0.15s;
+}
+.stop-mgmt-mode-btn:hover:not(:disabled){background:var(--bg4);color:var(--text);}
+.stop-mgmt-mode-btn.active{
+  background:rgba(186,117,23,0.18);color:var(--amber-text);border-color:rgba(186,117,23,0.5);
+}
+.stop-mgmt-mode-btn:disabled{opacity:0.4;cursor:not-allowed;}
+.stop-mgmt-field{margin-bottom:8px;}
+.stop-mgmt-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:3px;}
+.stop-mgmt-recommended{font-family:var(--mono);font-size:13px;color:var(--text2);}
+.stop-mgmt-actual-input{
+  width:100%;font-family:var(--mono);font-size:13px;color:var(--text);
+  background:var(--bg3);border:1px solid var(--border2);border-radius:var(--radius-sm);
+  padding:6px 8px;box-sizing:border-box;
+}
+.stop-mgmt-actual-input:focus{outline:1px solid rgba(186,117,23,0.5);border-color:rgba(186,117,23,0.5);}
+.stop-mgmt-confirm-btn{margin-top:2px;}
+.otc-risk-basis-note{font-size:10px;color:var(--text3);margin-top:-6px;margin-bottom:8px;}
 .order-card.active-long{border-left-color:var(--green-text);box-shadow:0 0 0 1px rgba(29,158,117,0.15) inset;}
 .order-card.active-short{border-left-color:var(--red-text);box-shadow:0 0 0 1px rgba(192,67,42,0.15) inset;}
 /* TDAS advisory state — takes over the left rail colour from the plain
@@ -1715,7 +1774,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0F';
+const APP_BUILD = 'V5.0.0G';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2168,6 +2227,18 @@ function normaliseSheets(e){
     beStopConfirmedPrice: _n(e.beStopConfirmedPrice!=null?e.beStopConfirmedPrice:e['BE Stop Confirmed Price']),
     beStopLevel:          _n(e.beStopLevel!=null?e.beStopLevel:e['BE Stop Level']),
     beStopSource:         e.beStopSource||e['BE Stop Source']||null,
+
+    // TDAS V5.0.0G — named Stop Management schema (Google Sheets column
+    // names in brackets — see delivery notes for the exact column set
+    // Apps Script must add). Same fixed-allow-list requirement as the
+    // legacy BE fields above — must be explicitly listed here or
+    // pullFromSheets() silently drops them on every sync.
+    mgmtSchemaVersion:   parseInt(e.mgmtSchemaVersion!=null?e.mgmtSchemaVersion:e['Management Schema Version'])||0,
+    slConfirmed:         _b(e.slConfirmed||e['SL Confirmed']),
+    slConfirmedAt:       e.slConfirmedAt||e['SL Confirmed At']||null,
+    slRecommendedLevel:  _n(e.slRecommendedLevel!=null?e.slRecommendedLevel:e['SL Recommended Level']),
+    slConfirmedLevel:    _n(e.slConfirmedLevel!=null?e.slConfirmedLevel:e['SL Confirmed Level']),
+    slConfirmedSource:   e.slConfirmedSource||e['SL Confirmed Source']||null,
   };
   // Transitional aliases — must mirror buildV1Entry so UI renders correctly
   // after pullFromSheets() replaces in-memory journal entries.
@@ -16357,6 +16428,20 @@ function buildV1Entry(symbol, d, decision, overrides) {
     beStopConfirmedPrice: null,
     beStopLevel:          null,
     beStopSource:         null,
+
+    // TDAS V5.0.0G — named Stop Management schema. Defaults here so every
+    // creation path starts unconfirmed; nothing else in the app sets
+    // these except confirmStopPlacement(). mgmtSchemaVersion stays
+    // unset/0 until the first confirmation under this schema — it is not
+    // stamped proactively at creation, matching "do not infer
+    // confirmation merely because legacy data contains a stop
+    // recommendation" (V5.0.0G §5).
+    mgmtSchemaVersion:   0,
+    slConfirmed:         false,
+    slConfirmedAt:       null,
+    slRecommendedLevel:  null,
+    slConfirmedLevel:    null,
+    slConfirmedSource:   null,
   };
 
   // Transitional aliases for legacy UI renderers.
@@ -18063,29 +18148,26 @@ function renderWatchCard(e){
 // Advisory computation, BE trigger/persistence/confirmation flow, breach
 // handling and Close/Log behaviour are all completely unchanged — only
 // WHERE their already-computed HTML is placed (front vs rear) differs.
+// TDAS V5.0.0G — Active Trade Card Management Overhaul. Front face ("Trade
+// Overview") now follows the Scanner-card visual rhythm exactly (three
+// header rows, then price row, then Entered line, then advisory, then a
+// slightly smaller Live P&L) instead of V5.0.0F's stacked single header.
+// Rear face ("Manage Trade") now carries a settled Risk & Levels grid
+// (Entry/Current/Recommended stop/Actual stop/Risk %/Risk points — Score
+// and 1st Target removed from this primary grid, still available in Full
+// Analysis) plus the new Stop Management panel (recommended-vs-actual
+// stop, named persistence — see _computeStopManagementState()/
+// confirmStopPlacement() below). Advisory computation, BE eligibility
+// conditions, breach handling, and Close/Log logic are all unchanged —
+// only presentation and the stop-confirmation persistence shape changed.
 function renderOrderTicketCard(e){
   // TDAS V4.10.4G — Timeframe-Isolated Active Trade Data Migration.
   // liveData now comes from the exact symbol+trade.tf (setup timeframe)
   // registry snapshot via getActiveTradeSnapshotData(), never from
   // whichever timeframe currentScanData[e.symbol] happened to hold last.
-  // buildAdvisory(liveData, {openTrade:e}) below is completely unchanged
-  // — it already only ever consumed whatever this line produced, so this
-  // single substitution migrates primary lifecycle, Trade Stage, HOLD/
-  // REVIEW, TEMA/UT/ADX/RSI interpretation, and HTF confirmation wording
-  // together. HTF/1D confirmation is already embedded in this SAME
-  // setup-timeframe calcPair() result (calcPair() fetches both tf and htf
-  // klines in one call) — no separate snapshot is needed or fabricated
-  // for that. The genuinely separate 1H execution-timing warning for 4H
-  // trades continues to flow through _1hTiming (liveData._1hTiming below),
-  // already correctly timeframe-isolated by V4.10.4F's
-  // _applyTimingUpdateToRegistry().
+  // buildAdvisory(liveData, {openTrade:e}) below is completely unchanged.
   const _tradeRead = getActiveTradeSnapshotData(e);
   const liveData = _tradeRead.data;
-  // TDAS V4.10.4G — compact support-only status. Never hides a valid
-  // setup card — only ever adds a small informational line when the
-  // adjacent-timeframe support snapshot is not yet available, using the
-  // wording the spec requires per setup direction (1H trade awaits 4H;
-  // 4H trade awaits 1H).
   const _supportRead = getActiveTradeSupportSnapshotData(e);
   const _supportStatusHtml = (_supportRead.data == null && (_supportRead.status === 'pending' || _supportRead.status === 'missing'))
     ? `<div style="font-size:10px;margin-bottom:6px;color:var(--text3);opacity:0.85;">${(_supportRead.tf||'').toUpperCase()} ${e.tf === '1h' ? 'confirmation' : 'execution'} data pending.</div>`
@@ -18093,21 +18175,20 @@ function renderOrderTicketCard(e){
   const livePrice=liveData?liveData.price:null;
   const entryPx=e.actualEntry||e.price;
   let pnlHtml='';
-  let pnlR=null; // hoisted — reused by the SL-to-BE pill below, not recalculated
+  let pnlR=null; // hoisted — reused by Stop Management eligibility below, not recalculated
   if(livePrice&&entryPx){
     const pnlPct=e.signal==='long'?((livePrice-entryPx)/entryPx*100):((entryPx-livePrice)/entryPx*100);
     const riskPx=e.stop!=null?Math.abs(entryPx-e.stop):null;
     pnlR=riskPx?(e.signal==='long'?(livePrice-entryPx)/riskPx:(entryPx-livePrice)/riskPx):null;
     const color=pnlPct>0?'var(--green-text)':pnlPct<0?'var(--red-text)':'var(--text2)';
-    pnlHtml=`<div class="live-pnl-bar show"><div class="pnl-label">Live P&amp;L</div><div class="pnl-val" style="color:${color};">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%${pnlR!==null?' · '+(pnlR>=0?'+':'')+pnlR.toFixed(2)+'R':''}</div></div>`;
+    // TDAS V5.0.0G — font-size reduced slightly from V5.0.0F via inline
+    // style only (the shared .pnl-val class, 18px, is used elsewhere —
+    // e.g. Journal — and is left untouched).
+    pnlHtml=`<div class="live-pnl-bar show"><div class="pnl-label">Live P&amp;L</div><div class="pnl-val" style="color:${color};font-size:15px;">${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%${pnlR!==null?' · '+(pnlR>=0?'+':'')+pnlR.toFixed(2)+'R':''}</div></div>`;
   }
   const isLong=e.signal==='long';
 
-  // TDAS advisory — same buildAdvisory(d, {openTrade}) invocation pattern
-  // already used by the active scanner placeholder. liveData is the same
-  // currentScanData[symbol] object buildAdvisory reads d._1hTiming from.
-  // Completely unchanged from before this release — advisory logic and
-  // wording are explicitly out of scope for V5.0.0F.
+  // TDAS advisory — completely unchanged from before this release.
   let advisory = null;
   if(liveData){
     try{ advisory = (typeof buildAdvisory==='function') ? buildAdvisory(liveData, {openTrade:e}) : null; }
@@ -18119,80 +18200,72 @@ function renderOrderTicketCard(e){
     : advisory.action==='TAKE_PROFIT_25' ? 'tdas-state-take25'
     : advisory.action==='REVIEW' ? 'tdas-state-review'
     : 'tdas-state-hold';
-  // TP1 — Fib 1.618 target reached (TDAS V4.5 Task 4, V1: display-only, no
-  // persistence, not clickable). Unchanged from before this release.
+  // TP1 — computation preserved (still used elsewhere, e.g. BE eligibility
+  // below, unchanged), but its pill is not surfaced in this build's single
+  // management-status pill slot — TP is explicitly reserved as a future
+  // supported status (V5.0.0G §Advisory box), not implemented here.
   const _tp1Reached = (
     livePrice!=null && e.target!=null &&
     (isLong ? (e.target > entryPx && livePrice >= e.target)
             : (e.target < entryPx && livePrice <= e.target))
   ) && (!advisory || advisory.action!=='CLOSE');
-  const tp1Html = _tp1Reached
-    ? `<span class="tp1-pill" title="Fib 1.618 target reached. Consider partial profit or tightening stop.">TP1</span>`
+
+  // TDAS V5.0.0G — Stop Management. Reads the new named schema first,
+  // falling back (read-only, never rewrites the journal) to the legacy
+  // beStopConfirmed fields when the new fields are absent — existing
+  // confirmed BE trades remain truthful; legacy unconfirmed trades never
+  // become falsely confirmed (only an EXPLICIT beStopConfirmed===true
+  // migrates, per "do not infer confirmation merely because legacy data
+  // contains a stop recommendation").
+  const _mgmt = _computeStopManagementState(e);
+  // BE eligibility — byte-identical trigger condition to the pre-V5.0.0G
+  // "SL to BE" prompt (V5.0.0G §6: "Do not alter... BE eligibility
+  // conditions"), now gating the "Set to B/E" mode button's clickability
+  // instead of a standalone pill's visibility.
+  const _beEligible = !_mgmt.confirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+
+  // Single top-right management-status pill — only one of the two
+  // supported states for this build may display (V5.0.0G §Advisory box).
+  const mgmtStatusPillHtml = _mgmt.confirmed
+    ? (_mgmt.source==='BE'
+        ? `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL AT B/E</span>`
+        : `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 MANUAL SL</span>`)
     : '';
 
-  // SL to BE — trigger condition, persistence field, confirm/undo button
-  // behaviour and breach handling are all completely unchanged from
-  // before this release (see confirmBeStop()/undoBeStop() — untouched).
-  // TDAS V5.0.0F only changes WHERE these two already-computed HTML
-  // strings are placed: beConfirmedHtml (a passive status pill) now shows
-  // on BOTH faces (front: quick glance; rear: management context) —
-  // slToBeHtml (the actionable, unconfirmed prompt) now shows ONLY on the
-  // rear Manage Trade face, within its management area, never on the
-  // front overview.
-  const _beConfirmed = !!e.beStopConfirmed;
-  const beConfirmedHtml = _beConfirmed
-    ? `<span class="sl-be-pill sl-be-confirmed sl-be-clickable" title="Stop confirmed at break-even (${e.beStopLevel!=null?fmt(e.beStopLevel):'—'}). Click to undo." onclick="event.stopPropagation();undoBeStop(${e.id});">\u2713 SL at BE</span>`
-    : '';
-  const _slToBe = !_beConfirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
-  const slToBeHtml = _slToBe
-    ? `<span class="sl-be-pill sl-be-clickable" title="Price has moved +1R. Click to confirm you have moved your stop to break-even." onclick="event.stopPropagation();confirmBeStop(${e.id});">SL to BE</span>`
-    : '';
-
-  // Front advisory header row: headline + TP1 + confirmed-BE pill only —
-  // the unconfirmed SL-to-BE action prompt is deliberately never shown on
-  // the front (it lives on the rear's management area instead, below).
   const advisoryHtml = advisory
     ? `<div class="tdas-advisory-block ${stateClass}">`
       + `<div class="tdas-advisory-header-row">`
       + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
-      + tp1Html
-      + beConfirmedHtml
+      + mgmtStatusPillHtml
       + `</div>`
       + (advisory.detail ? `<div class="tdas-advisory-detail">${advisory.detail}</div>` : '')
       + `</div>`
     : '';
 
-  // Rear management area: confirmed pill OR the actionable prompt —
-  // mutually exclusive via the same existing conditions above, just
-  // rendered as its own labelled row instead of nested in the advisory.
-  const slBeManageHtml = (beConfirmedHtml || slToBeHtml)
-    ? `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">SL/BE: ${beConfirmedHtml || slToBeHtml}</div>`
-    : '';
-
   const cardClass=`order-card twin-sided ${isLong?'active-long':'active-short'} ${stateClass}`;
   const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-  // SL Risk — replaces the unused Fib Stop display (TDAS V4.4.2). Uses the
-  // same entryPx (e.actualEntry||e.price) already used for P&L above, and
-  // e.stop (ATR stop), so it's always consistent with what ATR Stop shows.
-  // Absolute value by design: if a stop is ever found on the "wrong" side
-  // of entry (e.g. mid-adjustment), this still shows a safe, non-breaking
-  // magnitude rather than a confusing negative number or a "—" that would
-  // hide otherwise-available data. Unchanged from before this release —
-  // shown on the rear face now (was on the single face before).
-  const _slRiskPts = (entryPx!=null && e.stop!=null)
-    ? Math.abs(isLong ? (entryPx - e.stop) : (e.stop - entryPx))
-    : null;
-  const _slRiskPct = (entryPx!=null && e.stop!=null && entryPx)
-    ? Math.abs(isLong ? ((entryPx - e.stop)/entryPx*100) : ((e.stop - entryPx)/entryPx*100))
-    : null;
-  const _slRiskHtml = (_slRiskPts!=null && _slRiskPct!=null)
-    ? (_slRiskPct.toFixed(2)+'% / '+fmtPts(_slRiskPts)+'pts')
-    : '—';
 
-  // Front face fields, mirroring buildActiveScannerPlaceholderHtml's own
-  // HTF badge / session-candle row / price-pill row exactly (same source
-  // fields, same classes) — liveData is the same exact-timeframe snapshot
-  // object that function reads from.
+  // Risk & Levels — recommended (TDAS ATR stop) vs actual (user-confirmed
+  // exchange stop). Risk %/points correspond to the confirmed actual stop
+  // when one exists; otherwise to the recommended stop, clearly marked as
+  // estimated rather than presented as confirmed exchange risk (V5.0.0G
+  // §3 Field truthfulness — "do not fabricate certainty").
+  const _recommendedStop = e.stop!=null ? e.stop : null;
+  const _hasActualStop = _mgmt.confirmed && _mgmt.confirmedLevel!=null;
+  const _riskBasisLevel = _hasActualStop ? _mgmt.confirmedLevel : _recommendedStop;
+  const _riskPts = (entryPx!=null && _riskBasisLevel!=null)
+    ? Math.abs(isLong ? (entryPx - _riskBasisLevel) : (_riskBasisLevel - entryPx))
+    : null;
+  const _riskPct = (entryPx!=null && _riskBasisLevel!=null && entryPx)
+    ? Math.abs(isLong ? ((entryPx - _riskBasisLevel)/entryPx*100) : ((_riskBasisLevel - entryPx)/entryPx*100))
+    : null;
+  const _riskHtml = (_riskPts!=null && _riskPct!=null)
+    ? (_riskPct.toFixed(2)+'% / '+fmtPts(_riskPts)+'pts')
+    : '—';
+  const _actualStopDisplay = _hasActualStop ? fmt(_mgmt.confirmedLevel) : 'Not confirmed';
+
+  // Front face fields — same HTF badge / session-candle source fields as
+  // the Scanner active-trade placeholder (buildActiveScannerPlaceholderHtml).
   const _htfState = (typeof buildHtfBadgeState==='function' && liveData) ? buildHtfBadgeState(liveData, e.signal) : 'unknown';
   const htfText = liveData ? `HTF ${(liveData.htf||'').toUpperCase()} ${HTF_BADGE_GLYPH[_htfState]||''}` : '';
   const _hasCandleTimer = liveData && liveData.minsRemaining!=null && liveData.secsRemaining!=null;
@@ -18200,81 +18273,280 @@ function renderOrderTicketCard(e){
   const minsStr = _hasCandleTimer ? String(liveData.minsRemaining).padStart(2,'0') : '--';
   const secsStr = _hasCandleTimer ? String(liveData.secsRemaining).padStart(2,'0') : '--';
   const dirWord = isLong ? 'LONG' : 'SHORT';
+  const dirArrow = isLong ? '\u25b2' : '\u25bc';
+
+  // Stop Management panel setup. Recommended level depends on mode:
+  // B/E -> entry price; SL -> TDAS's current ATR-recommended stop.
+  // Default mode: B/E when eligible (matches the prior prompt's own
+  // priority), otherwise SL.
+  const _defaultMode = _beEligible ? 'BE' : 'SL';
+  const _beRecLevel = entryPx!=null ? entryPx : null;
+  const _slRecLevel = _recommendedStop;
+  const _defaultRecLevel = _defaultMode==='BE' ? _beRecLevel : _slRecLevel;
+
+  const copyBtnHtml = `<button class="snap-btn" type="button" title="Copy snapshot" data-tid="${e.id}" onclick="event.stopPropagation();event.preventDefault();copySnapshotFromTrade(+this.dataset.tid,this);"><span class="snap-icon"></span></button>`;
+  // TDAS V5.0.0G — flip icon replaced (both buttons use the same compact
+  // glyph, consistent with the Trade Ready rear card's own control style,
+  // instead of the 🔄 refresh-style emoji). Icon-only change — button
+  // size, colour, placement and flip behaviour are unchanged.
+  const flipGlyph = '\u21c4';
 
   return `<div class="${cardClass}" id="otcard-${e.id}">
-    <div class="otc-header">
-      <div class="otc-line1">
-        <span class="otc-pair">${LABELS[e.symbol]||e.symbol}</span>
-        <button class="snap-btn" type="button" title="Copy snapshot" data-tid="${e.id}" onclick="event.stopPropagation();event.preventDefault();copySnapshotFromTrade(+this.dataset.tid,this);"><span class="snap-icon"></span></button>
-      </div>
-      <div class="otc-line3">
-        <span class="chip ${isLong?'long':'short'}" style="font-size:11px;">${isLong?'▲ Long':'▼ Short'}</span>
-        <span class="chip ${e.tradeType==='real'?'aligned':'neutral'}" style="font-size:11px;">${e.tradeType==='real'?'💰 Live':'📝 Paper'}</span>
-      </div>
-      <div class="otc-meta">Entered ${ts} · ${e.tf.toUpperCase()} setup</div>
-    </div>
     <div class="otc-face otc-face-front">
-      ${liveData ? `<div class="session-candle-row" style="margin-bottom:6px;">
-        <span class="htf-badge ${_htfState}">${htfText}</span>
-        ${liveData.session ? `<span class="session-pill" style="color:${liveData.sessionColor||'var(--text2)'};">${liveData.session}${liveData.overlap?' \u26a1':''}</span>` : ''}
-        ${_hasCandleTimer ? `<span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>` : ''}
-      </div>` : ''}
+      <div class="otc-face-header">
+        <div class="otc-face-header-row">
+          <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
+          <span class="htf-badge ${_htfState}">${htfText}</span>
+          ${copyBtnHtml}
+        </div>
+        <div class="otc-face-header-row">
+          ${liveData && liveData.session ? `<span class="session-pill" style="color:${liveData.sessionColor||'var(--text2)'};">${liveData.session}${liveData.overlap?' \u26a1':''}</span>` : '<span></span>'}
+          <span class="setup-tf-pill">${e.tf.toUpperCase()} SETUP</span>
+        </div>
+        <div class="otc-face-header-row">
+          <span class="chip ${e.tradeType==='real'?'aligned':'neutral'}" style="font-size:11px;">${e.tradeType==='real'?'💰 Live':'📝 Paper'}</span>
+          ${_hasCandleTimer ? `<span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>` : '<span></span>'}
+        </div>
+      </div>
       <div class="cz-price" style="padding:2px 0 6px;">
         <div class="price-pill-row">
           <span class="price">${livePrice?fmt(livePrice):'—'}</span>
-          <span class="sig-pill pill-trade">${isLong?'\u25b2':'\u25bc'} ${dirWord} ACTIVE</span>
+          <span class="sig-pill pill-trade">${dirArrow} ${dirWord} ACTIVE</span>
         </div>
       </div>
+      <div class="otc-entered-line">Entered ${ts}</div>
       ${advisoryHtml}
       ${pnlHtml}
       ${_supportStatusHtml}
       <div class="cz-spacer"></div>
-      <button class="card-btn view-trade" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">\ud83d\udd04 Manage Trade</button>
+      <button class="card-btn view-trade" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">${flipGlyph} Manage Trade</button>
       <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','trade',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
     </div>
     <div class="otc-face otc-face-back">
-      ${e.tradeStage ? `<div style="font-size:10px;margin:0 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
+      <div class="otc-face-header">
+        <div class="otc-face-header-row">
+          <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
+          <span class="sig-pill pill-trade">${dirArrow} ${dirWord} ACTIVE</span>
+          ${copyBtnHtml}
+        </div>
+      </div>
+      ${pnlHtml}
+      <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin:6px 0 4px;">Risk &amp; Levels</div>
+      <div class="ticket-levels">
+        <div class="tl-item"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">Recommended stop</div><div class="tl-val" style="color:var(--text2);">${_recommendedStop!=null?fmt(_recommendedStop):'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">Actual stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--red-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
+        <div class="tl-item"><div class="tl-label">Risk %</div><div class="tl-val" style="color:#a78bfa;">${_riskPct!=null?_riskPct.toFixed(2)+'%':'—'}</div></div>
+        <div class="tl-item"><div class="tl-label">Risk points</div><div class="tl-val" style="color:#a78bfa;">${_riskPts!=null?fmtPts(_riskPts)+'pts':'—'}</div></div>
+      </div>
+      ${!_hasActualStop && _riskPct!=null ? `<div class="otc-risk-basis-note">Based on recommended stop \u2014 not yet confirmed on exchange.</div>` : ''}
+      <div class="stop-mgmt-panel" id="stopmgmt-${e.id}" data-mode="${_defaultMode}" data-be-level="${_beRecLevel!=null?_beRecLevel:''}" data-sl-level="${_slRecLevel!=null?_slRecLevel:''}">
+        <div class="stop-mgmt-title">Stop Management</div>
+        <div class="stop-mgmt-mode-row">
+          <button type="button" class="stop-mgmt-mode-btn ${_defaultMode==='BE'?'active':''}" data-mode-btn="BE" ${!_beEligible?'disabled title="Not yet eligible \u2014 requires at least +1R and no active close condition"':''} onclick="event.stopPropagation();setStopMgmtMode(${e.id},'BE');">Set to B/E</button>
+          <button type="button" class="stop-mgmt-mode-btn ${_defaultMode==='SL'?'active':''}" data-mode-btn="SL" onclick="event.stopPropagation();setStopMgmtMode(${e.id},'SL');">Set SL</button>
+        </div>
+        <div class="stop-mgmt-field">
+          <div class="stop-mgmt-label">Recommended level</div>
+          <div class="stop-mgmt-recommended" id="stopmgmt-rec-${e.id}">${_defaultRecLevel!=null?fmt(_defaultRecLevel):'—'}</div>
+        </div>
+        <div class="stop-mgmt-field">
+          <div class="stop-mgmt-label">Actual level placed</div>
+          <input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmt-actual-${e.id}" value="${_defaultRecLevel!=null?_defaultRecLevel:''}" onclick="event.stopPropagation();">
+        </div>
+        <button type="button" class="card-btn primary-long stop-mgmt-confirm-btn" onclick="event.stopPropagation();confirmStopPlacement(${e.id});">Confirm placed</button>
+      </div>
+      ${e.tradeStage ? `<div style="font-size:10px;margin:2px 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
       ${(()=>{
-        // TDAS V4.10.4G — reads liveData (already resolved above via
-        // getActiveTradeSnapshotData(e)) instead of a fresh direct
-        // currentScanData[e.symbol] lookup — same exact-setup-timeframe
-        // source as the rest of this card. The 1H timing evidence itself
-        // remains the same _1hTiming mechanism, already registry-isolated
-        // via V4.10.4F's _applyTimingUpdateToRegistry(). Unchanged from
-        // before this release — shown on the rear face now.
         const _t = liveData && liveData._1hTiming;
         if(!_t||!_t.state) return '';
         const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
         return `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">1H Timing: <span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
       })()}
-      ${slBeManageHtml}
-      <div class="ticket-levels">
-        <div class="tl-item"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">ATR Stop</div><div class="tl-val" style="color:var(--red-text);">${e.stop!=null?fmt(e.stop):'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">SL Risk</div><div class="tl-val" style="color:#a78bfa;">${_slRiskHtml}</div></div>
-        <div class="tl-item"><div class="tl-label">1st Target <span style="font-size:9px;color:var(--text3);">Fib 1.618</span></div><div class="tl-val" style="color:var(--green-text);">${e.target!=null?fmt(e.target):'—'}</div></div>
-        <div class="tl-item"><div class="tl-label">Score</div><div class="tl-val">${e.score}%</div></div>
-      </div>
       <div class="cz-spacer"></div>
       <button class="close-trade-btn ${isLong?'close-long':'close-short'}" onclick="event.stopPropagation();openOutcomeModal(${e.id},null)">
         ✕ Close ${isLong?'long':'short'} → log to journal
       </button>
-      <button class="card-btn view-trade" style="margin-top:6px;" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">\ud83d\udd04 Trade Overview</button>
+      <button class="card-btn view-trade" style="margin-top:6px;" onclick="event.stopPropagation();flipOrderTicketCard(${e.id});">${flipGlyph} Trade Overview</button>
     </div>
   </div>`;
+}
+
+// TDAS V5.0.0G — reads the new named Stop Management schema first; falls
+// back (read-only, never rewrites the journal) to migrating the legacy
+// beStopConfirmed/beStopLevel/beStopConfirmedAt fields when the new
+// fields are absent, so existing confirmed BE trades remain truthful and
+// legacy unconfirmed trades never become falsely confirmed. Only an
+// EXPLICIT beStopConfirmed===true migrates — never inferred merely from
+// the presence of a stop recommendation (V5.0.0G §5 Values).
+function _computeStopManagementState(e){
+  if(e.slConfirmed){
+    return {
+      confirmed: true,
+      source: e.slConfirmedSource || 'MANUAL',
+      confirmedLevel: e.slConfirmedLevel!=null ? e.slConfirmedLevel : null,
+      confirmedAt: e.slConfirmedAt || null,
+      recommendedLevel: e.slRecommendedLevel!=null ? e.slRecommendedLevel : null,
+    };
+  }
+  if(e.beStopConfirmed){
+    return {
+      confirmed: true,
+      source: 'BE',
+      confirmedLevel: e.beStopLevel!=null ? e.beStopLevel : null,
+      confirmedAt: e.beStopConfirmedAt || null,
+      recommendedLevel: e.beStopLevel!=null ? e.beStopLevel : null,
+    };
+  }
+  return { confirmed:false, source:null, confirmedLevel:null, confirmedAt:null, recommendedLevel:null };
+}
+
+// TDAS V5.0.0G — Stop Management mode toggle. DOM-only (no persistence,
+// no confirmation) — selecting a mode or prefilling a value never
+// confirms anything (V5.0.0G §4: "Do not automatically treat selecting a
+// mode or prefilling a value as confirmation").
+function setStopMgmtMode(id, mode){
+  const panel = document.getElementById('stopmgmt-'+id);
+  if(!panel) return;
+  panel.dataset.mode = mode;
+  panel.querySelectorAll('.stop-mgmt-mode-btn').forEach(function(b){
+    b.classList.toggle('active', b.dataset.modeBtn===mode);
+  });
+  const rec = mode==='BE' ? panel.dataset.beLevel : panel.dataset.slLevel;
+  const recEl = document.getElementById('stopmgmt-rec-'+id);
+  const actualInput = document.getElementById('stopmgmt-actual-'+id);
+  const recNum = rec ? parseFloat(rec) : null;
+  if(recEl) recEl.textContent = (recNum!=null && isFinite(recNum)) ? fmt(recNum) : '—';
+  if(actualInput) actualInput.value = (recNum!=null && isFinite(recNum)) ? recNum : '';
+}
+
+// TDAS V5.0.0G — Stop Management explicit confirmation. Persists the
+// recommended and actual levels separately, under the new named fields
+// (V5.0.0G §5), and mirrors a BE confirmation into the legacy
+// beStopConfirmed fields so the Scanner active-trade placeholder — which
+// still reads those fields, and is explicitly out of this release's scope
+// — remains truthful without any change to Scanner's own code. A non-BE
+// (ATR/MANUAL) confirmation clears the legacy BE fields, since the
+// confirmed stop is no longer at break-even under the new source of
+// truth. Does not alter BE eligibility conditions, breach handling,
+// advisory routing, or Close/Log behaviour — those are all untouched.
+function confirmStopPlacement(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry){ alert('Trade not found.'); return; }
+  const panel = document.getElementById('stopmgmt-'+id);
+  const mode = panel ? panel.dataset.mode : 'SL';
+  const actualInput = document.getElementById('stopmgmt-actual-'+id);
+  const actualVal = actualInput ? parseFloat(actualInput.value) : NaN;
+  if(!isFinite(actualVal)){
+    alert('Enter a valid actual stop level before confirming.');
+    return;
+  }
+  // Data validation (same principle as the pre-existing confirmBeStop()
+  // guard): never substitute current price for a missing/invalid entry
+  // price when computing the B/E recommended level.
+  const entryPx = entry.actualEntry!=null ? entry.actualEntry
+                : (entry.entryPrice!=null ? entry.entryPrice : entry.price);
+  if(mode==='BE' && (entryPx==null || typeof entryPx!=='number' || !isFinite(entryPx))){
+    alert('Cannot confirm break-even: no valid entry price is recorded for this trade.');
+    return;
+  }
+  // Wrong-side-of-market validation: a stop must sit on the correct side
+  // of CURRENT price (not entry) to function as a stop-loss at all — a
+  // long's stop at/above current price, or a short's at/below, would
+  // trigger immediately or is simply nonsensical. Checked against current
+  // price rather than entry so a legitimately trailed stop (e.g. a long's
+  // stop moved above entry, into profit territory, but still below the
+  // live price) is correctly accepted, not rejected. Uses the same
+  // exact-timeframe registry reader (getActiveTradeSnapshotData) the rest
+  // of this card already uses — not currentScanData directly, which may
+  // not hold this symbol's data at all (V4.10.4G migrated primary reads
+  // off of it for exactly this reason).
+  const _liveDataForValidation = getActiveTradeSnapshotData(entry).data;
+  const _livePriceForValidation = (_liveDataForValidation && typeof _liveDataForValidation.price==='number' && isFinite(_liveDataForValidation.price)) ? _liveDataForValidation.price : null;
+  if(_livePriceForValidation!=null){
+    const isLong = entry.signal==='long';
+    const wrongSide = isLong ? (actualVal >= _livePriceForValidation) : (actualVal <= _livePriceForValidation);
+    if(wrongSide){
+      alert('That stop level is on the wrong side of the current price for a '+(isLong?'long':'short')+' position and cannot be confirmed.');
+      return;
+    }
+  }
+  const recommendedLevel = mode==='BE' ? entryPx : (entry.stop!=null ? entry.stop : null);
+  let source;
+  if(mode==='BE'){ source='BE'; }
+  else {
+    // Safe numeric comparison — a fixed absolute epsilon (e.g. 1e-9) is
+    // unsafe across the price-magnitude range crypto pairs span (a
+    // sub-cent altcoin vs a six-figure BTC price), so the tolerance
+    // scales with the recommended level's own magnitude instead.
+    const _tolerance = recommendedLevel!=null ? Math.max(Math.abs(recommendedLevel)*1e-6, 1e-9) : 1e-9;
+    source = (recommendedLevel!=null && Math.abs(actualVal-recommendedLevel) <= _tolerance) ? 'ATR' : 'MANUAL';
+  }
+
+  entry.mgmtSchemaVersion = 1;
+  entry.slConfirmed       = true;
+  entry.slConfirmedAt     = new Date().toISOString();
+  entry.slRecommendedLevel = recommendedLevel;
+  entry.slConfirmedLevel  = actualVal;
+  entry.slConfirmedSource = source;
+
+  // Keep the legacy BE fields in sync — Scanner's own (unmodified)
+  // active-trade placeholder still reads e.beStopConfirmed/e.beStopLevel.
+  if(source==='BE'){
+    const livePrice = _livePriceForValidation;
+    entry.beStopConfirmed      = true;
+    entry.beStopConfirmedAt    = entry.slConfirmedAt;
+    entry.beStopConfirmedPrice = livePrice;
+    entry.beStopLevel          = actualVal;
+    entry.beStopSource         = 'manual_advisory';
+  } else {
+    entry.beStopConfirmed      = false;
+    entry.beStopConfirmedAt    = null;
+    entry.beStopConfirmedPrice = null;
+    entry.beStopLevel          = null;
+    entry.beStopSource         = null;
+  }
+
+  Object.assign(entry, stampUpdate(entry));
+  sessionDirtyIds.add(entry.id);
+  const _sym = entry.symbol;
+  console.log('[WRITE] action started: confirmStopPlacement', _sym, source);
+  commitJournalChange('confirmStopPlacement:'+_sym, entry.id).then(()=>{
+    if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+  });
 }
 
 // TDAS V5.0.0F — Twin-Sided Active Trade Card Foundation. Toggles the
 // flipped state for a single active-trade card. Same simple class-toggle
 // pattern as flipTradeReadyCard() (no persistence across scans/reloads —
-// a re-render, e.g. from _tdSignalRefresh or updateTradeDeskPnL, naturally
-// resets to the front face since these rebuild the card's DOM in place).
+// a full re-render, e.g. from renderTradeDesk() on a tab switch, resets
+// to the front face; the 30-second price repaint and 5-minute signal
+// repaint specifically preserve it in place — see _repaintOrderTicketCard()).
 function flipOrderTicketCard(id){
   const el = document.getElementById('otcard-'+id);
   if(!el) return;
   el.classList.toggle('is-flipped');
 }
+
+// TDAS V5.0.0G — shared in-place repaint helper for the two periodic
+// refreshes (30-second price repaint, 5-minute signal/advisory repaint).
+// Preserves whichever face was showing before the repaint (V5.0.0G §9:
+// "Avoid unnecessary flip resets ... where practical") — a full
+// renderTradeDesk() re-render (e.g. on tab switch) is unaffected and
+// still resets to the front face, matching Trade Ready's own precedent.
+function _repaintOrderTicketCard(e){
+  const el = document.getElementById('otcard-'+e.id);
+  if(!el) return;
+  const wasFlipped = el.classList.contains('is-flipped');
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderOrderTicketCard(e);
+  const newEl = tmp.firstChild;
+  if(!newEl) return;
+  if(wasFlipped) newEl.classList.add('is-flipped');
+  el.replaceWith(newEl);
+}
+
 
 
 // V3: convertWatchToTrade() DISABLED — it wrote directly to saveJournal()
@@ -18294,16 +18566,8 @@ async function updateTradeDeskPnL(){
     const prices = await fetchTickerPrices(symbols);
     Object.entries(prices).forEach(([sym,px])=>{ if(currentScanData[sym]) currentScanData[sym].price=px; _applyPriceUpdateToRegistry(sym, px); });
   }catch(e){ console.warn('[API] updateTradeDeskPnL failed:', e.message); }
-  // Re-render order ticket cards in place
-  active.forEach(e=>{
-    const el=document.getElementById('otcard-'+e.id);
-    if(el){
-      const newHtml=renderOrderTicketCard(e);
-      const tmp=document.createElement('div');
-      tmp.innerHTML=newHtml;
-      el.replaceWith(tmp.firstChild);
-    }
-  });
+  // Re-render order ticket cards in place — preserves flip state (V5.0.0G §9)
+  active.forEach(e=>{ _repaintOrderTicketCard(e); });
   _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
 }
 
@@ -18492,10 +18756,8 @@ async function _ensureActiveTradeLivePricing(){
 
     // Re-render Trade Desk active cards in place, if present in the DOM
     // (harmless no-op when Trade Desk hasn't been opened this session).
-    active.forEach(e=>{
-      const el=document.getElementById('otcard-'+e.id);
-      if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderOrderTicketCard(e); el.replaceWith(tmp.firstChild); }
-    });
+    // Preserves flip state (V5.0.0G §9) via _repaintOrderTicketCard().
+    active.forEach(e=>{ _repaintOrderTicketCard(e); });
 
     // Re-render scanner active-trade placeholders via the same canonical
     // renderCard() path every active trade already renders through — same
@@ -18920,8 +19182,7 @@ async function _tdSignalRefresh(){
       const sym = symbols[i];
       const activeEntry = journal.find(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&j.symbol===sym);
       if(activeEntry && tradeVisible){
-        const el = document.getElementById('otcard-'+activeEntry.id);
-        if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderOrderTicketCard(activeEntry); el.replaceWith(tmp.firstChild); }
+        _repaintOrderTicketCard(activeEntry);
       }
       const watchEntry = journal.find(j=>isActiveWatch(j)&&j.symbol===sym);
       if(watchEntry && watchVisible){
