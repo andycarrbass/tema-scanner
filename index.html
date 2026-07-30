@@ -1695,7 +1695,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0D';
+const APP_BUILD = 'V5.0.0D1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -18759,22 +18759,36 @@ let _tdSignalLastMs       = 0; // distinct from _tdPriceLastMs — only set once
 
 async function _tdSignalRefresh(){
   if(_tdSignalRefreshBusy) return; // prevent self-overlap
-  // TDAS V5.0.0C — Dedicated Watch Page. Unlike _tdLightweightRefresh/
-  // _timingRefresh above (now watch-exclusive), this function repaints
-  // BOTH watch cards and active-trade cards together (see its symbol/tf
-  // map below, and its repaint loop further down). Gate widened to fire
-  // whenever EITHER the Watch or the Trade tab is the visible one, rather
-  // than switched outright.
-  const watchTab = document.getElementById('tab-watch');
-  const tradeTab = document.getElementById('tab-trade');
-  const watchVisible = watchTab && watchTab.classList.contains('active');
-  const tradeVisible = tradeTab && tradeTab.classList.contains('active');
-  if(!watchVisible && !tradeVisible) return; // neither Watch nor Trade tab is the visible tab
+  // TDAS V5.0.0D1 — Background Signal Refresh Continuity. Data fetch now
+  // runs unconditionally across all six TDAS tabs (previously gated on
+  // Watch or Trade being the visible tab) — see startTradeDeskAutoRefresh/
+  // stopTradeDeskAutoRefresh below, where this function's timer moved out
+  // to the global, tab-independent startup interval, matching
+  // _refreshWatchSnapshots/_refreshActiveTradeSnapshots's established
+  // pattern. Previously, tab switching away from and back to Watch/Trade
+  // tore down and recreated this same timer every time (via that
+  // start/stop pair), so the 5-minute cadence could reset indefinitely
+  // and this refresh might never actually fire for a user who mostly
+  // stayed on Scanner/Confluence/Journal/Settings. Repaint of the Watch
+  // and Trade cards themselves remains gated on that specific page being
+  // the visible one (checked per-symbol below, watchVisible/tradeVisible)
+  // — an inactive page's cards are left unrepainted, but the underlying
+  // data (currentScanData, the snapshot registry) is still fresh, so the
+  // next full render (showTab()'s existing renderWatchPage()/
+  // renderTradeDesk() call) picks it up immediately with no visible
+  // staleness. The Scanner-card sync repaint further below continues to
+  // fire unconditionally, exactly as it already did by design (its own
+  // pre-existing comment: "harmless no-op if that card isn't currently in
+  // the DOM").
   if(document.hidden) return; // browser tab/window hidden
   if(_scanRunning){
     if(DEBUG_MODE) console.log('[TradeDeskSignalRefresh] Scanner scan already in progress — skipping this cycle');
     return;
   }
+  const watchTab = document.getElementById('tab-watch');
+  const tradeTab = document.getElementById('tab-trade');
+  const watchVisible = watchTab && watchTab.classList.contains('active');
+  const tradeVisible = tradeTab && tradeTab.classList.contains('active');
 
   // Build a deduped symbol → tf map. Active trades are added AFTER watches
   // so they take priority if the same symbol somehow appears in both —
@@ -18820,16 +18834,21 @@ async function _tdSignalRefresh(){
 
     // Re-render only symbols that actually succeeded, in place. A failed
     // symbol's card is never touched — no "Load failed", nothing blanked.
+    // TDAS V5.0.0D1 — repaint gated per-page: only touch a Watch/Trade
+    // card's DOM when that page is the one currently visible (see
+    // watchVisible/tradeVisible above). Data itself (currentScanData,
+    // registry) is already updated above regardless — an inactive page's
+    // cards simply pick up the fresh data on their next full render.
     results.forEach((r, i) => {
       if(r.status !== 'fulfilled') return;
       const sym = symbols[i];
       const activeEntry = journal.find(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&j.symbol===sym);
-      if(activeEntry){
+      if(activeEntry && tradeVisible){
         const el = document.getElementById('otcard-'+activeEntry.id);
         if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderOrderTicketCard(activeEntry); el.replaceWith(tmp.firstChild); }
       }
       const watchEntry = journal.find(j=>isActiveWatch(j)&&j.symbol===sym);
-      if(watchEntry){
+      if(watchEntry && watchVisible){
         const el = document.getElementById('wcard-'+watchEntry.id);
         if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderWatchCard(watchEntry); el.replaceWith(tmp.firstChild); }
       }
@@ -18871,17 +18890,18 @@ function startTradeDeskAutoRefresh(){
   stopTradeDeskAutoRefresh();
   tradeDeskTimer = setInterval(_tdLightweightRefresh, TRADE_DESK_REFRESH_MS);
   _timingTimer   = setInterval(_timingRefresh, TIMING_REFRESH_MS);
-  tradeDeskSignalTimer = setInterval(_tdSignalRefresh, TRADE_DESK_SIGNAL_REFRESH_MS);
+  // TDAS V5.0.0D1 — tradeDeskSignalTimer no longer started here. It now
+  // runs once, globally, independent of any tab (see the startup IIFE
+  // near the end of this script) — see _tdSignalRefresh()'s own comment
+  // for why: this start/stop pair being tied to Watch/Trade tab
+  // visibility meant the signal timer was torn down and recreated every
+  // time the user left/returned to those tabs, so its 5-minute cadence
+  // could reset indefinitely.
   // Pause when browser tab hidden, resume when visible
   document.removeEventListener('visibilitychange', _tdVisibilityHandler);
   document.addEventListener('visibilitychange', _tdVisibilityHandler);
   // Run timing refresh immediately on start so cards show state without waiting 5 min
   setTimeout(_timingRefresh, 2000);
-  // Deliberately NOT running _tdSignalRefresh immediately on start — same
-  // reasoning as Scanner's own signal auto-refresh: no forced fetch burst
-  // on tab switch, and no "burst on browser refocus" (see _tdVisibilityHandler
-  // below, which also does not trigger this refresh). The regular 5-minute
-  // cadence picks it up naturally.
 }
 function _tdVisibilityHandler(){
   if(!document.hidden){
@@ -18895,7 +18915,8 @@ function _tdVisibilityHandler(){
 function stopTradeDeskAutoRefresh(){
   if(tradeDeskTimer){clearInterval(tradeDeskTimer);tradeDeskTimer=null;}
   if(_timingTimer){clearInterval(_timingTimer);_timingTimer=null;}
-  if(tradeDeskSignalTimer){clearInterval(tradeDeskSignalTimer);tradeDeskSignalTimer=null;}
+  // TDAS V5.0.0D1 — tradeDeskSignalTimer no longer owned by this pair;
+  // see startTradeDeskAutoRefresh()'s comment above.
 }
 function exportJournal(){
   // V1 schema CSV export — canonical field names with legacy fallbacks
@@ -21269,6 +21290,19 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
   // initial runScan() — both calls are requested, not awaited.
   setInterval(function(){ _refreshWatchSnapshots('watchAutoRefresh'); _refreshActiveTradeSnapshots('tradeAutoRefresh'); }, TIMING_REFRESH_MS);
   setTimeout(function(){ _refreshWatchSnapshots('watchRestore'); _refreshActiveTradeSnapshots('tradeRestore'); }, 5000);
+  // TDAS V5.0.0D1 — Background Signal Refresh Continuity. The 5-minute
+  // signals/advisories refresh (_tdSignalRefresh) now starts once, here,
+  // independent of any tab — same established pattern as the snapshot
+  // registry refresher immediately above. Previously this timer lived
+  // inside startTradeDeskAutoRefresh()/stopTradeDeskAutoRefresh(), tied to
+  // Watch/Trade tab visibility, so switching away from and back to those
+  // tabs tore it down and recreated it every time, and its 5-minute
+  // cadence could reset indefinitely for a user who mostly stayed on
+  // Scanner/Confluence/Journal/Settings. No immediate kick here,
+  // deliberately — same "no forced fetch burst on startup" reasoning the
+  // prior in-function comment already documented; the regular cadence
+  // picks it up naturally.
+  setInterval(_tdSignalRefresh, TRADE_DESK_SIGNAL_REFRESH_MS);
 })();
 </script>
 
