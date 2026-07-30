@@ -1203,12 +1203,15 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    requires front and rear to share a genuinely FIXED, equal height so
    flipping never causes a layout jump. Scoped to .order-card.twin-sided
    only — the base .order-card rule above (used elsewhere) is untouched.
-   TDAS V5.0.0G — height increased from 500px: the rear face now carries
-   substantially more settled content (Risk & Levels six-field grid plus
-   the new Stop Management panel), and 500px would have clipped or
-   cramped it. */
+   TDAS V5.0.0G1 — height reduced from V5.0.0G's 640px: the large embedded
+   Stop Management form (title, mode-toggle row, two field blocks, confirm
+   button) is gone, replaced by a single compact pill row — the rear no
+   longer needs anywhere near that much space. 560px keeps comfortable
+   spacing (a readable Entered line, unclipped advisory wording, Context/
+   1H Timing/Close-Log/Trade-Overview all fully visible) without the
+   V5.0.0G bloat. */
 .order-card.twin-sided{
-  height:640px;
+  height:560px;
   display:flex;flex-direction:column;
   overflow:hidden;
 }
@@ -1233,38 +1236,27 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .otc-entered-line{font-size:12px;color:var(--text2);margin-bottom:8px;}
 /* Single top-right management-status pill inside the advisory box —
    compact, same visual family as the existing sl-be-pill (confirmed
-   variant), non-clickable (revision happens via the Stop Management
-   panel on the rear, not by clicking this pill). */
+   variant), non-clickable (revision happens via the compact stop-control
+   pills on the rear, not by clicking this pill). */
 .mgmt-status-pill{
   display:inline-flex;align-items:center;height:20px;padding:0 8px;
   border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap;
   background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-bg);
 }
-/* TDAS V5.0.0G — Stop Management. Amber/yellow, visually related to the
-   advisory box's own REVIEW tone but clearly its own labelled panel, not
-   an advisory state. */
-.stop-mgmt-panel{
-  margin:8px 0;padding:10px 12px;
-  border-radius:var(--radius-sm);
-  border:1px solid rgba(186,117,23,0.35);
-  background:rgba(186,117,23,0.06);
-}
-.stop-mgmt-title{
-  font-size:11px;font-weight:700;letter-spacing:0.5px;color:var(--amber-text);
-  margin-bottom:8px;text-transform:uppercase;
-}
-.stop-mgmt-mode-row{display:flex;gap:6px;margin-bottom:10px;}
-.stop-mgmt-mode-btn{
-  flex:1;padding:7px 8px;font-size:12px;font-weight:600;
-  border-radius:var(--radius-sm);cursor:pointer;
-  background:var(--bg3);color:var(--text2);border:1px solid var(--border2);
-  transition:background 0.15s,color 0.15s,border-color 0.15s;
-}
-.stop-mgmt-mode-btn:hover:not(:disabled){background:var(--bg4);color:var(--text);}
-.stop-mgmt-mode-btn.active{
-  background:rgba(186,117,23,0.18);color:var(--amber-text);border-color:rgba(186,117,23,0.5);
-}
-.stop-mgmt-mode-btn:disabled{opacity:0.4;cursor:not-allowed;}
+/* TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Two compact action
+   pills (replacing V5.0.0G's large embedded amber form) — reuses the
+   existing .sl-be-pill visual language (the same compact pill already
+   used for the pre-V5.0.0G "SL to BE" prompt) rather than a new control
+   style, and adds negligible height versus the previous panel. */
+.otc-stop-pill-row{display:flex;gap:8px;margin:6px 0 8px;flex-wrap:wrap;}
+/* TDAS V5.0.0G1 — direction-specific active-position pill colours,
+   matching the app's established long=green/short=red convention (same
+   tokens as .chip.long/.chip.short) — replaces V5.0.0G's single blue
+   .pill-trade class, which used the same colour for both directions. */
+.sig-pill.pill-trade-long{background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-text);}
+.sig-pill.pill-trade-short{background:var(--red-dim);color:var(--red-text);border:1px solid var(--red-text);}
+/* Fields reused inside the Set to B/E / Set Manual SL dialogs (formerly
+   inside the V5.0.0G embedded panel — same styling, new context). */
 .stop-mgmt-field{margin-bottom:8px;}
 .stop-mgmt-label{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.4px;margin-bottom:3px;}
 .stop-mgmt-recommended{font-family:var(--mono);font-size:13px;color:var(--text2);}
@@ -1274,7 +1266,6 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   padding:6px 8px;box-sizing:border-box;
 }
 .stop-mgmt-actual-input:focus{outline:1px solid rgba(186,117,23,0.5);border-color:rgba(186,117,23,0.5);}
-.stop-mgmt-confirm-btn{margin-top:2px;}
 .otc-risk-basis-note{font-size:10px;color:var(--text3);margin-top:-6px;margin-bottom:8px;}
 .order-card.active-long{border-left-color:var(--green-text);box-shadow:0 0 0 1px rgba(29,158,117,0.15) inset;}
 .order-card.active-short{border-left-color:var(--red-text);box-shadow:0 0 0 1px rgba(192,67,42,0.15) inset;}
@@ -1774,7 +1765,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0G';
+const APP_BUILD = 'V5.0.0G1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -18224,12 +18215,31 @@ function renderOrderTicketCard(e){
   // instead of a standalone pill's visibility.
   const _beEligible = !_mgmt.confirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
 
+  // TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Two compact
+  // action pills replace the embedded amber form. "Set to B/E" hides
+  // entirely before eligibility (matching the original pre-V5.0.0G "SL to
+  // BE" prompt's own hide-when-ineligible behaviour — V5.0.0G1 §2:
+  // "Prefer hiding it before eligibility"), but stays visible once either
+  // eligible OR already confirmed as BE, so a confirmed BE stop can still
+  // be revised. "Set Manual SL" is always available (V5.0.0G1 §3), and
+  // both pills remain clickable after confirmation so the stop can be
+  // revised via either path at any time (V5.0.0G1 §4).
+  const _bePillConfirmed = _mgmt.confirmed && _mgmt.source==='BE';
+  const _showBePill = _bePillConfirmed || _beEligible;
+  const bePillHtml = _showBePill
+    ? `<span class="sl-be-pill sl-be-clickable${_bePillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetToBeDialog(${e.id});"${_bePillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_bePillConfirmed?'\u2713 SL at B/E':'Set to B/E'}</span>`
+    : '';
+  const _manualPillConfirmed = _mgmt.confirmed && _mgmt.source!=='BE';
+  const manualPillHtml = `<span class="sl-be-pill sl-be-clickable${_manualPillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetManualSlDialog(${e.id});"${_manualPillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_manualPillConfirmed?'\u2713 Manual SL':'Set Manual SL'}</span>`;
+
   // Single top-right management-status pill — only one of the two
   // supported states for this build may display (V5.0.0G §Advisory box).
+  // TDAS V5.0.0G1 — casing corrected to match the settled spec ("SL at
+  // B/E" / "Manual SL", not the V5.0.0G all-caps wording).
   const mgmtStatusPillHtml = _mgmt.confirmed
     ? (_mgmt.source==='BE'
-        ? `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL AT B/E</span>`
-        : `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 MANUAL SL</span>`)
+        ? `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL at B/E</span>`
+        : `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 Manual SL</span>`)
     : '';
 
   const advisoryHtml = advisory
@@ -18275,15 +18285,6 @@ function renderOrderTicketCard(e){
   const dirWord = isLong ? 'LONG' : 'SHORT';
   const dirArrow = isLong ? '\u25b2' : '\u25bc';
 
-  // Stop Management panel setup. Recommended level depends on mode:
-  // B/E -> entry price; SL -> TDAS's current ATR-recommended stop.
-  // Default mode: B/E when eligible (matches the prior prompt's own
-  // priority), otherwise SL.
-  const _defaultMode = _beEligible ? 'BE' : 'SL';
-  const _beRecLevel = entryPx!=null ? entryPx : null;
-  const _slRecLevel = _recommendedStop;
-  const _defaultRecLevel = _defaultMode==='BE' ? _beRecLevel : _slRecLevel;
-
   const copyBtnHtml = `<button class="snap-btn" type="button" title="Copy snapshot" data-tid="${e.id}" onclick="event.stopPropagation();event.preventDefault();copySnapshotFromTrade(+this.dataset.tid,this);"><span class="snap-icon"></span></button>`;
   // TDAS V5.0.0G — flip icon replaced (both buttons use the same compact
   // glyph, consistent with the Trade Ready rear card's own control style,
@@ -18311,7 +18312,7 @@ function renderOrderTicketCard(e){
       <div class="cz-price" style="padding:2px 0 6px;">
         <div class="price-pill-row">
           <span class="price">${livePrice?fmt(livePrice):'—'}</span>
-          <span class="sig-pill pill-trade">${dirArrow} ${dirWord} ACTIVE</span>
+          <span class="sig-pill pill-trade-${isLong?'long':'short'}">${dirArrow} ${dirWord} ACTIVE</span>
         </div>
       </div>
       <div class="otc-entered-line">Entered ${ts}</div>
@@ -18326,7 +18327,7 @@ function renderOrderTicketCard(e){
       <div class="otc-face-header">
         <div class="otc-face-header-row">
           <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
-          <span class="sig-pill pill-trade">${dirArrow} ${dirWord} ACTIVE</span>
+          <span class="sig-pill pill-trade-${isLong?'long':'short'}">${dirArrow} ${dirWord} ACTIVE</span>
           ${copyBtnHtml}
         </div>
       </div>
@@ -18341,21 +18342,9 @@ function renderOrderTicketCard(e){
         <div class="tl-item"><div class="tl-label">Risk points</div><div class="tl-val" style="color:#a78bfa;">${_riskPts!=null?fmtPts(_riskPts)+'pts':'—'}</div></div>
       </div>
       ${!_hasActualStop && _riskPct!=null ? `<div class="otc-risk-basis-note">Based on recommended stop \u2014 not yet confirmed on exchange.</div>` : ''}
-      <div class="stop-mgmt-panel" id="stopmgmt-${e.id}" data-mode="${_defaultMode}" data-be-level="${_beRecLevel!=null?_beRecLevel:''}" data-sl-level="${_slRecLevel!=null?_slRecLevel:''}">
-        <div class="stop-mgmt-title">Stop Management</div>
-        <div class="stop-mgmt-mode-row">
-          <button type="button" class="stop-mgmt-mode-btn ${_defaultMode==='BE'?'active':''}" data-mode-btn="BE" ${!_beEligible?'disabled title="Not yet eligible \u2014 requires at least +1R and no active close condition"':''} onclick="event.stopPropagation();setStopMgmtMode(${e.id},'BE');">Set to B/E</button>
-          <button type="button" class="stop-mgmt-mode-btn ${_defaultMode==='SL'?'active':''}" data-mode-btn="SL" onclick="event.stopPropagation();setStopMgmtMode(${e.id},'SL');">Set SL</button>
-        </div>
-        <div class="stop-mgmt-field">
-          <div class="stop-mgmt-label">Recommended level</div>
-          <div class="stop-mgmt-recommended" id="stopmgmt-rec-${e.id}">${_defaultRecLevel!=null?fmt(_defaultRecLevel):'—'}</div>
-        </div>
-        <div class="stop-mgmt-field">
-          <div class="stop-mgmt-label">Actual level placed</div>
-          <input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmt-actual-${e.id}" value="${_defaultRecLevel!=null?_defaultRecLevel:''}" onclick="event.stopPropagation();">
-        </div>
-        <button type="button" class="card-btn primary-long stop-mgmt-confirm-btn" onclick="event.stopPropagation();confirmStopPlacement(${e.id});">Confirm placed</button>
+      <div class="otc-stop-pill-row">
+        ${bePillHtml}
+        ${manualPillHtml}
       </div>
       ${e.tradeStage ? `<div style="font-size:10px;margin:2px 0 8px;color:var(--text3);opacity:0.85;">Context: <span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
       ${(()=>{
@@ -18402,23 +18391,52 @@ function _computeStopManagementState(e){
   return { confirmed:false, source:null, confirmedLevel:null, confirmedAt:null, recommendedLevel:null };
 }
 
-// TDAS V5.0.0G — Stop Management mode toggle. DOM-only (no persistence,
-// no confirmation) — selecting a mode or prefilling a value never
-// confirms anything (V5.0.0G §4: "Do not automatically treat selecting a
-// mode or prefilling a value as confirmation").
-function setStopMgmtMode(id, mode){
-  const panel = document.getElementById('stopmgmt-'+id);
-  if(!panel) return;
-  panel.dataset.mode = mode;
-  panel.querySelectorAll('.stop-mgmt-mode-btn').forEach(function(b){
-    b.classList.toggle('active', b.dataset.modeBtn===mode);
+// TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Opens the "Set to
+// B/E" dialog via the existing generic confirm-modal system
+// (openTdasConfirmModal) — reuses the SAME .stop-mgmt-field/.stop-mgmt-
+// label/.stop-mgmt-recommended/.stop-mgmt-actual-input styling the V5.0.0G
+// embedded panel used, just inside the modal body now instead of inside
+// the card. Only reachable via the "Set to B/E" pill, which is itself
+// only rendered when eligible or already confirmed (V5.0.0G1 §2) — same
+// eligibility condition as before, unaltered.
+function openSetToBeDialog(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry){ alert('Trade not found.'); return; }
+  const entryPx = entry.actualEntry!=null ? entry.actualEntry
+                : (entry.entryPrice!=null ? entry.entryPrice : entry.price);
+  openTdasConfirmModal({
+    title: 'Set Stop to Break Even',
+    bodyHtml:
+      '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Recommended level</div><div class="stop-mgmt-recommended">'+(entryPx!=null?fmt(entryPx):'—')+'</div></div>'
+      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(entryPx!=null?entryPx:'')+'"></div>',
+    confirmLabel: 'Confirm placed',
+    onConfirm: function(){
+      const input = document.getElementById('stopmgmtDialogActual');
+      confirmStopPlacement(id, 'BE', input ? input.value : '');
+    },
   });
-  const rec = mode==='BE' ? panel.dataset.beLevel : panel.dataset.slLevel;
-  const recEl = document.getElementById('stopmgmt-rec-'+id);
-  const actualInput = document.getElementById('stopmgmt-actual-'+id);
-  const recNum = rec ? parseFloat(rec) : null;
-  if(recEl) recEl.textContent = (recNum!=null && isFinite(recNum)) ? fmt(recNum) : '—';
-  if(actualInput) actualInput.value = (recNum!=null && isFinite(recNum)) ? recNum : '';
+}
+// TDAS V5.0.0G1 — "Set Manual SL" dialog. Always reachable (V5.0.0G1 §3 —
+// no eligibility gate, unlike Set to B/E). Reuses the same modal system
+// and the same confirmStopPlacement() persistence path — ATR-vs-MANUAL
+// classification still happens inside confirmStopPlacement() itself
+// (unchanged), based on whether the confirmed value matches the ATR
+// recommendation shown here.
+function openSetManualSlDialog(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry){ alert('Trade not found.'); return; }
+  const recLevel = entry.stop!=null ? entry.stop : null;
+  openTdasConfirmModal({
+    title: 'Set Manual Stop Loss',
+    bodyHtml:
+      '<div class="stop-mgmt-field"><div class="stop-mgmt-label">TDAS recommended stop</div><div class="stop-mgmt-recommended">'+(recLevel!=null?fmt(recLevel):'—')+'</div></div>'
+      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(recLevel!=null?recLevel:'')+'"></div>',
+    confirmLabel: 'Confirm placed',
+    onConfirm: function(){
+      const input = document.getElementById('stopmgmtDialogActual');
+      confirmStopPlacement(id, 'SL', input ? input.value : '');
+    },
+  });
 }
 
 // TDAS V5.0.0G — Stop Management explicit confirmation. Persists the
@@ -18431,13 +18449,17 @@ function setStopMgmtMode(id, mode){
 // confirmed stop is no longer at break-even under the new source of
 // truth. Does not alter BE eligibility conditions, breach handling,
 // advisory routing, or Close/Log behaviour — those are all untouched.
-function confirmStopPlacement(id){
+// TDAS V5.0.0G1 — mode and the raw actual-level value are now explicit
+// parameters, supplied by whichever dialog (openSetToBeDialog/
+// openSetManualSlDialog) called this, instead of being read from the
+// now-removed embedded panel's DOM state. This is the ONLY change in this
+// function — every validation step, the ATR/MANUAL classification, the
+// persisted fields, and the legacy BE mirroring are all byte-identical to
+// V5.0.0G. No second persistence path was introduced.
+function confirmStopPlacement(id, mode, actualValRaw){
   const entry = journal.find(j=>j.id===id);
   if(!entry){ alert('Trade not found.'); return; }
-  const panel = document.getElementById('stopmgmt-'+id);
-  const mode = panel ? panel.dataset.mode : 'SL';
-  const actualInput = document.getElementById('stopmgmt-actual-'+id);
-  const actualVal = actualInput ? parseFloat(actualInput.value) : NaN;
+  const actualVal = parseFloat(actualValRaw);
   if(!isFinite(actualVal)){
     alert('Enter a valid actual stop level before confirming.');
     return;
