@@ -1937,7 +1937,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H5';
+const APP_BUILD = 'V5.0.0H6';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2085,6 +2085,47 @@ function isActiveWatch(j){
     && !j.outcome
     && j.status !== 'closed'
     && !j.closeTimestamp;
+}
+
+// ── TDAS V5.0.0H6 — Remove Active Watches from Scanner ─────────────────────
+// Exact symbol+timeframe suppression only (not the later symbol-wide
+// active-trade ownership doctrine — see isScannerSymbolSuppressed() below,
+// which keeps the existing hasOpenTrade check symbol-wide and unchanged,
+// and only this watch check is timeframe-scoped).
+//
+// Reuses isActiveWatch() (the one authoritative active-watch predicate,
+// completely unchanged above) and `journal` (the one authoritative Watch
+// registry) directly — no second cache, no parallel ownership state, no
+// inference from card markup or button text.
+//
+// Symbol/timeframe are normalised defensively (strip '/', uppercase for
+// symbol; lowercase for timeframe) so a formatting difference can never
+// produce a false negative. Internal storage is already consistent in
+// this exact format everywhere else in the app (PAIRS, currentScanData
+// keys, journal.symbol/tf) — this is a safety net, not a new canonical
+// format, and does not change how symbols/timeframes are stored anywhere.
+function _normSymbolForWatchMatch(sym){
+  return String(sym||'').replace(/\//g,'').toUpperCase();
+}
+function isExactSymbolTfWatched(sym, tf){
+  const nSym = _normSymbolForWatchMatch(sym);
+  const nTf = String(tf||'').toLowerCase();
+  return journal.some(j => isActiveWatch(j)
+    && _normSymbolForWatchMatch(j.symbol) === nSym
+    && String(j.tf||'').toLowerCase() === nTf);
+}
+
+// Single authoritative "is this symbol+tf excluded from the visible
+// Scanner result set" check. Card rendering (runScan's signalItems/
+// neutralItems partition), the visible summary counts (renderSummary),
+// and the "X signals detected" status line all call this exact same
+// function — a suppression rule can never apply in one place and not
+// another, and there is no scattered per-template display:none check.
+function isScannerSymbolSuppressed(sym, tf){
+  const hasOpenTrade = journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
+  if(hasOpenTrade) return true;
+  if(isExactSymbolTfWatched(sym, tf)) return true;
+  return false;
 }
 
 // ── Superseded watch predicate ───────────────────────────────────────────
@@ -17041,6 +17082,7 @@ function saveEntry(){
   // Step 4: close modal before render
   const savedSymbol = modalData.symbol;
   const savedData   = d;
+  const savedDecision = selectedDecision; // captured now — selectedDecision could theoretically change before the async callback below resolves
   closeModal();
 
   // Step 5: canonical commit — push → pull → render
@@ -17048,11 +17090,21 @@ function saveEntry(){
   // after sync confirms. Do NOT call renderJournal/updateLivePnL/renderTradeDesk
   // here — those fire synchronously before the async push resolves, causing
   // a stale pre-sync render followed by a correct post-sync render (double render).
-  console.log('[WRITE] action started: saveEntry', savedSymbol, selectedDecision || 'unknown');
+  console.log('[WRITE] action started: saveEntry', savedSymbol, savedDecision || 'unknown');
   commitJournalChange('saveEntry:'+savedSymbol, _stamped.id).then(ok=>{
     if(ok){
-      // Re-render scanner card and confluence card after confirmed sync
-      if(currentScanData[savedSymbol]) renderCard(savedSymbol, currentScanData[savedSymbol]);
+      // TDAS V5.0.0H6 — Remove Active Watches from Scanner. A 'watching'
+      // save must remove its exact symbol+tf Scanner card immediately, not
+      // just repaint it in place — reuses the same fetch-free in-place
+      // refresh Watch cancellation's natural-return already relies on
+      // (see _refreshScannerSuppressionInPlace()'s own header comment).
+      // Every other decision (took/skipped/missed) keeps the existing
+      // single-card repaint, unchanged.
+      if(savedDecision === 'watching'){
+        _refreshScannerSuppressionInPlace();
+      } else if(currentScanData[savedSymbol]){
+        renderCard(savedSymbol, currentScanData[savedSymbol]);
+      }
       _onConfluenceSaveDone(savedSymbol);
     }
   });
@@ -21149,7 +21201,7 @@ function _updateActiveTradesPill(){
   el.style.display='';
   el.textContent = `⚡ ${n} ACTIVE TRADE${n!==1?'S':''}`;
 }
-function renderSummary(results){
+function renderSummary(results, tf){
   // Root cause of the V4.5.4 count mismatch: calcPair()'s raw .signal
   // reflects current market state only — it has nothing to do with
   // whether a trade is already open on that symbol, so a symbol with an
@@ -21167,17 +21219,22 @@ function renderSummary(results){
   // that don't carry LONG/SHORT SIGNAL wording).
   // Fix: exclude hasOpenTrade symbols here, using the identical check
   // already used above for the signalItems/neutralItems partition — not
-  // a new rule, just applied consistently. Watching symbols are
-  // deliberately NOT excluded: they still render as normal signal cards
-  // in the grid (same LONG/SHORT SIGNAL pill, just a "Watching" action
-  // button instead of "Log decision"), so counting them remains
-  // consistent with what's visible.
+  // a new rule, just applied consistently.
+  // TDAS V5.0.0H6 — Remove Active Watches from Scanner. Exact symbol+tf
+  // watched setups are now excluded here too, via the same shared
+  // isScannerSymbolSuppressed() predicate signalItems/neutralItems use —
+  // a watched setup no longer renders a card, so it must not silently pad
+  // Longs/Shorts/HTF-aligned/Avg-strength/High-conviction either (the
+  // exact "Scanner says 4 signals but only 2 cards visible" state this
+  // build is required to avoid). `tf` is required now (previously
+  // implicit via closure) so this stays callable/testable independent of
+  // runScan's own scope; its one call site passes the same tf runScan
+  // itself just scanned on.
   const valid=results
     .map((r,i)=>({r,sym:PAIRS[i]}))
     .filter(({r,sym})=>{
       if(r.status!=='fulfilled') return false;
-      const hasOpenTrade=journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
-      return !hasOpenTrade;
+      return !isScannerSymbolSuppressed(sym, tf);
     })
     .map(({r})=>r.value);
   const longs=valid.filter(v=>v.signal==='long').length;
@@ -21194,6 +21251,10 @@ function renderSummary(results){
   // untouched for its own unrelated uses (sorting, persistence,
   // Confluence population).
   const highConv=valid.filter(v=>v.authoritativeClassification && v.authoritativeClassification.highConvictionKnown===true && v.authoritativeClassification.highConviction===true).length;
+  // TDAS V5.0.0H6 — Pairs tile deliberately left reading PAIRS.length
+  // unchanged: it represents the configured scan universe, not a count
+  // derived from the currently visible Scanner result set, and the task
+  // is explicit that this metric must not change.
   document.getElementById('summary').innerHTML=`
     <div class="sum-card">Longs<span class="${longs?'g':''}">${longs}</span></div>
     <div class="sum-card">Shorts<span class="${shorts?'r':''}">${shorts}</span></div>
@@ -21201,6 +21262,51 @@ function renderSummary(results){
     ${avgScore?`<div class="sum-card">Avg strength<span>${avgScore}%</span></div>`:''}
     <div class="sum-card">⭐ High conviction<span style="color:gold;">${highConv||'—'}</span></div>
     <div class="sum-card">Pairs<span>${PAIRS.length}</span></div>`;
+}
+
+// ── TDAS V5.0.0H6 — immediate Scanner suppression refresh ──────────────────
+// Called right after a Watch is created, using only the already-cached
+// currentScanData/PAIRS/journal — no fetch, no rescan. Removes the exact
+// symbol+tf card (whichever section it's currently in — signal grid or
+// neutral compact row both use the same #c-{sym} id convention) and
+// repaints the summary tiles + status line so counts stay truthful
+// immediately, without waiting for the next scan/periodic refresh.
+//
+// Deliberately one-directional (removal only): a Watch cancellation does
+// not need the reverse operation here. The cancelled setup was never
+// re-inserted into a specific grid position by this function in the first
+// place, so there is nothing stale to correct in the DOM immediately —
+// per the settled behaviour, it simply becomes visible again "naturally"
+// the next time runScan() itself runs (periodic refresh, tab switch back
+// to Scanner triggering a scan, or a manual rescan), at which point
+// isScannerSymbolSuppressed() no longer excludes it and it's rebuilt into
+// the grid in the normal way. This avoids fabricating or restoring stale
+// scan data to force an immediate reappearance, exactly as required.
+function _refreshScannerSuppressionInPlace(){
+  const tfEl = document.getElementById('tf');
+  const tf = tfEl ? tfEl.value : null;
+  if(!tf || typeof PAIRS==='undefined') return;
+  PAIRS.forEach(sym=>{
+    if(isScannerSymbolSuppressed(sym, tf)){
+      const el = document.getElementById('c-'+sym);
+      if(el) el.remove();
+    }
+  });
+  const results = PAIRS.map(sym => currentScanData[sym]
+    ? {status:'fulfilled', value: currentScanData[sym]}
+    : {status:'rejected', reason:{message:'no data'}});
+  renderSummary(results, tf);
+  const sigs = results.filter((r,i)=>{
+    if(r.status!=='fulfilled'||r.value.signal==='neutral') return false;
+    return !isScannerSymbolSuppressed(PAIRS[i], tf);
+  }).length;
+  const _statusEl = document.getElementById('status');
+  if(_statusEl){
+    _statusEl.textContent = sigs===0 ? `NO SIGNALS DETECTED ON ${tf.toUpperCase()}`
+      : sigs===1 ? `1 SIGNAL DETECTED ON ${tf.toUpperCase()}`
+      : `${sigs} SIGNALS DETECTED ON ${tf.toUpperCase()}`;
+    _statusEl.className = sigs>0 ? 'scanner-result-active' : 'scanner-result-neutral';
+  }
 }
 
 // ── Neutral section toggle ───────────────────────────────────────────────
@@ -21566,21 +21672,25 @@ async function runScan(auto){
   // branch — see buildActiveScannerPlaceholderHtml, now unreachable from
   // this path since no <div id="c-{sym}"> element exists for them to
   // target). They are represented instead by the single "⚡ X ACTIVE
-  // TRADES" pill (see _updateActiveTradesPill()). Watching symbols are
-  // completely unaffected — still included exactly as before.
+  // TRADES" pill (see _updateActiveTradesPill()).
+  // TDAS V5.0.0H6 — Remove Active Watches from Scanner. Exact symbol+tf
+  // watched setups are now excluded the same way (via the single shared
+  // isScannerSymbolSuppressed() predicate) instead of being included and
+  // merely prioritised — Scanner is no longer their home once a Watch
+  // exists for that exact symbol+timeframe. A different timeframe on the
+  // same symbol is unaffected (isScannerSymbolSuppressed is tf-scoped for
+  // the watch check). No placeholder, no pill, no partial card — same
+  // "not rendered at all" treatment as an active trade.
 
   const signalItems  = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
-    const hasOpenTrade = journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
-    const watching     = journal.some(j=>j.symbol===sym&&isActiveWatch(j));
-    if(hasOpenTrade) return false;
-    return watching || (v && v.signal!=='neutral') || r.status==='rejected';
+    if(isScannerSymbolSuppressed(sym, tf)) return false;
+    return (v && v.signal!=='neutral') || r.status==='rejected';
   });
   const neutralItems = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
-    const hasOpenTrade = journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
-    const watching     = journal.some(j=>j.symbol===sym&&isActiveWatch(j));
-    return !hasOpenTrade && !watching && (!v || v.signal==='neutral') && r.status!=='rejected';
+    if(isScannerSymbolSuppressed(sym, tf)) return false;
+    return (!v || v.signal==='neutral') && r.status!=='rejected';
   });
 
 
@@ -21643,16 +21753,17 @@ async function runScan(auto){
       console.warn(`[runScan auto] ${sym} failed — keeping previous card:`, r.reason?.message);
     }
   });
-  renderSummary(results);
+  renderSummary(results, tf);
   // TDAS V4.5.5 — same hasOpenTrade exclusion as renderSummary (see its
   // comment for the full root-cause explanation), so this status line's
   // count always matches Longs+Shorts exactly. Not a new rule — reuses
   // the identical check already used above for signalItems/neutralItems.
+  // TDAS V5.0.0H6 — now also excludes exact symbol+tf watched setups via
+  // the same isScannerSymbolSuppressed() predicate renderSummary uses.
   const sigs=results.filter((r,i)=>{
     if(r.status!=='fulfilled'||r.value.signal==='neutral') return false;
     const sym=PAIRS[i];
-    const hasOpenTrade=journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
-    return !hasOpenTrade;
+    return !isScannerSymbolSuppressed(sym, tf);
   }).length;
   // TDAS V4.5.6 — result banner text/styling only; the count itself (sigs)
   // and its V4.5.5 hasOpenTrade exclusion above are unchanged. Uppercase,
