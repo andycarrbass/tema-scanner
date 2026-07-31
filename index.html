@@ -131,7 +131,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   border-left:3px solid var(--border2);
   display:flex;
   flex-direction:column;
-  min-height:460px; /* floor — spacer fills remainder ensuring equal heights */
+  min-height:500px; /* V5.0.0H — shared shell standard (was 460px); floor — spacer fills remainder ensuring equal heights */
 }
 .card.long{border-left-color:var(--green);}
 .card.short{border-left-color:var(--red);}
@@ -180,6 +180,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
 .tdas-advisory-headline{
   font-size:15px;font-weight:700;letter-spacing:0.2px;margin-bottom:3px;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;
 }
 /* Advisory header row — headline left, SL to BE pill right (TDAS V4.5 Task 1
    follow-up). Only wraps headline+pill; .tdas-advisory-headline keeps its
@@ -198,7 +199,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .tdas-state-watch .tdas-advisory-headline{color:var(--amber-text);}
 .tdas-state-consider .tdas-advisory-headline{color:var(--green-text);}
 .tdas-state-high .tdas-advisory-headline{color:#D4A839;}
-.tdas-advisory-detail{font-size:12px;color:var(--text2);line-height:1.4;}
+/* TDAS V5.0.0H — base copy-containment clamp (3 lines), applies wherever a
+   more specific rule (e.g. the Scanner's own 2-line .card:not(...) rule
+   just below) doesn't already override it — covers Trade's .order-card
+   advisory (which never matched that Scanner-scoped selector) and the new
+   Watch front advisory blocks alike, with one shared rule. */
+.tdas-advisory-detail{font-size:12px;color:var(--text2);line-height:1.4;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;}
 
 /* ── TDAS Phase 2A/2B — Technical Summary block ("what does the chart say")
    V4.5.2: upgraded to match the approved Evaluation/advisory box's visual
@@ -1133,17 +1139,18 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .trade-col{min-width:0;width:100%;}
 .trade-col-header{font-size:12px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--text3);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border2);}
 /* Inner card grid — tiles cards at same width as scanner (270px min) */
-.trade-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:11px;align-items:start;}
-/* TDAS V5.0.0G2 §1 — Trade page's active-trade columns specifically
-   matched to the Scanner grid's own spacing (280px min-width, 12px gap;
-   see .grid above). Scoped to #trade1hCards/#trade4hCards only — the
-   shared .trade-cards-grid rule above (also used by Watch's columns)
-   stays at its original 270px/11px, so Watch cards are unaffected. */
-#trade1hCards.trade-cards-grid,#trade4hCards.trade-cards-grid{grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}
+/* TDAS V5.0.0H — Standard Card System Integration: both Trade's and
+   Watch's card columns now use the exact same fluid-grid contract as the
+   Scanner (.grid, see above) — minmax(280px,1fr), 12px gap. Previously
+   Trade alone was corrected to this (V5.0.0G2 §1, via a scoped override
+   below); Watch stayed at an interim 270px/11px. That override is now
+   redundant since the shared base rule matches it — removed rather than
+   left duplicated. */
+.trade-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;align-items:start;}
 
 /* Watch card */
 .watch-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;border-left:3px solid var(--amber);position:relative;opacity:0.92;min-height:220px;}
-.watch-card.full-conf{border-left-color:gold;opacity:1;}
+.watch-card.full-conf{opacity:1;}
 .watch-card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
 .watch-card-pair{font-size:16px;font-weight:600;color:var(--text);}
 .watch-star{font-size:16px;position:absolute;top:10px;right:12px;animation:starPulse 1.2s ease-in-out infinite;}
@@ -1185,10 +1192,10 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    bump on top of them. */
 .watch-progress-label{color:var(--text3);font-weight:500;letter-spacing:0.2px;}
 .watch-progress-count{font-size:13px;}
-.watch-prices{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;font-size:12px;color:var(--text3);margin-bottom:10px;padding:8px 0;border-top:1px solid var(--border);}
+.watch-prices{display:grid;grid-template-columns:repeat(2,1fr);gap:4px 10px;font-size:12px;color:var(--text3);margin-bottom:10px;padding:8px 0;border-top:1px solid var(--border);}
 .entry-quality-row{min-height:20px;margin-bottom:6px;font-size:11px;color:var(--green-text);line-height:20px;}
 .watch-prices .wp-val{font-family:var(--mono);font-size:13px;color:var(--text);margin-top:2px;}
-.watch-note{font-size:12px;color:var(--text2);line-height:1.5;padding:7px 9px;background:var(--bg3);border-radius:var(--radius-sm);margin-bottom:10px;white-space:pre-wrap;}
+.watch-note{font-size:12px;color:var(--text2);line-height:1.5;padding:7px 9px;background:var(--bg3);border-radius:var(--radius-sm);margin-bottom:10px;white-space:pre-wrap;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;}
 /* TDAS V4.6.5 — "Watch note:" lead-in label (Task 5). Sits inside the
    existing .watch-note box (untouched) — just distinguishes the label
    from the user's own note text, which is preserved verbatim. */
@@ -1200,6 +1207,44 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .watch-take-btn.pulsing{animation:takeTradeGlow 1.4s ease-in-out infinite;}
 @keyframes takeTradeGlow{0%,100%{box-shadow:0 0 0 0 rgba(29,158,117,0);border-color:var(--green-bg);}50%{box-shadow:0 0 8px 2px rgba(29,158,117,0.4);border-color:var(--green-text);}}
 .watch-cancel-btn{padding:8px 12px;font-size:13px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;}
+
+/* TDAS V5.0.0H — Watch twin-sided card foundation. Same fixed-height,
+   equal-front/rear pattern as .order-card.twin-sided (see that rule's own
+   comment) — reuses the same generic .otc-face/.otc-face-header plumbing,
+   scoped here to .watch-card.twin-sided so the two card types' flip states
+   never interfere with each other. */
+.watch-card.twin-sided{
+  height:500px;
+  display:flex;flex-direction:column;
+  overflow:hidden;
+}
+.watch-card.twin-sided .otc-face-header{flex-shrink:0;}
+.watch-card.twin-sided .otc-face-back{display:none;}
+.watch-card.twin-sided.is-flipped .otc-face-front{display:none;}
+.watch-card.twin-sided.is-flipped .otc-face-back{display:flex;}
+
+/* Watch rear — conditions + progress share one container. Two columns in
+   the settled logical order (TEMA/UT, HTF/ADX, SMA alone on its own row);
+   collapses to one column narrow/mobile while keeping that exact order —
+   reuses the existing .watch-cond-row/.watch-dot/.watch-cond-label from
+   the single-face card above, just laid out in a grid instead of a
+   column. */
+.watch-cond-block{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;}
+.watch-cond-grid{display:grid;grid-template-columns:1fr 1fr;column-gap:14px;row-gap:6px;}
+@media(max-width:640px){.watch-cond-grid{grid-template-columns:1fr;}}
+.watch-progress-divider{border-top:1px solid var(--border2);margin:9px 0 7px;}
+.watch-progress-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:700;letter-spacing:0.4px;color:var(--text3);}
+.watch-progress-row .count{font-family:var(--mono);color:var(--text2);}
+.watch-progress-row.complete .count{color:var(--green-text);}
+
+/* Better Entry — neutral management-info container, rear only, shown only
+   at/above the existing >=1.0% threshold (_computeWatchEntryImprovementPct,
+   completely unchanged — this only changes where/how its already-computed
+   value is displayed). Percentage is always green — communicates
+   opportunity improvement, not long/short direction. No gold: gold stays
+   reserved exclusively for authoritative Stage 10 High Conviction. */
+.watch-better-entry-box{display:flex;align-items:center;justify-content:space-between;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:7px 11px;font-size:11px;font-weight:600;letter-spacing:0.3px;color:var(--text2);margin-bottom:10px;}
+.watch-better-entry-box .val{font-family:var(--mono);font-size:12px;font-weight:700;color:var(--green-text);}
 
 /* Order ticket card */
 /* TDAS V5.0.0G2 — Trade Card Dimensional and State Refinement. Padding
@@ -1219,9 +1264,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    embedded-form removal already eliminated the bulk of the excess space;
    this correction redistributes the remaining rear content (§3) to fit
    Scanner's own reference height rather than keeping V5.0.0G1's interim
-   560px. */
+   560px.
+   TDAS V5.0.0H — Standard Card System Integration: height raised to the
+   new shared shell standard, 500px (was 460px), matching the approved
+   playground and the Scanner floor updated alongside it below. */
 .order-card.twin-sided{
-  height:460px;
+  height:500px;
   display:flex;flex-direction:column;
   overflow:hidden;
 }
@@ -1229,7 +1277,9 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .otc-face{
   flex:1;min-height:0;
   display:flex;flex-direction:column;
-  overflow-y:auto;
+  overflow:hidden; /* V5.0.0H — no routine internal scrolling; long copy is
+                       capped by .tdas-advisory-headline/.tdas-advisory-detail
+                       line-clamps below instead of scrolling to fit. */
 }
 .otc-face-back{display:none;}
 .order-card.twin-sided.is-flipped .otc-face-front{display:none;}
@@ -1817,7 +1867,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0G2';
+const APP_BUILD = 'V5.0.0H';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3451,7 +3501,7 @@ async function _refreshWatchSnapshots(reason) {
         journal.filter(isActiveWatch).forEach(function (j) {
           if (j.symbol === p.symbol && j.tf === p.tf) {
             const el = document.getElementById('wcard-' + j.id);
-            if (el && typeof renderWatchCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(j); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+            if (el) { _repaintWatchCard(j); }
           }
         });
       }).catch(function (err) {
@@ -3466,7 +3516,7 @@ async function _refreshWatchSnapshots(reason) {
         journal.filter(isActiveWatch).forEach(function (j) {
           if (j.symbol === p.symbol && j.tf === p.tf) {
             const el = document.getElementById('wcard-' + j.id);
-            if (el && typeof renderWatchCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(j); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+            if (el) { _repaintWatchCard(j); }
           }
         });
       });
@@ -3495,7 +3545,7 @@ function _requestWatchSnapshotNow(symbol, tf, reason) {
     journal.filter(isActiveWatch).forEach(function (j) {
       if (j.symbol === symbol && j.tf === tf) {
         const el = document.getElementById('wcard-' + j.id);
-        if (el && typeof renderWatchCard === 'function') { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(j); if (tmp.firstChild) el.replaceWith(tmp.firstChild); }
+        if (el) { _repaintWatchCard(j); }
       }
     });
   }).catch(function (err) {
@@ -17999,6 +18049,21 @@ function buildWatchEvidenceModel(liveData, watch) {
   return { valid, checkpoints, passed: checkpoints.filter(c => c.pass).length, total: 5 };
 }
 
+// TDAS V5.0.0H — Watch twin-sided card (Standard Card System Integration).
+// Front ("Watch Overview") mirrors the Scanner's own candidate-state
+// composition — buildTechnicalSummaryHtml/buildEvaluationSummaryHtml/
+// buildTechnicalChecklistHtml, called exactly as renderCard() already
+// calls them for a non-active symbol (buildAdvisory(liveData,
+// {openTrade:null})) — so a Watch's evaluation is presented through the
+// exact same authoritative pipeline as the Scanner, never a reinterpreted
+// copy. Rear ("Watch Management") keeps the prior single-face card's own
+// evidence (buildWatchEvidenceModel via adaptAuthoritativeWatchInputs),
+// stage-truthfulness, and Better Entry (_computeWatchEntryImprovementPct)
+// logic completely unchanged — only relocated/restructured into the
+// approved two-column-conditions + neutral Better Entry container layout.
+// Flip is the same is-flipped class-toggle pattern as
+// flipOrderTicketCard()/_repaintOrderTicketCard() (see those functions'
+// own comments) — see flipWatchCard()/_repaintWatchCard() below.
 function renderWatchCard(e){
   // TDAS V4.10.4F — Timeframe-Isolated Watch Data Migration. liveData now
   // comes from the exact symbol+watch.tf registry snapshot via
@@ -18013,10 +18078,10 @@ function renderWatchCard(e){
   const currentPrice=liveData?liveData.price:null;
   // TDAS V4.8 — Watch-Card Evidence Migration. renderWatchCard() no longer
   // interprets raw liveData fields itself for the checklist — dots, pass
-  // count, full-confirmation state, star, and Pending state are all
-  // derived exclusively from the single buildWatchEvidenceModel() result.
-  // See that function's own header comment for the preserved per-
-  // checkpoint semantics and the two flagged (not changed) audit findings.
+  // count, full-confirmation state, and Pending state are all derived
+  // exclusively from the single buildWatchEvidenceModel() result. See
+  // that function's own header comment for the preserved per-checkpoint
+  // semantics.
   // TDAS V4.10.3S — Authoritative Watch Input Adapter. buildWatchEvidenceModel()
   // itself is completely unchanged; only its input is now translated
   // through adaptAuthoritativeWatchInputs() first, which substitutes
@@ -18029,26 +18094,16 @@ function renderWatchCard(e){
   const evidence = buildWatchEvidenceModel(watchEvidenceInput, e);
   const _tfMatches = evidence.valid;
   const litCount = evidence.passed;
-  // Watch card status — visual guidance, not enforcement
-  // Take Trade is always enabled regardless of condition count.
-  const fullConf  = _tfMatches && litCount === 5;  // kept for CSS class / star compat
-  const condColor  = !_tfMatches ? 'var(--text3)'
-                   : litCount === 5 ? 'var(--green-text)'
-                   : litCount >= 3  ? 'var(--amber-text)'
-                   :                  'var(--text3)';
+  // Watch card status — visual guidance, not enforcement. Take Trade is
+  // always enabled regardless of condition count.
+  const fullConf  = _tfMatches && litCount === 5;
+  // TDAS V5.0.0H — Watch Progress colour is now strictly two-tier (grey
+  // below 5/5, green at 5/5 — no intermediate amber tier, no gold): gold
+  // stays reserved exclusively for authoritative Stage 10 High Conviction,
+  // never for Watch condition completeness. litCount/evidence themselves
+  // are completely unchanged — presentation only.
+  const condColor = fullConf ? 'var(--green-text)' : 'var(--text3)';
   const condWeight = fullConf ? '600' : '400';
-  // TDAS V4.10.2D — Narrow Visual-Semantics Correction. Gold-star
-  // exclusivity: "⭐ Full confluence" was a non-HC star (fullConf just
-  // means all 5 watch checkpoints are lit — condition completeness, not
-  // authoritative High Conviction). Relabelled to a checkmark; the exact
-  // same fullConf boolean, condition-count logic, and appearance timing
-  // are unchanged — only the wording/glyph.
-  const condStarHtml = fullConf ? ' · \u2713 All watch conditions met' : '';
-  // Honest pending state — never a fabricated "0/5" — shown in place of
-  // the progress fraction whenever this render lacks genuinely
-  // timeframe-matched data. Reuses the existing 11px muted inline-note
-  // convention already used elsewhere in this card (Trade Stage, 1H
-  // Timing rows) rather than introducing a new CSS class.
   const _progressCountHtml = _tfMatches ? (litCount + '/5') : 'Pending';
   // TDAS V4.10.4F — state-aware pending/stale/error wording, replacing the
   // single misleading "refreshing to this watch's Xh timeframe" message
@@ -18068,28 +18123,48 @@ function renderWatchCard(e){
   } else if (_watchRead.status === 'stale') {
     _tfPendingNoteHtml = `<div style="font-size:11px;margin-bottom:8px;color:var(--amber-text);">Refresh failed — showing last successful ${(e.tf||'').toUpperCase()} data.</div>`;
   }
-  const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-  const dir=e.signal==='long'?'<span class="chip long" style="font-size:12px;">▲ Long</span>':'<span class="chip short" style="font-size:12px;">▼ Short</span>';
-  // TDAS V4.8 Evidence Migration — checklist display labels/order are now
-  // sourced directly from evidence.checkpoints, which is already built in
-  // exact display order (tema, ut, htf, adx, sma). No index remapping is
-  // needed any more (the prior condDisplay[]->conds[index] mapping is
-  // retired); LABELS_BY_KEY below is the only place the display text
-  // lives, unchanged from the labels condDisplay used before.
+  // TDAS V4.8 Evidence Migration — checklist display labels/order are
+  // sourced directly from evidence.checkpoints, already built in exact
+  // display order (tema, ut, htf, adx, sma) — the same order the approved
+  // playground's rear specifies. LABELS_BY_KEY is the only place the
+  // display text lives, unchanged from before.
   const LABELS_BY_KEY = { tema:'TEMA structure', ut:'UT confirmation', htf:'HTF support', adx:'ADX trend', sma:'SMA filter' };
   const condListHtml=evidence.checkpoints.map(c=>`
     <div class="watch-cond-row">
       <span class="watch-dot ${c.status}"></span>
       <span class="watch-cond-label ${c.pass?'lit':''}">${LABELS_BY_KEY[c.key]}</span>
     </div>`).join('');
-  const priceColor=null; // replaced by currentPxColor below
-  // Current price colour relative to trigger price — green if moving in signal direction, red if against
+  // Current/At-watch price comparison — direction-aware, same "moving for
+  // vs against the watch's signal" semantics as before, now exposed as a
+  // boolean so both the rear "Now" colour and the new raw "Change vs
+  // watch" figure share one computation instead of two.
   const triggerPx=e.price;
+  const atWatchPx = e.actualEntry||e.signalPrice||e.price;
+  const isLong = e.signal==='long';
   let currentPxColor='var(--text3)';
+  let _movingFor=null;
   if(currentPrice&&currentPrice!==triggerPx){
-    const movingFor=(e.signal==='long'&&currentPrice>triggerPx)||(e.signal==='short'&&currentPrice<triggerPx);
-    currentPxColor=movingFor?'var(--green-text)':'var(--red-text)';
+    _movingFor=(isLong&&currentPrice>triggerPx)||(!isLong&&currentPrice<triggerPx);
+    currentPxColor=_movingFor?'var(--green-text)':'var(--red-text)';
   }
+  // Raw signed "Change vs watch" — long improvement is naturally negative
+  // (price fell), short improvement is naturally positive (price rose);
+  // sign is never flipped for display, matching Price Tracking's own
+  // settled convention (approved playground §C). This is a plain display
+  // delta, not the authoritative Better Entry calculation below.
+  const _changeVsWatchPct = (currentPrice!=null && atWatchPx) ? ((currentPrice-atWatchPx)/atWatchPx*100) : null;
+  const _changeVsWatchColor = _changeVsWatchPct==null ? 'var(--text3)' : (_movingFor ? 'var(--green-text)' : (_movingFor===false ? 'var(--red-text)' : 'var(--text3)'));
+  const _changeVsWatchHtml = _changeVsWatchPct!=null ? ((_changeVsWatchPct>=0?'+':'')+_changeVsWatchPct.toFixed(2)+'%') : '—';
+  // TDAS V5.0.0D — Better Entry. Reuses _computeWatchEntryImprovementPct()
+  // verbatim (defined near _computeWatchSummary()) — the one authoritative
+  // calculation, never duplicated. Threshold (>=1.0%) unchanged; only the
+  // container this value is displayed in is new (neutral, not gold — see
+  // .watch-better-entry-box).
+  const _betterEntryPct = _computeWatchEntryImprovementPct(e, currentPrice);
+  const _showBetterEntry = _betterEntryPct !== null && _betterEntryPct >= 1.0;
+  const betterEntryHtml = _showBetterEntry
+    ? `<div class="watch-better-entry-box">Better entry available <span class="val">${_betterEntryPct.toFixed(2)}%</span></div>`
+    : '';
   // TDAS V4.6.6 — Watch note display normalization (Task 3). Strips a
   // leading "Watch:" or "Watch note:" prefix (case-insensitive, any
   // spacing) before displaying under the "Watch note:" UI label, so the
@@ -18102,79 +18177,148 @@ function renderWatchCard(e){
   // removing it at the source would break that unrelated, working view.
   const _displayNote = e.note ? e.note.replace(/^\s*watch\s*(note)?\s*:\s*/i, '').trim() : '';
   const noteHtml=_displayNote?`<div class="watch-note"><span class="watch-note-label">Watch note:</span> ${_displayNote}</div>`:'';
-  return `<div class="watch-card${fullConf?' full-conf':''}" id="wcard-${e.id}">
-    ${fullConf?`<span class="watch-star">\u2713</span>`:''}
-    <div class="watch-card-header">
-      <div class="watch-card-pair">${LABELS[e.symbol]||e.symbol}</div>
-      <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${e.symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
+
+  // ── Front face fields — same HTF badge / session-candle source fields
+  // as the Trade front (renderOrderTicketCard) and the Scanner active
+  // placeholder, all reading the same liveData shape. ──────────────────
+  const _htfState = (typeof buildHtfBadgeState==='function' && liveData) ? buildHtfBadgeState(liveData, e.signal) : 'unknown';
+  const htfText = liveData ? `HTF ${(liveData.htf||'').toUpperCase()} ${HTF_BADGE_GLYPH[_htfState]||''}` : '';
+  const _hasCandleTimer = liveData && liveData.minsRemaining!=null && liveData.secsRemaining!=null;
+  const countdownUrgent = _hasCandleTimer && liveData.candleClosePct>=90;
+  const minsStr = _hasCandleTimer ? String(liveData.minsRemaining).padStart(2,'0') : '--';
+  const secsStr = _hasCandleTimer ? String(liveData.secsRemaining).padStart(2,'0') : '--';
+  const dirWord = isLong ? 'LONG' : 'SHORT';
+  const dirArrow = isLong ? '\u25b2' : '\u25bc';
+
+  // Technical/structure advisory + Watch advisory + Regime/HTF/TEMA/UT +
+  // RSI/ADX/200MA — the exact same authoritative functions the Scanner
+  // itself calls for a non-active (candidate) card. Guarded on liveData
+  // presence; when absent, _tfPendingNoteHtml above already explains why.
+  let technicalSummaryHtml = '', watchAdvisoryHtml = '', checklistHtml = '';
+  if (liveData) {
+    try{ technicalSummaryHtml = buildTechnicalSummaryHtml(liveData); }
+    catch(err){ console.warn('[renderWatchCard] buildTechnicalSummaryHtml failed for',e.symbol,err); }
+    try{
+      const _watchAdvisory = (typeof buildAdvisory==='function') ? buildAdvisory(liveData, {openTrade:null}) : null;
+      watchAdvisoryHtml = buildEvaluationSummaryHtml(liveData, _watchAdvisory);
+    }catch(err){ console.warn('[renderWatchCard] buildEvaluationSummaryHtml failed for',e.symbol,err); }
+    try{ checklistHtml = buildTechnicalChecklistHtml(liveData, e.tf); }
+    catch(err){ console.warn('[renderWatchCard] buildTechnicalChecklistHtml failed for',e.symbol,err); }
+  }
+
+  const copyBtnHtml = `<button class="snap-btn" type="button" title="Copy snapshot" data-sym="${e.symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>`;
+  // TDAS V5.0.0G2 §9 / V5.0.0H — same approved custom inline SVG flip-card
+  // icon as Trade's Manage Trade/Trade Overview (rounded-rectangle card
+  // outline + wrapping arrow, currentColor). Not a new icon.
+  const flipIconSvg = '<svg class="otc-flip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M12 5.5C13.2 6.3 14 7.6 14 9C14 11.2 12.2 13 10 13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M10 11.3L10 13L11.7 13.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+
+  // Stage — TDAS V4.10.3R Watch-Card Truthfulness, completely unchanged
+  // logic (live stage when timeframe-matched, else the frozen at-watch
+  // stage, never silently presenting a mismatched-lens value as current);
+  // only relocated to the rear face.
+  const _stageBadgeClass = {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'};
+  const _badge = (label) => `<span class="stage-badge ${_stageBadgeClass[label]||'stage-fresh'}">${label}</span>`;
+  const _liveStage = (evidence.valid && liveData && liveData.tradeStage) ? liveData.tradeStage : null;
+  const _storedStage = e.tradeStage || null;
+  let stageHtml = '';
+  if (_liveStage) {
+    const _atWatchHtml = _storedStage ? `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">At watch: ${_badge(_storedStage)}</div>` : '';
+    stageHtml = `<div style="font-size:11px;margin-bottom:8px;">Stage: ${_badge(_liveStage)}</div>${_atWatchHtml}`;
+  } else if (_storedStage) {
+    stageHtml = `<div style="font-size:11px;margin-bottom:8px;">At watch: ${_badge(_storedStage)}</div>`;
+  }
+
+  return `<div class="watch-card twin-sided${fullConf?' full-conf':''}" id="wcard-${e.id}">
+    <div class="otc-face otc-face-front">
+      <div class="otc-face-header">
+        <div class="otc-face-header-row">
+          <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
+          <span class="htf-badge ${_htfState}">${htfText}</span>
+          ${copyBtnHtml}
+        </div>
+        <div class="otc-face-header-row">
+          ${liveData && liveData.session ? `<span class="session-pill" style="color:${liveData.sessionColor||'var(--text2)'};">${liveData.session}${liveData.overlap?' \u26a1':''}</span>` : '<span></span>'}
+          ${_hasCandleTimer ? `<span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>` : '<span></span>'}
+        </div>
+      </div>
+      <div class="cz-price" style="padding:2px 0 6px;">
+        <div class="price-pill-row">
+          <span class="price">${currentPrice?fmt(currentPrice):'—'}</span>
+          <span class="sig-pill pill-trade-${isLong?'long':'short'}">${dirArrow} ${dirWord} WATCH</span>
+        </div>
+      </div>
+      ${_tfPendingNoteHtml}
+      ${technicalSummaryHtml}
+      ${watchAdvisoryHtml}
+      ${checklistHtml}
+      <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span class="watch-progress-count" style="color:${condColor};font-weight:${condWeight};">${_progressCountHtml}</span></div>
+      <div class="cz-spacer"></div>
+      <div class="otc-action-zone">
+        <button class="card-btn view-trade" onclick="event.stopPropagation();flipWatchCard(${e.id});">${flipIconSvg}Manage Watch</button>
+        <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','watch',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
+      </div>
     </div>
-    <div style="margin-bottom:6px;">${dir}</div>
-    <div class="otc-meta" style="margin-bottom:10px;">${e.tf.toUpperCase()} WATCH · ${ts}</div>
-    ${_tfPendingNoteHtml}
-    <div class="watch-cond-list">${condListHtml}</div>
-    <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span class="watch-progress-count" style="color:${condColor};font-weight:${condWeight};">${_progressCountHtml}</span>${condStarHtml}</div>
-    <div class="entry-quality-row">${(()=>{
-      // Entry Quality — Trade Desk only. Fixed-height container always rendered.
-      // TDAS V5.0.0D correction — now calls the shared
-      // _computeWatchEntryImprovementPct() (defined above, near
-      // _computeWatchSummary()) instead of computing this inline; the
-      // formula, price fields, and this card's own >=1.0% display
-      // threshold are all unchanged from before.
-      const _improvement = _computeWatchEntryImprovementPct(e, currentPrice);
-      if(_improvement === null || _improvement < 1.0) return '';
-      const _label = e.signal === 'long' ? 'Better long entry' : 'Better short entry';
-      return `🟢 ${_label} (+${_improvement.toFixed(1)}%)`;
-    })()}</div>
-    ${(()=>{
-      // TDAS V4.10.3R — Watch-Card Truthfulness. e.tradeStage was frozen at
-      // Watch creation by buildV1Entry() and never refreshed by any repaint
-      // path; liveData.tradeStage is computed fresh on every calcPair() and
-      // sits on the same currentScanData object the checklist already
-      // reads. Uses the model's own evidence.valid timeframe-match guard —
-      // the same guard the checklist relies on — so a mismatched-lens scan
-      // can never present a wrong-timeframe live stage as current. The
-      // stored creation-time stage always remains visible as historical
-      // context ("At watch:"), never silently dropped, and never silently
-      // presented as current. getTradeStage()/buildV1Entry()/persistence
-      // are completely untouched — this is presentation only.
-      const _stageBadgeClass = {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'};
-      const _badge = (label) => `<span class="stage-badge ${_stageBadgeClass[label]||'stage-fresh'}">${label}</span>`;
-      const _liveStage = (evidence.valid && liveData && liveData.tradeStage) ? liveData.tradeStage : null;
-      const _storedStage = e.tradeStage || null;
-      if (!_liveStage && !_storedStage) return '';
-      if (_liveStage) {
-        const _atWatchHtml = _storedStage ? `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">At watch: ${_badge(_storedStage)}</div>` : '';
-        return `<div style="font-size:11px;margin-bottom:8px;">Trade Stage: ${_badge(_liveStage)}</div>${_atWatchHtml}`;
-      }
-      // No timeframe-matched live stage available (mismatched lens or no
-      // liveData at all) -- never present the stored value as current.
-      return _storedStage ? `<div style="font-size:11px;margin-bottom:8px;">At watch: ${_badge(_storedStage)}</div>` : '';
-    })()}
-    ${(()=>{
-      // TDAS V4.10.4F — reads liveData (already resolved above via
-      // getWatchSnapshotData(e)) instead of a fresh direct
-      // currentScanData[e.symbol] lookup — same exact-timeframe source
-      // as the rest of this card, never a second, independently-timed
-      // read of a possibly-different generation.
-      const _t = liveData && liveData._1hTiming;
-      if(!_t||!_t.state) return '';
-      const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
-      return `<div style="font-size:11px;margin-bottom:8px;color:var(--text2);">1H Timing: <span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
-    })()}
-    <div class="watch-prices">
-      <div>Trigger<div class="wp-val">${fmt(e.price)}</div></div>
-      <div>At watch<div class="wp-val" style="color:var(--text2);">${(e.actualEntry||e.signalPrice||e.price)?fmt(e.actualEntry||e.signalPrice||e.price):'—'}</div></div>
-      <div>Now<div class="wp-val" style="color:${currentPxColor};">${currentPrice?fmt(currentPrice):'—'}</div></div>
+    <div class="otc-face otc-face-back">
+      <div class="otc-face-header">
+        <div class="otc-face-header-row">
+          <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
+          <span class="sig-pill pill-trade-${isLong?'long':'short'}">${dirArrow} ${dirWord} WATCH</span>
+          ${copyBtnHtml}
+        </div>
+      </div>
+      <div class="watch-cond-block">
+        <div class="watch-cond-grid">${condListHtml}</div>
+        <div class="watch-progress-divider"></div>
+        <div class="watch-progress-row${fullConf?' complete':''}">WATCH PROGRESS <span class="count">${_progressCountHtml}</span></div>
+      </div>
+      ${betterEntryHtml}
+      <div class="risk-item-label" style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin:6px 0 4px;">Price Tracking</div>
+      <div class="watch-prices">
+        <div>Trigger<div class="wp-val">${fmt(e.price)}</div></div>
+        <div>At watch<div class="wp-val" style="color:var(--text2);">${atWatchPx?fmt(atWatchPx):'—'}</div></div>
+        <div>Current<div class="wp-val" style="color:${currentPxColor};">${currentPrice?fmt(currentPrice):'—'}</div></div>
+        <div>Change vs watch<div class="wp-val" style="color:${_changeVsWatchColor};">${_changeVsWatchHtml}</div></div>
+      </div>
+      ${stageHtml}
+      ${noteHtml}
+      <div class="cz-spacer"></div>
+      <div class="otc-action-zone">
+        <div class="watch-actions">
+          <button class="watch-take-btn${fullConf?' ready pulsing':''}" onclick="event.stopPropagation();quickTakeFromWatch(${e.id})">✓ Convert to trade</button>
+          <button class="watch-cancel-btn" onclick="event.stopPropagation();closeWatch(${e.id})">✗ Cancel Watch</button>
+        </div>
+        <button class="card-btn view-trade" style="margin-top:6px;" onclick="event.stopPropagation();flipWatchCard(${e.id});">${flipIconSvg}Watch Overview</button>
+      </div>
     </div>
-    ${noteHtml}
-    <div class="watch-actions">
-      <button class="watch-take-btn${fullConf?' ready pulsing':''}" onclick="quickTakeFromWatch(${e.id})">
-        ✓ Convert to trade
-      </button>
-      <button class="watch-cancel-btn" onclick="closeWatch(${e.id})">✗ Cancel</button>
-    </div>
-    <button class="analysis-btn" id="ta-btn-${e.id}" onclick="openTradeAnalysis('${e.symbol}','${e.tf}','ta-btn-${e.id}','watch',${e.id},'${e.signal}')" style="margin-top:6px;">&#9654; Show full analysis</button>
   </div>`;
+}
+
+// TDAS V5.0.0H — Watch card flip toggle. Same simple class-toggle pattern
+// as flipOrderTicketCard() (no persistence across a full renderWatchPage()
+// re-render — matches the existing, explicitly-permitted Trade precedent
+// for full re-renders; see _repaintWatchCard() below for the bounded,
+// in-place alternative used where a caller can target a single card).
+function flipWatchCard(id){
+  const el = document.getElementById('wcard-'+id);
+  if(!el) return;
+  el.classList.toggle('is-flipped');
+}
+
+// TDAS V5.0.0H — in-place single-card repaint, preserving whichever face
+// was showing (same bounded pattern as _repaintOrderTicketCard()). Ready
+// for use by any future targeted Watch price/signal refresh path; a full
+// renderWatchPage() re-render is unaffected and still resets to front,
+// matching Trade's own documented precedent for full re-renders.
+function _repaintWatchCard(e){
+  const el = document.getElementById('wcard-'+e.id);
+  if(!el) return;
+  const wasFlipped = el.classList.contains('is-flipped');
+  const tmp = document.createElement('div');
+  tmp.innerHTML = renderWatchCard(e);
+  const newEl = tmp.firstChild;
+  if(!newEl) return;
+  if(wasFlipped) newEl.classList.add('is-flipped');
+  el.replaceWith(newEl);
 }
 
 // TDAS V5.0.0F — Twin-Sided Active Trade Card Foundation. Front face
@@ -18301,6 +18445,20 @@ function renderOrderTicketCard(e){
         : `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL set</span>`)
     : '';
 
+  // TDAS V5.0.0H — Context / 1H Timing moved to the Trade front (approved
+  // playground doctrine: front is advisory-led, rear is purely
+  // operational). Values and colour semantics are byte-identical to the
+  // pre-V5.0.0H rear block — presentation location only; tradeStage and
+  // _1hTiming computation are completely unchanged.
+  const contextBlockHtml = (() => {
+    const _stageRow = e.tradeStage ? `<div class="otc-context-row"><span class="otc-context-label">Context:</span><span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : '';
+    const _t = liveData && liveData._1hTiming;
+    const _timingRow = (_t && _t.state)
+      ? `<div class="otc-context-row"><span class="otc-context-label">1H Timing:</span><span style="color:${_t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)'};font-weight:600;">${_t.state}</span></div>`
+      : '';
+    return (_stageRow || _timingRow) ? `<div class="otc-context-block">${_stageRow}${_timingRow}</div>` : '';
+  })();
+
   const advisoryHtml = advisory
     ? `<div class="tdas-advisory-block ${stateClass}">`
       + `<div class="tdas-advisory-header-row">`
@@ -18378,6 +18536,7 @@ function renderOrderTicketCard(e){
       </div>
       <div class="otc-entered-line">Entered ${ts}</div>
       ${advisoryHtml}
+      ${contextBlockHtml}
       ${pnlHtml}
       ${_supportStatusHtml}
       <div class="cz-spacer"></div>
@@ -18400,22 +18559,13 @@ function renderOrderTicketCard(e){
         <div class="tl-item tl-primary"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
         <div class="tl-item tl-primary"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
         <div class="tl-item tl-secondary"><div class="tl-label">Recommended stop</div><div class="tl-val" style="color:var(--text2);">${_recommendedStop!=null?fmt(_recommendedStop):'—'}</div></div>
-        <div class="tl-item tl-primary"><div class="tl-label">Actual stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--red-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
+        <div class="tl-item tl-primary"><div class="tl-label">Actual stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--green-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
         <div class="tl-item tl-secondary"><div class="tl-label">Risk %</div><div class="tl-val" style="color:#a78bfa;">${_riskPct!=null?_riskPct.toFixed(2)+'%':'—'}</div></div>
         <div class="tl-item tl-secondary"><div class="tl-label">Risk points</div><div class="tl-val" style="color:#a78bfa;">${_riskPts!=null?fmtPts(_riskPts)+'pts':'—'}</div></div>
       </div>
       <div class="otc-stop-pill-row">
         ${manualPillHtml}
         ${bePillHtml}
-      </div>
-      <div class="otc-context-block">
-        ${e.tradeStage ? `<div class="otc-context-row"><span class="otc-context-label">Context:</span><span class="stage-badge ${ {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'}[e.tradeStage]||'stage-fresh' }" style="font-size:10px;padding:2px 7px;">${e.tradeStage}</span></div>` : ''}
-        ${(()=>{
-          const _t = liveData && liveData._1hTiming;
-          if(!_t||!_t.state) return '';
-          const _col = _t.direction==='warning'?'var(--amber-text)':_t.direction==='long'?'var(--green-text)':'var(--red-text)';
-          return `<div class="otc-context-row"><span class="otc-context-label">1H Timing:</span><span style="color:${_col};font-weight:600;">${_t.state}</span></div>`;
-        })()}
       </div>
       <div class="cz-spacer"></div>
       <div class="otc-action-zone">
@@ -18842,11 +18992,7 @@ async function _tdLightweightRefresh(){
     // Re-render watch cards in-place (current price, entry improvement)
     watches.forEach(e=>{
       const el=document.getElementById('wcard-'+e.id);
-      if(el){
-        const tmp=document.createElement('div');
-        tmp.innerHTML=renderWatchCard(e);
-        el.replaceWith(tmp.firstChild);
-      }
+      if(el){ _repaintWatchCard(e); }
     });
 
     // Also refresh inline P&L spans (journal tab trade summary)
@@ -19117,7 +19263,7 @@ async function _timingRefresh() {
     // Re-render affected watch cards with updated timing state
     watches.forEach(e => {
       const el = document.getElementById('wcard-' + e.id);
-      if (el) { const tmp = document.createElement('div'); tmp.innerHTML = renderWatchCard(e); el.replaceWith(tmp.firstChild); }
+      if (el) { _repaintWatchCard(e); }
     });
 
     if (DEBUG_MODE) console.log('[1H Timing Refresh]', {
@@ -19329,8 +19475,7 @@ async function _tdSignalRefresh(){
       }
       const watchEntry = journal.find(j=>isActiveWatch(j)&&j.symbol===sym);
       if(watchEntry && watchVisible){
-        const el = document.getElementById('wcard-'+watchEntry.id);
-        if(el){ const tmp=document.createElement('div'); tmp.innerHTML=renderWatchCard(watchEntry); el.replaceWith(tmp.firstChild); }
+        _repaintWatchCard(watchEntry);
       }
       // TDAS V4.10.3N — Trade Ready Card / Full Analysis Synchronisation.
       // Previously this repaint fired only for activeEntry (open-trade)
