@@ -1171,8 +1171,13 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    media query — untouched). Mobile alone gets a taller 560px shell so
    fixed-height Trade/Watch content no longer clips at narrow widths.
    Applied identically to all three standard cards (Scanner, Trade,
-   Watch) — no Watch-only exception. */
-@media (max-width: 380px) {
+   Watch) — no Watch-only exception.
+   TDAS V5.0.0H4 — Mobile Breakpoint and Watch Checklist Fix. Breakpoint
+   widened from max-width:380px to max-width:480px — 380px never actually
+   fired on current iPhone CSS viewport widths (390-430px), so the 560px
+   mobile-shell rule was dead code in practice. Rule bodies themselves are
+   unchanged from H3; only the breakpoint width moved. */
+@media (max-width: 480px) {
   .grid, .trade-cards-grid { grid-template-columns: minmax(0, 1fr); }
   .card, .order-card.twin-sided, .watch-card.twin-sided { width: 100%; min-height: 560px; }
   .order-card.twin-sided, .watch-card.twin-sided { height: 560px; }
@@ -1263,7 +1268,16 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    column. */
 .watch-cond-block{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;margin-bottom:10px;}
 .watch-cond-grid{display:grid;grid-template-columns:1fr 1fr;column-gap:14px;row-gap:6px;}
-@media(max-width:640px){.watch-cond-grid{grid-template-columns:1fr;}}
+/* TDAS V5.0.0H4 — was max-width:640px, which collapsed the checklist to
+   one column on normal phone widths (well above the 480px mobile-shell
+   breakpoint above), adding unnecessary vertical height exactly where
+   the taller 560px shell was supposed to fix clipping. Two columns now
+   stay active down to genuinely narrow screens; logical/DOM order
+   (TEMA structure, UT confirmation, HTF support, ADX trend, SMA filter)
+   is unaffected either way — this only changes column count, never
+   order. Watch Progress remains inside the same .watch-cond-block
+   container, untouched. */
+@media(max-width:330px){.watch-cond-grid{grid-template-columns:1fr;}}
 .watch-progress-divider{border-top:1px solid var(--border2);margin:9px 0 7px;}
 .watch-progress-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:700;letter-spacing:0.4px;color:var(--text3);}
 .watch-progress-row .count{font-family:var(--mono);color:var(--text2);}
@@ -1911,7 +1925,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H3';
+const APP_BUILD = 'V5.0.0H4';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
