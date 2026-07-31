@@ -1253,7 +1253,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    reuses the existing .watch-cond-row/.watch-dot/.watch-cond-label from
    the single-face card above, just laid out in a grid instead of a
    column. */
-.watch-cond-block{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;}
+.watch-cond-block{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 11px;margin-bottom:10px;}
 .watch-cond-grid{display:grid;grid-template-columns:1fr 1fr;column-gap:14px;row-gap:6px;}
 @media(max-width:640px){.watch-cond-grid{grid-template-columns:1fr;}}
 .watch-progress-divider{border-top:1px solid var(--border2);margin:9px 0 7px;}
@@ -1903,7 +1903,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H1';
+const APP_BUILD = 'V5.0.0H2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -18284,9 +18284,9 @@ function renderWatchCard(e){
         </div>
       </div>
       ${_tfPendingNoteHtml}
-      ${technicalSummaryHtml}
-      ${watchAdvisoryHtml}
-      ${checklistHtml}
+      ${technicalSummaryHtml ? `<div style="margin-bottom:10px;">${technicalSummaryHtml}</div>` : ''}
+      ${watchAdvisoryHtml ? `<div style="margin-bottom:10px;">${watchAdvisoryHtml}</div>` : ''}
+      ${checklistHtml ? `<div style="margin-bottom:10px;">${checklistHtml}</div>` : ''}
       <div class="watch-progress-strip"><span class="watch-progress-label">WATCH PROGRESS</span> <span class="watch-progress-count" style="color:${condColor};font-weight:${condWeight};">${_progressCountHtml}</span></div>
       <div class="cz-spacer"></div>
       <div class="otc-action-zone">
@@ -18495,8 +18495,15 @@ function renderOrderTicketCard(e){
     return (_stageRow || _timingRow) ? `<div class="otc-context-block">${_stageRow}${_timingRow}</div>` : '';
   })();
 
+  // TDAS V5.0.0H2 — Card Spacing Alignment. This block previously had no
+  // margin-bottom at all (0px gap into the next block), unlike Scanner's
+  // equivalent advisory box, which gets its ~10px rhythm from the .cz
+  // zone wrapper it's rendered inside (renderCard). Trade's advisoryHtml
+  // is built locally (not via the shared buildEvaluationSummaryHtml) and
+  // was never wrapped in a zone, so it's fixed here with the same 10px
+  // value directly, scoped to this construction only.
   const advisoryHtml = advisory
-    ? `<div class="tdas-advisory-block ${stateClass}">`
+    ? `<div class="tdas-advisory-block ${stateClass}" style="margin-bottom:10px;">`
       + `<div class="tdas-advisory-header-row">`
       + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
       + mgmtStatusPillHtml
