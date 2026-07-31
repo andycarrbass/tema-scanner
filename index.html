@@ -1160,29 +1160,6 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    fix above and the approved playground's fixed width exactly. */
 .trade-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,340px);gap:12px;align-items:start;justify-content:start;}
 
-/* TDAS V5.0.0H1 — Standard Card Width and Spacing Fidelity Fix. Below the
-   available fixed card width, fall back to a single fluid column so a
-   340px track can never force horizontal overflow on a genuinely narrow
-   viewport. Scoped to exactly the three standard-card grids/shells
-   (Scanner, Trade, Watch) — no other layout is affected.
-   TDAS V5.0.0H3 — Mobile Standard Card Height Fix. Desktop/tablet keeps
-   the established 500px (.card min-height / .order-card.twin-sided and
-   .watch-card.twin-sided fixed height, all defined above, outside this
-   media query — untouched). Mobile alone gets a taller 560px shell so
-   fixed-height Trade/Watch content no longer clips at narrow widths.
-   Applied identically to all three standard cards (Scanner, Trade,
-   Watch) — no Watch-only exception.
-   TDAS V5.0.0H4 — Mobile Breakpoint and Watch Checklist Fix. Breakpoint
-   widened from max-width:380px to max-width:480px — 380px never actually
-   fired on current iPhone CSS viewport widths (390-430px), so the 560px
-   mobile-shell rule was dead code in practice. Rule bodies themselves are
-   unchanged from H3; only the breakpoint width moved. */
-@media (max-width: 480px) {
-  .grid, .trade-cards-grid { grid-template-columns: minmax(0, 1fr); }
-  .card, .order-card.twin-sided, .watch-card.twin-sided { width: 100%; min-height: 560px; }
-  .order-card.twin-sided, .watch-card.twin-sided { height: 560px; }
-}
-
 /* Watch card */
 .watch-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;border-left:3px solid var(--amber);position:relative;opacity:0.92;min-height:220px;}
 .watch-card.full-conf{opacity:1;}
@@ -1332,6 +1309,41 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .otc-face-back{display:none;}
 .order-card.twin-sided.is-flipped .otc-face-front{display:none;}
 .order-card.twin-sided.is-flipped .otc-face-back{display:flex;}
+
+/* TDAS V5.0.0H1 — Standard Card Width and Spacing Fidelity Fix. Below the
+   available fixed card width, fall back to a single fluid column so a
+   340px track can never force horizontal overflow on a genuinely narrow
+   viewport. Scoped to exactly the three standard-card grids/shells
+   (Scanner, Trade, Watch) — no other layout is affected.
+   TDAS V5.0.0H3 — Mobile Standard Card Height Fix. Mobile alone gets a
+   taller 560px shell so fixed-height Trade/Watch content no longer clips
+   at narrow widths. Applied identically to all three standard cards
+   (Scanner, Trade, Watch) — no Watch-only exception.
+   TDAS V5.0.0H4 — Mobile Breakpoint and Watch Checklist Fix. Breakpoint
+   widened from max-width:380px to max-width:480px — 380px never actually
+   fired on current iPhone CSS viewport widths (390-430px).
+   TDAS V5.0.0H5 — Investigate Live Mobile CSS Cascade. Root cause: this
+   block was previously positioned BEFORE the .card/.watch-card.twin-sided/
+   .order-card.twin-sided base rules (lines ~134/~1195/~1261). Since this
+   media query and those base rules share equal selector specificity, and
+   CSS resolves equal-specificity ties by source order (later wins,
+   regardless of media-query nesting), the base rules' own width:340px and
+   height:500px were actually WINNING the cascade at mobile widths for
+   .watch-card.twin-sided/.order-card.twin-sided specifically — the
+   correct visual result only survived by accident, via max-width:100%
+   riding on .trade-cards-grid's own (correctly-ordered) fluid-column
+   override for width, and via this block's un-overridden min-height:560px
+   acting as an unconditional floor for height. Verified via a real
+   Chromium/Playwright render at 320/375/390/414/430/480/768px — no
+   visible regression existed, but the win was fragile/accidental, not
+   structural. Moved here — strictly after all three base rules — so the
+   cascade resolves correctly by construction. Rule bodies are otherwise
+   byte-identical to H4; only position changed. No !important needed. */
+@media (max-width: 480px) {
+  .grid, .trade-cards-grid { grid-template-columns: minmax(0, 1fr); }
+  .card, .order-card.twin-sided, .watch-card.twin-sided { width: 100%; min-height: 560px; }
+  .order-card.twin-sided, .watch-card.twin-sided { height: 560px; }
+}
 /* TDAS V5.0.0G — per-face header rows (front: symbol/HTF/copy, session/
    setup-tf, Paper/candle-timer; rear: symbol/direction-pill/copy only).
    TDAS V5.0.0G2 — justify-content:space-between removed in favour of gap
@@ -1925,7 +1937,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H4';
+const APP_BUILD = 'V5.0.0H5';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
