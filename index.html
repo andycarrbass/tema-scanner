@@ -120,11 +120,20 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 #status.scanner-result-neutral{color:var(--text3);}
 
 /* Grid */
-/* ── Scanner Grid ── */
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:24px;align-items:start;}
+/* ── Scanner Grid ──
+   TDAS V5.0.0H1 — Standard Card Width and Spacing Fidelity Fix. Fixed
+   340px tracks (was fluid minmax(280px,1fr), which let cards stretch
+   wider than the approved playground on wide viewports). justify-
+   content:start keeps cards left-aligned within the section rather than
+   letting leftover row space centre/spread them. Narrow fallback below
+   (max-width:380px) restores a single fluid column so genuinely narrow
+   viewports never overflow a fixed 340px track. */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,340px);gap:12px;margin-bottom:24px;align-items:start;justify-content:start;}
 
 /* ── Fixed-skeleton card ── */
 .card{
+  width:340px;
+  max-width:100%;
   background:var(--bg2);
   border:1px solid var(--border);
   border-radius:var(--radius);
@@ -1145,8 +1154,21 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    Trade alone was corrected to this (V5.0.0G2 §1, via a scoped override
    below); Watch stayed at an interim 270px/11px. That override is now
    redundant since the shared base rule matches it — removed rather than
-   left duplicated. */
-.trade-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;align-items:start;}
+   left duplicated.
+   TDAS V5.0.0H1 — Standard Card Width and Spacing Fidelity Fix: fixed
+   340px tracks (was fluid minmax(280px,1fr)), matching the Scanner grid
+   fix above and the approved playground's fixed width exactly. */
+.trade-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,340px);gap:12px;align-items:start;justify-content:start;}
+
+/* TDAS V5.0.0H1 — Standard Card Width and Spacing Fidelity Fix. Below the
+   available fixed card width, fall back to a single fluid column so a
+   340px track can never force horizontal overflow on a genuinely narrow
+   viewport. Scoped to exactly the three standard-card grids/shells
+   (Scanner, Trade, Watch) — no other layout is affected. */
+@media (max-width: 380px) {
+  .grid, .trade-cards-grid { grid-template-columns: minmax(0, 1fr); }
+  .card, .order-card.twin-sided, .watch-card.twin-sided { width: 100%; }
+}
 
 /* Watch card */
 .watch-card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:15px 16px;border-left:3px solid var(--amber);position:relative;opacity:0.92;min-height:220px;}
@@ -1214,6 +1236,8 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    scoped here to .watch-card.twin-sided so the two card types' flip states
    never interfere with each other. */
 .watch-card.twin-sided{
+  width:340px;
+  max-width:100%;
   height:500px;
   display:flex;flex-direction:column;
   overflow:hidden;
@@ -1269,6 +1293,8 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    new shared shell standard, 500px (was 460px), matching the approved
    playground and the Scanner floor updated alongside it below. */
 .order-card.twin-sided{
+  width:340px;
+  max-width:100%;
   height:500px;
   display:flex;flex-direction:column;
   overflow:hidden;
@@ -1295,6 +1321,16 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    (flex-shrink:0), so neither is ever squeezed or clipped. */
 .otc-face-header-row{display:flex;align-items:center;gap:8px;margin-bottom:5px;}
 .otc-face-header-row:last-of-type{margin-bottom:8px;}
+/* TDAS V5.0.0H1 — metadata rows (session/setup-tf, Paper/candle-timer on
+   Trade; session/candle-timer on Watch) use the approved playground's
+   .z-meta contract (space-between) so the trailing item — the candle
+   countdown — sits at the row's far right instead of bunched against its
+   neighbour. Scoped to a modifier class, not the shared base rule above:
+   the symbol/HTF/copy row correctly keeps its existing gap + .snap-btn
+   margin-left:auto approach (V5.0.0G2 §2 — space-between was deliberately
+   removed there for a different, 3-child-safety reason; unrelated to this
+   fix and left untouched). */
+.otc-face-header-row.meta-row{justify-content:space-between;}
 .otc-symbol{font-size:16px;font-weight:600;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:1;}
 .otc-face-header-row .htf-badge,.otc-face-header-row .sig-pill{flex-shrink:0;}
 /* Entered line — must read clearly, not as faded microcopy (V5.0.0G §Entered line). */
@@ -1867,7 +1903,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H';
+const APP_BUILD = 'V5.0.0H1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -18236,7 +18272,7 @@ function renderWatchCard(e){
           <span class="htf-badge ${_htfState}">${htfText}</span>
           ${copyBtnHtml}
         </div>
-        <div class="otc-face-header-row">
+        <div class="otc-face-header-row meta-row">
           ${liveData && liveData.session ? `<span class="session-pill" style="color:${liveData.sessionColor||'var(--text2)'};">${liveData.session}${liveData.overlap?' \u26a1':''}</span>` : '<span></span>'}
           ${_hasCandleTimer ? `<span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>` : '<span></span>'}
         </div>
@@ -18519,11 +18555,11 @@ function renderOrderTicketCard(e){
           <span class="htf-badge ${_htfState}">${htfText}</span>
           ${copyBtnHtml}
         </div>
-        <div class="otc-face-header-row">
+        <div class="otc-face-header-row meta-row">
           ${liveData && liveData.session ? `<span class="session-pill" style="color:${liveData.sessionColor||'var(--text2)'};">${liveData.session}${liveData.overlap?' \u26a1':''}</span>` : '<span></span>'}
           <span class="setup-tf-pill">${e.tf.toUpperCase()} SETUP</span>
         </div>
-        <div class="otc-face-header-row">
+        <div class="otc-face-header-row meta-row">
           <span class="chip ${e.tradeType==='real'?'aligned':'neutral'}" style="font-size:11px;">${e.tradeType==='real'?'💰 Live':'📝 Paper'}</span>
           ${_hasCandleTimer ? `<span class="candle-pill ${countdownUrgent?'urgent':'normal'}" title="Candle close">${countdownUrgent?'\u26a0 ':''}\ud83d\udd6f ${minsStr}:${secsStr}</span>` : '<span></span>'}
         </div>
