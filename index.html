@@ -130,6 +130,27 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    viewports never overflow a fixed 340px track. */
 .grid{display:grid;grid-template-columns:repeat(auto-fill,340px);gap:12px;margin-bottom:24px;align-items:start;justify-content:start;}
 
+/* ── TDAS V5.0.0H7 — Scanner Directional Lanes ──
+   Two fixed lanes (Short left, Long right) at desktop/tablet widths,
+   stacked Short-then-Long on mobile via a single breakpoint (DOM order
+   is already Short-first, so mobile stacking needs no reordering — just
+   collapsing the two-column grid to one column). Both lanes always
+   render, even when empty (.lane-empty), so a populated lane can never
+   expand across the full page width. Each lane's own .lane-grid reuses
+   the exact same fixed-340px/12px-gap/left-aligned card contract as the
+   Scanner's own .grid above and the shared .trade-cards-grid — same
+   card width/spacing doctrine, just partitioned by direction. */
+.scanner-lanes{display:grid;grid-template-columns:1fr 1fr;gap:24px;align-items:start;margin-bottom:24px;}
+@media(max-width:768px){.scanner-lanes{grid-template-columns:1fr;gap:28px;}}
+.scanner-lane{min-width:0;}
+.lane-heading{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:14px;padding-bottom:8px;border-bottom:1px solid var(--border2);}
+.lane-heading-short{color:var(--red);}
+.lane-heading-long{color:var(--green);}
+.lane-count{font-family:var(--mono);}
+.lane-grid{display:grid;grid-template-columns:repeat(auto-fill,340px);gap:12px;justify-content:start;}
+@media(max-width:480px){.lane-grid{grid-template-columns:minmax(0,1fr);}}
+.lane-empty{font-size:12px;color:var(--text3);padding:24px 0;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-sm);}
+
 /* ── Fixed-skeleton card ── */
 .card{
   width:340px;
@@ -591,8 +612,17 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .sig-pill{display:inline-flex;align-items:center;height:24px;padding:0 11px;
   border-radius:99px;font-size:11px;font-weight:700;letter-spacing:0.4px;
   white-space:nowrap;flex-shrink:0;}
-.sig-pill.pill-long{background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-bg);}
-.sig-pill.pill-short{background:var(--red-dim);color:var(--red-text);border:1px solid var(--red-bg);}
+/* TDAS V5.0.0H7 — Scanner Directional Lanes: signal-pill refinement.
+   Moderately clearer than before (translucent fill instead of flat dim,
+   a real directional border instead of a near-invisible dark one,
+   stronger text weight, ~1px taller) while staying deliberately less
+   prominent than Trade's LONG/SHORT ACTIVE badges (.pill-trade-long/
+   .pill-trade-short below, untouched) — those use the brighter
+   --green-text/--red-text for their border; these use the muted
+   --green/--red base tokens instead, which is the entire mechanism
+   keeping the hierarchy intact. */
+.sig-pill.pill-long{background:rgba(29,158,117,0.18);color:var(--green-text);border:1px solid var(--green);font-weight:800;height:26px;}
+.sig-pill.pill-short{background:rgba(192,67,42,0.18);color:var(--red-text);border:1px solid var(--red);font-weight:800;height:26px;}
 .sig-pill.pill-trade{background:rgba(59,130,246,0.1);color:#60a5fa;border:1px solid rgba(59,130,246,0.2);}
 .sig-pill.pill-neutral{background:var(--bg3);color:var(--text3);border:1px solid var(--border);}
 /* TDAS V4.6.1 — setup timeframe pill (Task 1). Originally placed in the
@@ -1654,7 +1684,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div id="scannerStatusBar" class="tdas-status-block" style="display:none;"></div>
   </div>
   <div class="status-row" style="justify-content:flex-start;"><span id="status"></span><span id="activeTradesPill" class="htf-note" style="margin-left:10px;display:none;cursor:pointer;color:var(--text);" onclick="showTab('trade')"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;color:var(--text);">ACTIVE TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
-  <div class="grid" id="grid"></div>
+  <div class="scanner-lanes" id="grid"></div>
 </div>
 
 <!-- Confluence tab -->
@@ -1937,7 +1967,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H6';
+const APP_BUILD = 'V5.0.0H7';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2110,9 +2140,33 @@ function _normSymbolForWatchMatch(sym){
 function isExactSymbolTfWatched(sym, tf){
   const nSym = _normSymbolForWatchMatch(sym);
   const nTf = String(tf||'').toLowerCase();
-  return journal.some(j => isActiveWatch(j)
-    && _normSymbolForWatchMatch(j.symbol) === nSym
-    && String(j.tf||'').toLowerCase() === nTf);
+  return journal.some(j => {
+    if (!isActiveWatch(j)) return false;
+    if (_normSymbolForWatchMatch(j.symbol) !== nSym) return false;
+    const jTf = String(j.tf||'').toLowerCase();
+    // TDAS V5.0.0H7 — root cause of the live "some 1H Watches still appear
+    // on 1H Scanner" defect. normaliseSheets() (the Sheets row -> journal
+    // entry mapper) already defaults a missing/blank TF cell to '' — see
+    // its own `tf: e.TF||e.tf||''` line. Legacy rows that predate
+    // consistent TF tracking, or any row whose TF cell simply was never
+    // populated, therefore round-trip with j.tf === ''. The original H6
+    // match required an EXACT tf equality, so such a record could never
+    // equal any real dropdown value ('1h'/'4h'/'1d') and silently never
+    // suppressed anything, on any timeframe — exactly the reported "some
+    // watches still visible" symptom (well-formed records, created after
+    // buildV1Entry started stamping tf, matched and suppressed correctly
+    // the whole time; only tf-less records slipped through). Fail safe
+    // toward the Watch's own exact-tf intent rather than under-
+    // suppressing: when a watch's own timeframe is unknown, treat it as
+    // watched on whichever timeframe is currently being checked, so a
+    // genuinely-watched setup is never left duplicated on Scanner merely
+    // because its historical record never captured which timeframe it
+    // was for. This does not change matching for any record that DOES
+    // carry a real tf value — those still require an exact match, per
+    // the settled "exact symbol+timeframe suppression only" doctrine.
+    if (!jTf) return true;
+    return jTf === nTf;
+  });
 }
 
 // Single authoritative "is this symbol+tf excluded from the visible
@@ -21355,6 +21409,7 @@ function renderNeutralCompact(symbol, d){
 
 // ── Grid skeleton ────────────────────────────────────────────────────────
 function buildGrid(){
+  document.getElementById('grid').className = 'grid';
   document.getElementById('grid').innerHTML=PAIRS.map(s=>`<div class="card neutral" id="c-${s}"><div class="pair">${LABELS[s]}</div><div class="skeleton" style="width:55%;height:22px;margin:10px 0 8px;"></div><div class="skeleton" style="width:40%;height:14px;margin-bottom:12px;"></div><div class="skeleton" style="width:75%;height:12px;margin-bottom:6px;"></div><div class="skeleton" style="width:60%;height:12px;"></div></div>`).join('');
 }
 
@@ -21666,37 +21721,50 @@ async function runScan(auto){
   });
 
   // Split into signal/trade cards and neutral cards
-  // TDAS V5.0.0E — Remove Active Trades from Scanner. hasOpenTrade symbols
-  // no longer get a signalItems entry at all (previously they did, just
-  // rendered as a compact placeholder card via renderCard's isOpenTrade
-  // branch — see buildActiveScannerPlaceholderHtml, now unreachable from
-  // this path since no <div id="c-{sym}"> element exists for them to
-  // target). They are represented instead by the single "⚡ X ACTIVE
-  // TRADES" pill (see _updateActiveTradesPill()).
-  // TDAS V5.0.0H6 — Remove Active Watches from Scanner. Exact symbol+tf
-  // watched setups are now excluded the same way (via the single shared
-  // isScannerSymbolSuppressed() predicate) instead of being included and
-  // merely prioritised — Scanner is no longer their home once a Watch
-  // exists for that exact symbol+timeframe. A different timeframe on the
-  // same symbol is unaffected (isScannerSymbolSuppressed is tf-scoped for
-  // the watch check). No placeholder, no pill, no partial card — same
-  // "not rendered at all" treatment as an active trade.
-
+  // TDAS V5.0.0H7 — Scanner Directional Lanes. signalItems now holds ONLY
+  // genuine fulfilled long/short results — a rejected/errored fetch has no
+  // direction to put in a lane, so it now routes into neutralItems instead
+  // (the existing per-item render branch there already calls renderCard
+  // with an {error,tf} object for a non-fulfilled result, unchanged — see
+  // the neutralItems.forEach loop below). This is a strict repartition,
+  // not a new exclusion: every previously-signalItems-eligible symbol
+  // still gets a card somewhere, just in the neutral section if it has no
+  // direction to show. shortItems/longItems below are then simple
+  // sub-filters of signalItems, so they inherit the exact same relative
+  // order `indexed` was already sorted into — no separate sort step.
   const signalItems  = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
     if(isScannerSymbolSuppressed(sym, tf)) return false;
-    return (v && v.signal!=='neutral') || r.status==='rejected';
+    return v && v.signal!=='neutral';
   });
   const neutralItems = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
     if(isScannerSymbolSuppressed(sym, tf)) return false;
-    return (!v || v.signal==='neutral') && r.status!=='rejected';
+    return !v || v.signal==='neutral';
   });
+  const shortItems = signalItems.filter(({r}) => r.value.signal === 'short');
+  const longItems  = signalItems.filter(({r}) => r.value.signal === 'long');
 
 
   if(!auto){
-    // Build signal grid (full cards)
-    const signalGrid = signalItems.map(({sym})=>`<div class="card neutral" id="c-${sym}"></div>`).join('');
+    // TDAS V5.0.0H7 — two fixed directional lanes (Short left, Long right
+    // on desktop; Short then Long stacked on mobile via CSS, not DOM
+    // order duplication — see .scanner-lanes/.scanner-lane CSS). Both
+    // lanes always render, even when empty, with an explicit empty-state
+    // message rather than collapsing/expanding the page layout.
+    const shortCount = shortItems.length;
+    const longCount  = longItems.length;
+    const shortGrid  = shortItems.map(({sym})=>`<div class="card neutral" id="c-${sym}"></div>`).join('');
+    const longGrid   = longItems.map(({sym})=>`<div class="card neutral" id="c-${sym}"></div>`).join('');
+    const lanesHtml = `
+      <div class="scanner-lane scanner-lane-short">
+        <div class="lane-heading lane-heading-short">\u25bc SHORT SIGNALS <span class="lane-count">${shortCount}</span></div>
+        <div class="lane-grid">${shortGrid || '<div class="lane-empty">No short signals</div>'}</div>
+      </div>
+      <div class="scanner-lane scanner-lane-long">
+        <div class="lane-heading lane-heading-long">\u25b2 LONG SIGNALS <span class="lane-count">${longCount}</span></div>
+        <div class="lane-grid">${longGrid || '<div class="lane-empty">No long signals</div>'}</div>
+      </div>`;
 
     // Build neutral section — compact rows with collapsible toggle
     const neutralCount = neutralItems.length;
@@ -21713,9 +21781,10 @@ async function runScan(auto){
         </div>
       </div>`;
 
-    document.getElementById('grid').innerHTML = signalGrid;
-    // Insert neutral section after grid
     const gridEl = document.getElementById('grid');
+    gridEl.className = 'scanner-lanes';
+    gridEl.innerHTML = lanesHtml;
+    // Insert neutral section after the lanes
     let neutralEl = document.getElementById('neutralSection');
     if(neutralEl) neutralEl.remove();
     if(neutralSection){
