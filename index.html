@@ -413,6 +413,22 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   overflow:hidden;
   word-break:break-word;
 }
+/* TDAS V5.0.0H8E — desktop-only technical-advisory truncation fix. See
+   this rule's un-media-queried sibling immediately above for the shared
+   2-line clamp (unchanged, both mobile and desktop). At the standard
+   340px desktop card width, 12px/1.4 body text can trip the 2-line
+   clamp before a genuine advisory sentence finishes; at typical mobile
+   viewport widths the card's own fluid width gives slightly more
+   effective line-wrap room, so the same copy was already fitting there
+   (confirmed empirically — see the delivery report). A ~1px font
+   reduction, desktop only, gives just enough extra characters per line
+   to close the gap without touching clamp count, card dimensions,
+   advisory-box height, or any other card type's typography. */
+@media (min-width: 481px) {
+  .card:not(.tdas-card-active) .tdas-advisory-detail{
+    font-size:11px;
+  }
+}
 
 /* Demoted direction pill — used on scanner entry/watch cards once the
    TDAS advisory headline becomes the primary cue. Same shape, quieter. */
@@ -2020,7 +2036,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8D';
+const APP_BUILD = 'V5.0.0H8E';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -17997,9 +18013,22 @@ function closeWatch(id){
   sessionDirtyIds.add(entry.id);
   const _cwSym=entry.symbol;
   console.log('[WRITE] action started: closeWatch', _cwSym);
-  commitJournalChange('closeWatch:'+_cwSym, entry.id).then(()=>{
-    if(currentScanData[_cwSym]) renderCard(_cwSym,currentScanData[_cwSym]);
-  });
+  // TDAS V5.0.0H8E — the legacy manual repaint callback that used to live
+  // here (renderCard(_cwSym, currentScanData[_cwSym]) unconditionally, on
+  // every close) is removed: it always used the full-size Scanner card
+  // renderer regardless of whether this now-unsuppressed symbol is a
+  // genuine signal (belongs in a lane) or neutral (belongs in the
+  // compact neutral section) — confirmed root cause of a cancelled
+  // no-signal Watch's setup briefly flashing as a full-size card before
+  // self-correcting on the next scan. commitJournalChange() already
+  // calls renderAllJournalDependentUI() -> reconcileScannerOwnership()
+  // centrally for every journal write (H8B doctrine: one central path,
+  // not two) — reconcileScannerOwnership() itself now dispatches
+  // correctly between renderCard()/renderNeutralCompact() (see that
+  // function's own comment), so this symbol gets the exact same
+  // collapsed neutral presentation immediately, with no separate call
+  // needed here.
+  commitJournalChange('closeWatch:'+_cwSym, entry.id);
 }
 
 // ── Phase 7A: Auto-capture for skip, miss, watch without modal ────────────
@@ -18906,6 +18935,28 @@ function renderOrderTicketCard(e){
   const _manualPillConfirmed = _mgmt.confirmed && _mgmt.source!=='BE';
   const manualPillHtml = `<span class="sl-be-pill sl-be-clickable${_manualPillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetManualSlDialog(${e.id});"${_manualPillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_manualPillConfirmed?'\u2713 SL set':'Set SL'}</span>`;
 
+  // TDAS V5.0.0H8E — Active Trade note restoration (rear face only). The
+  // note itself was always captured/persisted/normalised correctly (see
+  // normaliseSheets(): note: e.Notes||e.note||'') — this was purely a
+  // rendering regression from the V5.0.0H standard-card rebuild, which
+  // never carried the note block over. Matches the Watch card's own
+  // already-established pattern exactly: strip a leading "Trade: " label
+  // (buildV1Entry stamps notes as "Trade: <text>" — see its own note
+  // field construction), trim, and reuse the existing .watch-note CSS
+  // class verbatim rather than introducing a new panel or styling — it
+  // already has the right compact size, 3-line clamp, and margin-bottom
+  // for the rear face's remaining space, with no card-height/footer
+  // impact (verified: it sits before .cz-spacer, same as Watch's own
+  // note, so the spacer absorbs any height difference exactly as
+  // designed). No dedicated HTML-escape helper exists anywhere in this
+  // codebase — the Watch note is rendered via the same plain
+  // template-literal interpolation below, so this matches the one
+  // existing precedent for this field type rather than introducing a new,
+  // inconsistent escaping mechanism. The stored value itself is never
+  // mutated — only this local display copy is stripped/trimmed.
+  const _tradeDisplayNote = e.note ? e.note.replace(/^\s*trade\s*(note)?\s*:\s*/i, '').trim() : '';
+  const tradeNoteHtml = _tradeDisplayNote ? `<div class="watch-note">${_tradeDisplayNote}</div>` : '';
+
   // Single top-right management-status pill — only one of the two
   // supported states for this build may display (V5.0.0G §Advisory box).
   // TDAS V5.0.0G2 §4/§5 — front status wording corrected: "\u2713 SL set"
@@ -19045,6 +19096,7 @@ function renderOrderTicketCard(e){
         ${manualPillHtml}
         ${bePillHtml}
       </div>
+      ${tradeNoteHtml}
       <div class="cz-spacer"></div>
       <div class="otc-action-zone">
         <button class="close-trade-btn ${isLong?'close-long':'close-short'}" onclick="event.stopPropagation();openOutcomeModal(${e.id},null)">
@@ -19984,7 +20036,20 @@ async function _tdSignalRefresh(){
       // watch/trade page's own repaint (via _repaintOrderTicketCard/
       // _repaintWatchCard just above, unaffected by this guard) still
       // gets the fresh data regardless.
-      if ((activeEntry || watchEntry) && typeof renderCard==='function' && symTf[sym] === fallbackTf) renderCard(sym, currentScanData[sym]);
+      if ((activeEntry || watchEntry) && typeof renderCard==='function' && symTf[sym] === fallbackTf){
+        // TDAS V5.0.0H8E — same signal/neutral dispatch fix as
+        // reconcileScannerOwnership() (see that function's own comment
+        // for the full root-cause explanation). This specific line is
+        // effectively unreachable under current suppression doctrine (a
+        // same-tf watched/traded symbol is always suppressed, so there is
+        // no Scanner card here to repaint in practice — see the H8C2
+        // report) but is fixed for consistency, so it can never
+        // reintroduce the same full-size-card-for-a-neutral-symbol defect
+        // if suppression doctrine ever changes.
+        const _d2 = currentScanData[sym];
+        const _isNeutral2 = !_d2 || _d2.error || _d2.signal === 'neutral';
+        _isNeutral2 ? renderNeutralCompact(sym, _d2) : renderCard(sym, _d2);
+      }
     });
 
     // Status timestamp only advances on at least a partial success — if
@@ -21712,8 +21777,25 @@ function reconcileScannerOwnership(){
       // exactly as it was — never repainted from stale/wrong-tf data —
       // rather than fabricating a fresh render from data that isn't
       // actually valid for the currently selected Scanner timeframe.
-      try{ renderCard(sym, currentScanData[sym]); }
-      catch(err){ console.warn('[reconcileScannerOwnership] renderCard failed for',sym,err); }
+      //
+      // TDAS V5.0.0H8E — dispatch to the correct renderer, matching
+      // runScan()'s own signalItems/neutralItems partition exactly
+      // (signalItems: v.signal!=='neutral'; neutralItems: everything
+      // else, including errors). Previously this always called the
+      // full-size renderCard() regardless of the symbol's current
+      // signal state — confirmed root cause of a cancelled no-signal
+      // Watch's setup briefly rendering as a full-size card instead of
+      // returning directly to the compact neutral-section presentation
+      // (see closeWatch()'s own comment above for the paired fix). Both
+      // renderers fully own the element's className/content on every
+      // call (renderCard sets 'card ...'; renderNeutralCompact sets
+      // 'nc-row'), so whichever one previously rendered this element is
+      // irrelevant here — the correct renderer self-corrects it either
+      // way, with no separate wrapper-migration step needed.
+      const _d = currentScanData[sym];
+      const _isNeutral = !_d || _d.error || _d.signal === 'neutral';
+      try{ _isNeutral ? renderNeutralCompact(sym, _d) : renderCard(sym, _d); }
+      catch(err){ console.warn('[reconcileScannerOwnership] render failed for',sym,err); }
     }
   });
 
