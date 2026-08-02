@@ -353,6 +353,23 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   overflow:hidden;
   word-break:break-word;
 }
+/* TDAS V5.0.0H8E1 — desktop-only technical-comment typography fix. This is
+   the ACTUAL element beneath BULLISH/BEARISH TECHNICALS that H8E should
+   have targeted: identical structure to .tdas-advisory-detail (2-line
+   clamp, uniform 12px across mobile/desktop) but a completely separate
+   class/block. H8E's investigation stopped after confirming a fix for
+   .tdas-advisory-detail (the lower verdict box) worked for its chosen
+   representative sentence, and never re-tested the technical-comment
+   text specifically — see the delivery report for the full root-cause
+   account. Same treatment as H8E's own advisory fix: desktop only
+   (min-width:481px, complementing the established max-width:480px
+   mobile breakpoint), font-size only, clamp count/box height/card
+   dimensions untouched. */
+@media (min-width: 481px) {
+  .card:not(.tdas-card-active) .tdas-techsummary-detail{
+    font-size:11px;
+  }
+}
 
 /* ── TDAS Phase 2B (V4.5.2) — Technical checklist box ────────────────────
    Contains the 4-dot row + RSI/ADX/200MA filter line together in one
@@ -404,7 +421,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   box-sizing:border-box;
   display:flex;
   flex-direction:column;
-  justify-content:center;
+  justify-content:flex-start; /* TDAS V5.0.0H8E1 — was justify-content:center, which vertically centred short verdicts like AVOID LONG inside the fixed-height box instead of starting them at the same top position as longer verdicts. Box height/card height/footer position are all unaffected by this change -- only where the (unchanged) content sits within the already-existing box. */
 }
 .card:not(.tdas-card-active) .tdas-advisory-detail{
   display:-webkit-box;
@@ -2036,7 +2053,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8E';
+const APP_BUILD = 'V5.0.0H8E1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
