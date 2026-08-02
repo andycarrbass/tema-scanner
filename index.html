@@ -1967,7 +1967,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8A';
+const APP_BUILD = 'V5.0.0H8B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2176,6 +2176,12 @@ function isExactSymbolTfWatched(sym, tf){
 // function — a suppression rule can never apply in one place and not
 // another, and there is no scattered per-template display:none check.
 function isScannerSymbolSuppressed(sym, tf){
+  if(DIAG.ownershipResolverLive){
+    return resolveOwnership(sym, tf).suppressFromScanner;
+  }
+  // Pre-H8B legacy path — exact rollback target if ownershipResolverLive
+  // is set back to false. isExactSymbolTfWatched() (with its H7 blank-tf
+  // fail-safe) is completely untouched and still fully functional here.
   const hasOpenTrade = journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
   if(hasOpenTrade) return true;
   if(isExactSymbolTfWatched(sym, tf)) return true;
@@ -2810,7 +2816,8 @@ function renderAllJournalDependentUI(){
   updateLivePnL();
   updateJournalCount();
   updateTradeCount();
-  _updateActiveTradesPill(); // TDAS V5.0.0E — keep the Scanner pill truthful without requiring a fresh scan
+  _updateActiveTradesPill(); // TDAS V5.0.0E — keep the Scanner pill truthful without requiring a fresh scan; kept unconditional here since reconcileScannerOwnership() below can bail early (e.g. #tf not yet in the DOM)
+  reconcileScannerOwnership(); // TDAS V5.0.0H8B — central Scanner ownership reconciliation (see that function's own header comment)
   // Re-render Watch page / Trade desk if active
   const watchTab = document.getElementById('tab-watch');
   if(watchTab && watchTab.classList.contains('active')) renderWatchPage();
@@ -2834,6 +2841,7 @@ async function commitJournalChange(reason, changedEntryId){
     // If still locked after the wait, give up gracefully so we don't cascade
     if(_commitLock){
       console.error('[COMMIT] lock still held after retry — skipping:', reason);
+      renderAllJournalDependentUI(); // TDAS V5.0.0H8B — reconcile local state; the caller's mutation already happened before this call
       return false;
     }
   }
@@ -2853,6 +2861,7 @@ async function commitJournalChange(reason, changedEntryId){
     if(!_sheetsOk){
       console.warn('[COMMIT] circuit breaker open — push skipped');
       _setSyncStatus('⚠ Sync paused');
+      renderAllJournalDependentUI(); // TDAS V5.0.0H8B — reconcile local state; do not depend on push succeeding first
       return false;
     }
 
@@ -2869,6 +2878,7 @@ async function commitJournalChange(reason, changedEntryId){
     if(!pushed){
       console.error('[COMMIT] push failed:', reason, changedEntryId);
       _setSyncStatus('\u26a0 Sync write failed');
+      renderAllJournalDependentUI(); // TDAS V5.0.0H8B — reconcile local state; do not depend on push succeeding first
       return false;
     }
 
@@ -11270,7 +11280,7 @@ const DIAG = {
   fullAnalysisTimeframeExplicit: true, // TDAS V4.10.4H — controls ONLY whether openAnalysisPanel() requires/normalizes an explicit {symbol,tf,consumer,...} request. When false, preserves V4.10.4G symbol-only launch behaviour (openAnalysisPanel(symbol) reads currentScanData[symbol] directly, no normalization, no consumer context).
   fullAnalysisSnapshotReader: true, // TDAS V4.10.4H — controls ONLY whether getFullAnalysisSnapshotData() resolves the panel's exact symbol+tf registry snapshot. When false, the panel reads legacy currentScanData[symbol] directly.
   fullAnalysisSnapshotRefresh: true, // TDAS V4.10.4H — controls ONLY whether a missing/stale exact Full Analysis snapshot may be requested through the shared coordinator. When false, the panel renders only whatever data/fallback state already exists.
-  ownershipResolverLive: false, // TDAS V5.0.0H8A — Ownership Resolver Shadow Audit. Controls ONLY whether resolveOwnership()'s verdict is authoritative for Scanner suppression/presentation. MUST stay false in this build — resolveOwnership() runs in shadow only (see _runOwnershipShadowCensus()), comparing its verdict against the two currently-live, currently-disagreeing predicates (isScannerSymbolSuppressed() for suppression, renderCard()'s own inline symbol-wide watch/trade lookup for presentation — see TDAS_V5_REFRESH_RECONCILIATION_AUDIT.md root cause #1) without changing any visible behaviour. Rollback: nothing to roll back — this flag has never been true in production.
+  ownershipResolverLive: true, // TDAS V5.0.0H8B — Activate Canonical Ownership + Scanner Reconciliation. ACTIVE per production H8A shadow census evidence (checked=12, disagreements=1 [presentation only], suppression=0, blankTfActiveWatches=0): isScannerSymbolSuppressed() is now a thin delegate to resolveOwnership() (used by runScan's signalItems/neutralItems, renderSummary, the status count, and reconcileScannerOwnership itself), and renderCard()'s independent symbol-wide watch lookup has been replaced with resolveOwnership()'s verdict (root cause #1 fix — see TDAS_V5_REFRESH_RECONCILIATION_AUDIT.md). Rollback: set back to false and restore isScannerSymbolSuppressed() to call isExactSymbolTfWatched() directly (untouched, still present) plus restore renderCard()'s prior symbol-wide journal.find — both documented inline at their respective call sites.
 };
 
 // TDAS V5.0.0H8A — Ownership Resolver Shadow Audit. Bounded in-memory
@@ -14602,9 +14612,38 @@ function renderCard(symbol,d){
   // (Audit Fix H3B). Falls back to the dropdown, then '4h', only if d.tf is
   // unavailable (e.g. stale currentScanData predating this fix).
   const tf_val=d.tf||document.getElementById('tf').value||'4h';
-  // Cross-timeframe: find active watching or open trade for this pair on ANY timeframe
-  const activeWatch=journal.find(j=>j.symbol===symbol&&isActiveWatch(j));
-  const openTrade=journal.find(j=>!j.deleted&&j.symbol===symbol&&j.decision==='took'&&!j.outcome);
+  // TDAS V5.0.0H8B — Ownership Resolver Activation. Replaces the old
+  // independent symbol-wide "journal.find(...isActiveWatch...)" lookup,
+  // which ignored timeframe entirely (see
+  // TDAS_V5_REFRESH_RECONCILIATION_AUDIT.md root cause #1: this was the
+  // exact reason another-timeframe Watch could show "Watching \u2192" on
+  // a Scanner card it did not actually own) — with the single
+  // authoritative resolveOwnership() verdict. A Watch on the timeframe
+  // this card is actually for should never reach this function at all
+  // (runScan's signalItems/neutralItems partition already excludes it via
+  // isScannerSymbolSuppressed(), now itself gated on this same flag) —
+  // but this card is built defensively regardless of how it was reached:
+  // activeWatch below is only ever populated for the exact
+  // 'watching-this-tf' hint, never for 'watching-other-tf'. A Watch on a
+  // different timeframe therefore renders this card as a completely
+  // normal unowned opportunity, exactly as required — presentationHint
+  // itself stays internal to this computation and is never surfaced or
+  // branched on directly. Rollback: set DIAG.ownershipResolverLive back
+  // to false to instantly restore the exact pre-H8B symbol-wide lookup.
+  let activeWatch, openTrade;
+  if(DIAG.ownershipResolverLive){
+    const _ownership = resolveOwnership(symbol, tf_val);
+    activeWatch = _ownership.presentationHint === 'watching-this-tf'
+      ? journal.find(j => j.id === _ownership.entryId) || null
+      : null;
+    openTrade = _ownership.owner === 'trade'
+      ? journal.find(j => j.id === _ownership.entryId) || null
+      : null;
+  } else {
+    // Pre-H8B legacy path.
+    activeWatch = journal.find(j=>j.symbol===symbol&&isActiveWatch(j));
+    openTrade = journal.find(j=>!j.deleted&&j.symbol===symbol&&j.decision==='took'&&!j.outcome);
+  }
   // Find the most recent skipped/missed decision for this symbol on the current TF.
   // No hard time window — isSameLoggedSetup() decides whether the UI lock holds.
   const sameTfRecent=journal.find(j=>j.symbol===symbol&&j.tf===tf_val&&
@@ -17349,21 +17388,18 @@ function saveEntry(){
   // after sync confirms. Do NOT call renderJournal/updateLivePnL/renderTradeDesk
   // here — those fire synchronously before the async push resolves, causing
   // a stale pre-sync render followed by a correct post-sync render (double render).
+  // TDAS V5.0.0H8B — Scanner reconciliation (card removal/re-render,
+  // summary, status, active-trades pill) is now handled centrally inside
+  // commitJournalChange() itself, via renderAllJournalDependentUI() ->
+  // reconcileScannerOwnership() — called on every commit attempt,
+  // regardless of push success (see commitJournalChange's own comment).
+  // The per-decision special case that used to live here
+  // (_refreshScannerSuppressionInPlace() for 'watching', a manual
+  // single-card renderCard() for everything else) is now redundant and
+  // removed — one central path, not two.
   console.log('[WRITE] action started: saveEntry', savedSymbol, savedDecision || 'unknown');
   commitJournalChange('saveEntry:'+savedSymbol, _stamped.id).then(ok=>{
     if(ok){
-      // TDAS V5.0.0H6 — Remove Active Watches from Scanner. A 'watching'
-      // save must remove its exact symbol+tf Scanner card immediately, not
-      // just repaint it in place — reuses the same fetch-free in-place
-      // refresh Watch cancellation's natural-return already relies on
-      // (see _refreshScannerSuppressionInPlace()'s own header comment).
-      // Every other decision (took/skipped/missed) keeps the existing
-      // single-card repaint, unchanged.
-      if(savedDecision === 'watching'){
-        _refreshScannerSuppressionInPlace();
-      } else if(currentScanData[savedSymbol]){
-        renderCard(savedSymbol, currentScanData[savedSymbol]);
-      }
       _onConfluenceSaveDone(savedSymbol);
     }
   });
@@ -21523,34 +21559,47 @@ function renderSummary(results, tf){
     <div class="sum-card">Pairs<span>${PAIRS.length}</span></div>`;
 }
 
-// ── TDAS V5.0.0H6 — immediate Scanner suppression refresh ──────────────────
-// Called right after a Watch is created, using only the already-cached
-// currentScanData/PAIRS/journal — no fetch, no rescan. Removes the exact
-// symbol+tf card (whichever section it's currently in — signal grid or
-// neutral compact row both use the same #c-{sym} id convention) and
-// repaints the summary tiles + status line so counts stay truthful
-// immediately, without waiting for the next scan/periodic refresh.
+// ── TDAS V5.0.0H8B — central Scanner ownership reconciliation ──────────────
+// Called from renderAllJournalDependentUI() — i.e. after every Journal
+// write commit attempt, regardless of push success (see
+// commitJournalChange()'s own comment) — so Scanner never depends on a
+// network round-trip to reflect the true local ownership state. Uses only
+// already-cached currentScanData/PAIRS/journal — no fetch, no rescan.
 //
-// Deliberately one-directional (removal only): a Watch cancellation does
-// not need the reverse operation here. The cancelled setup was never
-// re-inserted into a specific grid position by this function in the first
-// place, so there is nothing stale to correct in the DOM immediately —
-// per the settled behaviour, it simply becomes visible again "naturally"
-// the next time runScan() itself runs (periodic refresh, tab switch back
-// to Scanner triggering a scan, or a manual rescan), at which point
-// isScannerSymbolSuppressed() no longer excludes it and it's rebuilt into
-// the grid in the normal way. This avoids fabricating or restoring stale
-// scan data to force an immediate reappearance, exactly as required.
-function _refreshScannerSuppressionInPlace(){
+// Two responsibilities, both driven by the same resolveOwnership() verdict
+// per symbol (via isScannerSymbolSuppressed(), now a thin delegate to it):
+//   1. Removal — a symbol now owned (Watch on this exact tf, or an active
+//      Trade) is removed from the DOM if a card for it exists, whichever
+//      section it's currently in (signal lane or neutral compact row both
+//      use the same #c-{sym} id convention).
+//   2. Presentation correction — a symbol NOT suppressed but still
+//      currently rendered is re-rendered via the normal renderCard() path,
+//      so any stale 'Watching \u2192' state left over from before this
+//      build's renderCard() fix (which used to look up watch ownership
+//      symbol-wide, any timeframe) can never persist after a reconcile.
+//      This is the mechanism that satisfies "prevent other-timeframe
+//      Watches from presenting as Watching \u2192".
+//
+// Deliberately does not attempt to INSERT a card for a symbol that isn't
+// currently rendered at all (e.g. a cancelled Watch's setup returning to
+// Scanner) — that still happens "naturally" on the next runScan(), exactly
+// as before this build; fabricating a card from cached data here would
+// risk showing stale scan results as if freshly scanned.
+function reconcileScannerOwnership(){
   const tfEl = document.getElementById('tf');
   const tf = tfEl ? tfEl.value : null;
   if(!tf || typeof PAIRS==='undefined') return;
+
   PAIRS.forEach(sym=>{
+    const el = document.getElementById('c-'+sym);
     if(isScannerSymbolSuppressed(sym, tf)){
-      const el = document.getElementById('c-'+sym);
       if(el) el.remove();
+    } else if(el && currentScanData[sym]){
+      try{ renderCard(sym, currentScanData[sym]); }
+      catch(err){ console.warn('[reconcileScannerOwnership] renderCard failed for',sym,err); }
     }
   });
+
   const results = PAIRS.map(sym => currentScanData[sym]
     ? {status:'fulfilled', value: currentScanData[sym]}
     : {status:'rejected', reason:{message:'no data'}});
@@ -21566,6 +21615,7 @@ function _refreshScannerSuppressionInPlace(){
       : `${sigs} SIGNALS DETECTED ON ${tf.toUpperCase()}`;
     _statusEl.className = sigs>0 ? 'scanner-result-active' : 'scanner-result-neutral';
   }
+  if(typeof _updateActiveTradesPill === 'function') _updateActiveTradesPill();
 }
 
 // ── Neutral section toggle ───────────────────────────────────────────────
