@@ -1736,7 +1736,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div class="summary" id="summary" style="margin-bottom:0;"></div>
     <div id="scannerStatusBar" class="tdas-status-block" style="display:none;"></div>
   </div>
-  <div class="status-row" style="justify-content:flex-start;"><span id="status"></span><span id="activeTradesPill" class="htf-note" style="margin-left:10px;display:none;cursor:pointer;color:var(--text);" onclick="showTab('trade')"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;color:var(--text);">ACTIVE TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
+  <div class="status-row" style="justify-content:flex-start;"><span id="status"></span><span id="activeWatchesPill" class="htf-note" style="margin-left:10px;display:none;cursor:pointer;color:var(--amber-text);" onclick="showTab('watch')"></span><span id="activeTradesPill" class="htf-note" style="margin-left:10px;display:none;cursor:pointer;color:var(--text);" onclick="showTab('trade')"></span><span id="activeTfScanner" class="htf-note" style="margin-left:10px;color:var(--text);">ACTIVE TF: <span style="color:var(--green-text);font-weight:600;">4H</span></span></div>
   <div class="scanner-lanes" id="grid"></div>
 </div>
 
@@ -2020,7 +2020,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8C2';
+const APP_BUILD = 'V5.0.0H8D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2870,6 +2870,7 @@ function renderAllJournalDependentUI(){
   updateJournalCount();
   updateTradeCount();
   _updateActiveTradesPill(); // TDAS V5.0.0E — keep the Scanner pill truthful without requiring a fresh scan; kept unconditional here since reconcileScannerOwnership() below can bail early (e.g. #tf not yet in the DOM)
+  _updateActiveWatchesPill(); // TDAS V5.0.0H8D — same trigger, same "unconditional, cheap, no network" rationale
   reconcileScannerOwnership(); // TDAS V5.0.0H8B — central Scanner ownership reconciliation (see that function's own header comment)
   // Re-render Watch page / Trade desk if active
   const watchTab = document.getElementById('tab-watch');
@@ -21554,13 +21555,46 @@ function renderHistory(){
 // Scanner timeframe — same hasOpenTrade predicate already used by
 // signalItems/neutralItems/renderSummary above, not a new rule. Hidden
 // entirely when there are none.
+// TDAS V5.0.0H8D — Active Trades pill count is now timeframe-sensitive
+// (display/navigation only): counts only active Trade records whose own
+// stored tf exactly matches Scanner's currently selected timeframe. This
+// does NOT change Active Trade suppression doctrine, which remains
+// symbol-wide across every Scanner timeframe — isScannerSymbolSuppressed()'s
+// hasOpenTrade check (and resolveOwnership()'s own openTrade branch) are
+// completely untouched by this. Strict exact match, no blank-tf fallback —
+// a record with no recorded tf is simply not counted on any timeframe
+// (matches the doctrine's own "otherwise zero" requirement; distinct from
+// isExactSymbolTfWatched()'s blank-tf fail-safe, which exists specifically
+// for suppression, not for this display count).
 function _updateActiveTradesPill(){
   const el = document.getElementById('activeTradesPill');
   if(!el) return;
-  const n = journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome).length;
+  const tfEl = document.getElementById('tf');
+  const tf = tfEl ? tfEl.value : null;
+  const nTf = String(tf||'').toLowerCase();
+  const n = journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&String(j.tf||'').toLowerCase()===nTf).length;
   if(!n){ el.style.display='none'; el.textContent=''; return; }
   el.style.display='';
   el.textContent = `⚡ ${n} ACTIVE TRADE${n!==1?'S':''}`;
+}
+// TDAS V5.0.0H8D — Active Watches pill. Exact symbol+timeframe identity,
+// matching isExactSymbolTfWatched()'s own doctrine precisely — no
+// symbol-wide fallback counting. Structurally aligned with
+// _updateActiveTradesPill() above (same .htf-note base class, same
+// zero-count hide behaviour, same inline-style shape) but with distinct
+// Watch amber semantics (var(--amber-text), not the Trade pill's neutral
+// var(--text)) and the same eye icon already used by the Watch tab
+// button, rather than the Trade pill's lightning icon.
+function _updateActiveWatchesPill(){
+  const el = document.getElementById('activeWatchesPill');
+  if(!el) return;
+  const tfEl = document.getElementById('tf');
+  const tf = tfEl ? tfEl.value : null;
+  const nTf = String(tf||'').toLowerCase();
+  const n = journal.filter(j=>isActiveWatch(j) && String(j.tf||'').toLowerCase()===nTf).length;
+  if(!n){ el.style.display='none'; el.textContent=''; return; }
+  el.style.display='';
+  el.textContent = `\ud83d\udc41 ${n} ACTIVE WATCH${n!==1?'ES':''}`;
 }
 function renderSummary(results, tf){
   // Root cause of the V4.5.4 count mismatch: calcPair()'s raw .signal
@@ -21699,6 +21733,7 @@ function reconcileScannerOwnership(){
     _statusEl.className = sigs>0 ? 'scanner-result-active' : 'scanner-result-neutral';
   }
   if(typeof _updateActiveTradesPill === 'function') _updateActiveTradesPill();
+  if(typeof _updateActiveWatchesPill === 'function') _updateActiveWatchesPill();
 }
 
 // ── Neutral section toggle ───────────────────────────────────────────────
@@ -21952,11 +21987,42 @@ function showTab(name){
   document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
   const panel=document.getElementById('tab-'+name);
   if(panel) panel.classList.add('active');
+  // TDAS V5.0.0H8D — Multi-Timeframe Page Simplification. Watch and Trade
+  // now permanently display both 1H and 4H sections together, so the
+  // single-timeframe selector (and its paired HTF pill, which only ever
+  // described that one selected timeframe) has no meaningful role on
+  // either page — the hidden value is never read by Watch/Trade rendering
+  // (see renderWatchPage()/renderTradeDesk(), both unconditional on tf).
+  // Toggled via style.display only — the elements themselves are never
+  // removed/recreated, so their existing #tf change-listener (attached
+  // once at page load) is never duplicated or lost, and returning to
+  // Scanner (or any other tab) restores visibility with the current
+  // value/HTF text completely untouched, since nothing here ever wrote
+  // to .value or .textContent.
+  const _isMtfPage = (name==='watch'||name==='trade');
+  const _tfSelectEl = document.getElementById('tf');
+  const _htfNoteEl = document.getElementById('htfNote');
+  if(_tfSelectEl) _tfSelectEl.style.display = _isMtfPage ? 'none' : '';
+  if(_htfNoteEl) _htfNoteEl.style.display = _isMtfPage ? 'none' : '';
   if(name==='scanner'){ startScannerAutoRefresh(); } else { stopScannerAutoRefresh(); }
   if(name==='settings')renderPairsList();
   if(name==='journal'){loadFromSheets().then(()=>{renderJournal();updateLivePnL();updateJournalCount();});}
-  if(name==='watch'){loadFromSheets().then(()=>{renderWatchPage();updateWatchCount();});}
-  if(name==='trade'){loadFromSheets().then(()=>{renderTradeDesk();updateTradeDeskPnL();updateTradeCount();});}
+  // TDAS V5.0.0H8D — page-open reconciliation, explicitly NOT a market
+  // scan: pulls authoritative Journal/Sheets state (existing), reconciles
+  // ownership (new — also keeps the Scanner pills/grid truthful for when
+  // the user returns there, and is a harmless no-op if Scanner isn't
+  // visible, matching its own established "harmless no-op" pattern),
+  // renders the page + updates its count (existing), and — Watch only —
+  // refreshes prices through the existing lightweight, tab-gated,
+  // network-light path (_tdLightweightRefresh() only fetches ticker
+  // prices for currently-active watches, never a full calcPair signal
+  // scan). No runScan(), no masterRefresh(), no Scanning… animation, no
+  // timer start/stop beyond the existing startTradeDeskAutoRefresh() call
+  // just below (unchanged). Trade's own live pricing already runs
+  // continuously, tab-independent (_ensureActiveTradeLivePricing()), so
+  // no equivalent explicit call is needed here for Trade.
+  if(name==='watch'){loadFromSheets().then(()=>{reconcileScannerOwnership();renderWatchPage();updateWatchCount();_tdLightweightRefresh();});}
+  if(name==='trade'){loadFromSheets().then(()=>{reconcileScannerOwnership();renderTradeDesk();updateTradeDeskPnL();updateTradeCount();});}
   // TDAS V5.0.0C — Dedicated Watch Page. This timer bundle
   // (_tdLightweightRefresh/_timingRefresh/_tdSignalRefresh, all with their
   // own internal tab-visibility gates — see those functions) now serves
@@ -22318,6 +22384,7 @@ async function runScan(auto){
     : `${sigs} SIGNALS DETECTED ON ${tf.toUpperCase()}`;
   _statusEl.className = sigs>0 ? 'scanner-result-active' : 'scanner-result-neutral';
   _updateActiveTradesPill();
+  _updateActiveWatchesPill();
   const t=nowTime();
   document.getElementById('footerTime').textContent=`Last scan ${t}`;
   // Record scan completion time for status bar signal age display
