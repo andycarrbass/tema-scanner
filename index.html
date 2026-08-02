@@ -1967,7 +1967,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H7';
+const APP_BUILD = 'V5.0.0H8A';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2180,6 +2180,195 @@ function isScannerSymbolSuppressed(sym, tf){
   if(hasOpenTrade) return true;
   if(isExactSymbolTfWatched(sym, tf)) return true;
   return false;
+}
+
+// ── TDAS V5.0.0H8A — Ownership Resolver Shadow Audit ────────────────────────
+// Canonical ownership key. Reuses the two existing normalisation helpers
+// rather than inventing a third format: _normSymbolForWatchMatch() (strip
+// '/', uppercase) for the symbol half, and the same trim+lowercase timeframe
+// rule _snapshotKey() already established for the (correctly symbol+tf-
+// keyed) timeframe snapshot registry, joined with the same '|' separator so
+// the shape is immediately recognisable to anyone already familiar with
+// _snapshotKey()'s keys. This is NOT a new cache — it is only a string
+// builder; nothing is stored under this key in this build.
+function _ownershipKey(symbol, tf){
+  return _normSymbolForWatchMatch(symbol) + '|' + String(tf||'').trim().toLowerCase();
+}
+
+// Shadow-only ownership resolver — see TDAS_V5_REFRESH_RECONCILIATION_AUDIT.md
+// §7B for the proposed contract this implements verbatim. Pure function:
+// reads only `journal` (the one authoritative Watch/Trade registry, via the
+// existing isActiveWatch() predicate — no new state, no second cache).
+//
+// NOT consulted by any live render or suppression path in this build —
+// DIAG.ownershipResolverLive stays false. Only _runOwnershipShadowCensus()
+// below calls this, for comparison against the two currently-live,
+// currently-disagreeing predicates (isScannerSymbolSuppressed() for
+// suppression; renderCard()'s own inline symbol-wide lookup for
+// presentation).
+//
+// Doctrine (audit §7B):
+//  - Active Trade: symbol-wide, suppresses on every timeframe, always wins
+//    over any Watch on the same symbol (checked first, returns immediately).
+//  - Watch on the timeframe being checked (exact match): suppresses,
+//    presentationHint='watching-this-tf'.
+//  - Watch on a different, KNOWN timeframe: does NOT suppress the timeframe
+//    being checked; presentationHint='watching-other-tf' — deliberately
+//    distinct from 'watching-this-tf' so presentation can never imply
+//    ownership of a card it does not actually own (this is the exact
+//    defect the audit identified in renderCard()'s current symbol-wide
+//    lookup).
+//  - Watch with a blank/unknown timeframe: cannot be exactly attributed to
+//    the timeframe being checked, so the PROPOSED exact-ownership verdict
+//    is suppressFromScanner:false (strict — no guessing which timeframe it
+//    belongs to). legacyBlankTf:true records this distinctly so shadow
+//    comparison can separate "known doctrine disagreement, expected" from
+//    a genuine unexpected mismatch. This build does NOT decide the final
+//    production doctrine for this case and does NOT retire the current
+//    H7 blank-tf fail-safe (isExactSymbolTfWatched still applies it live).
+//  - No Watch, no Trade: owner:'none', no suppression.
+function resolveOwnership(symbol, tf){
+  const nSym = _normSymbolForWatchMatch(symbol);
+  const nTf  = String(tf||'').trim().toLowerCase();
+
+  const openTrade = journal.find(j=>!j.deleted && j.symbol===symbol && j.decision==='took' && !j.outcome);
+  if(openTrade){
+    return {
+      owner: 'trade',
+      ownerTf: null, // symbol-wide by doctrine — no single "owning" timeframe
+      entryId: openTrade.id,
+      suppressFromScanner: true,
+      presentationHint: 'active-trade',
+      legacyBlankTf: false,
+    };
+  }
+
+  const watches = journal.filter(j => isActiveWatch(j) && _normSymbolForWatchMatch(j.symbol) === nSym);
+  if(watches.length){
+    const exact = watches.find(j => {
+      const jTf = String(j.tf||'').trim().toLowerCase();
+      return jTf && jTf === nTf;
+    });
+    if(exact){
+      return {
+        owner: 'watch',
+        ownerTf: nTf,
+        entryId: exact.id,
+        suppressFromScanner: true,
+        presentationHint: 'watching-this-tf',
+        legacyBlankTf: false,
+      };
+    }
+    const blank = watches.find(j => !String(j.tf||'').trim());
+    if(blank){
+      return {
+        owner: 'watch',
+        ownerTf: null,
+        entryId: blank.id,
+        suppressFromScanner: false, // proposed exact-ownership doctrine: unknown tf cannot claim this specific card
+        presentationHint: 'watching-other-tf',
+        legacyBlankTf: true,
+      };
+    }
+    // One or more watches exist, all on a different, known timeframe.
+    const other = watches[0];
+    return {
+      owner: 'watch',
+      ownerTf: String(other.tf||'').trim().toLowerCase(),
+      entryId: other.id,
+      suppressFromScanner: false,
+      presentationHint: 'watching-other-tf',
+      legacyBlankTf: false,
+    };
+  }
+
+  return { owner: 'none', ownerTf: null, entryId: null, suppressFromScanner: false, presentationHint: 'none', legacyBlankTf: false };
+}
+
+// Shadow comparison — runs resolveOwnership() alongside the two currently-
+// live predicates, for every configured pair, and records disagreements
+// into DIAG.ownershipShadow. Read-only: never mutates journal, Scanner
+// output, or any rendered element. Deduplicates by ownership key and caps
+// stored examples at DIAG_OWNERSHIP_SHADOW_EXAMPLE_CAP so long-running
+// sessions can never grow this unbounded. Intentionally NOT called from
+// the 30-second price tick or the 5-minute auto-refresh — only from a full
+// (!auto) manual/initial Scanner scan, so it can never flood the console.
+function _runOwnershipShadowCensus(pairs, tf){
+  const census = DIAG.ownershipShadow;
+  const seenSuppression = new Set(census.suppressionDisagreements.map(d => d.key));
+  const seenPresentation = new Set(census.presentationDisagreements.map(d => d.key));
+  let blankTfCount = 0;
+
+  pairs.forEach(sym => {
+    census.checked++;
+    const resolved = resolveOwnership(sym, tf);
+    if(resolved.legacyBlankTf) blankTfCount++;
+
+    // Current suppression truth (isScannerSymbolSuppressed — includes the
+    // live H7 blank-tf fail-safe, unlike resolveOwnership's strict verdict).
+    const currentSuppressed = isScannerSymbolSuppressed(sym, tf);
+    if(currentSuppressed !== resolved.suppressFromScanner){
+      const key = _ownershipKey(sym, tf);
+      if(!seenSuppression.has(key)){
+        seenSuppression.add(key);
+        census.disagreements++;
+        if(census.suppressionDisagreements.length < DIAG_OWNERSHIP_SHADOW_EXAMPLE_CAP){
+          census.suppressionDisagreements.push({
+            key, symbol: sym, scannerTf: tf,
+            currentVerdict: currentSuppressed,
+            resolverVerdict: resolved.suppressFromScanner,
+            ownerTf: resolved.ownerTf,
+            entryId: resolved.entryId,
+            legacyBlankTf: resolved.legacyBlankTf,
+          });
+        }
+      }
+    }
+
+    // Current presentation truth — mirrors renderCard()'s own inline
+    // symbol-wide lookup verbatim (line ~14401), for shadow-comparison
+    // purposes only. Does not call renderCard() itself and does not touch
+    // the DOM; this is a read-only re-derivation of the same verdict.
+    const currentIsOpenTrade = journal.some(j=>!j.deleted&&j.symbol===sym&&j.decision==='took'&&!j.outcome);
+    const currentIsWatching  = journal.some(j=>j.symbol===sym&&isActiveWatch(j));
+    const currentPresentation = currentIsOpenTrade ? 'active-trade' : currentIsWatching ? 'watching-any-tf' : 'none';
+    const presentationDisagrees =
+      (currentPresentation === 'watching-any-tf' && resolved.presentationHint !== 'watching-this-tf' && resolved.presentationHint !== 'watching-other-tf') ||
+      (currentPresentation === 'active-trade' && resolved.presentationHint !== 'active-trade') ||
+      (currentPresentation === 'none' && resolved.presentationHint !== 'none') ||
+      // The specific defect from the audit: current presentation cannot
+      // distinguish this-tf from other-tf at all (always 'watching-any-tf'
+      // for any active watch on the symbol) — flag whenever the resolver
+      // knows it's actually a different timeframe.
+      (currentPresentation === 'watching-any-tf' && resolved.presentationHint === 'watching-other-tf');
+    if(presentationDisagrees){
+      const key = _ownershipKey(sym, tf);
+      if(!seenPresentation.has(key)){
+        seenPresentation.add(key);
+        census.disagreements++;
+        if(census.presentationDisagreements.length < DIAG_OWNERSHIP_SHADOW_EXAMPLE_CAP){
+          census.presentationDisagreements.push({
+            key, symbol: sym, scannerTf: tf,
+            currentVerdict: currentPresentation,
+            resolverVerdict: resolved.presentationHint,
+            ownerTf: resolved.ownerTf,
+            entryId: resolved.entryId,
+            legacyBlankTf: resolved.legacyBlankTf,
+          });
+        }
+      }
+    }
+  });
+
+  census.blankTfActiveWatches = journal.filter(j => isActiveWatch(j) && !String(j.tf||'').trim()).length;
+
+  console.log(
+    '[H8A ownership shadow] checked='+census.checked,
+    'disagreements='+census.disagreements,
+    'suppression='+census.suppressionDisagreements.length,
+    'presentation='+census.presentationDisagreements.length,
+    'blankTfActiveWatches='+census.blankTfActiveWatches
+  );
 }
 
 // ── Superseded watch predicate ───────────────────────────────────────────
@@ -11081,6 +11270,22 @@ const DIAG = {
   fullAnalysisTimeframeExplicit: true, // TDAS V4.10.4H — controls ONLY whether openAnalysisPanel() requires/normalizes an explicit {symbol,tf,consumer,...} request. When false, preserves V4.10.4G symbol-only launch behaviour (openAnalysisPanel(symbol) reads currentScanData[symbol] directly, no normalization, no consumer context).
   fullAnalysisSnapshotReader: true, // TDAS V4.10.4H — controls ONLY whether getFullAnalysisSnapshotData() resolves the panel's exact symbol+tf registry snapshot. When false, the panel reads legacy currentScanData[symbol] directly.
   fullAnalysisSnapshotRefresh: true, // TDAS V4.10.4H — controls ONLY whether a missing/stale exact Full Analysis snapshot may be requested through the shared coordinator. When false, the panel renders only whatever data/fallback state already exists.
+  ownershipResolverLive: false, // TDAS V5.0.0H8A — Ownership Resolver Shadow Audit. Controls ONLY whether resolveOwnership()'s verdict is authoritative for Scanner suppression/presentation. MUST stay false in this build — resolveOwnership() runs in shadow only (see _runOwnershipShadowCensus()), comparing its verdict against the two currently-live, currently-disagreeing predicates (isScannerSymbolSuppressed() for suppression, renderCard()'s own inline symbol-wide watch/trade lookup for presentation — see TDAS_V5_REFRESH_RECONCILIATION_AUDIT.md root cause #1) without changing any visible behaviour. Rollback: nothing to roll back — this flag has never been true in production.
+};
+
+// TDAS V5.0.0H8A — Ownership Resolver Shadow Audit. Bounded in-memory
+// census only — never persisted, never sent over the network, rebuilt
+// fresh each time _runOwnershipShadowCensus() runs (once per full manual/
+// initial Scanner scan; never on price ticks or auto refresh, per the
+// "concise summary, do not flood the console" requirement). Read via the
+// console summary printed at the end of that function.
+const DIAG_OWNERSHIP_SHADOW_EXAMPLE_CAP = 20;
+DIAG.ownershipShadow = {
+  checked: 0,
+  disagreements: 0,
+  blankTfActiveWatches: 0,
+  suppressionDisagreements: [],
+  presentationDisagreements: [],
 };
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
@@ -21747,6 +21952,13 @@ async function runScan(auto){
 
 
   if(!auto){
+    // TDAS V5.0.0H8A — Ownership Resolver Shadow Audit. Read-only: gathers
+    // evidence for review, never affects what's rendered below. Runs once
+    // per full manual/initial scan only (not on price ticks or the 5-min
+    // auto refresh), per the "concise summary, do not flood the console"
+    // requirement. DIAG.ownershipResolverLive stays false throughout.
+    try{ _runOwnershipShadowCensus(PAIRS, tf); }catch(err){ console.warn('[H8A ownership shadow] census failed (non-fatal, diagnostic only):', err); }
+
     // TDAS V5.0.0H7 — two fixed directional lanes (Short left, Long right
     // on desktop; Short then Long stacked on mobile via CSS, not DOM
     // order duplication — see .scanner-lanes/.scanner-lane CSS). Both
