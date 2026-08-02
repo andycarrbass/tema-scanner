@@ -157,36 +157,50 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    instead of showing this at all — see runScan()'s own !auto block. */
 .scanner-loading-msg{font-size:13px;color:var(--text3);padding:40px 0;text-align:center;grid-column:1/-1;}
 
-/* Re-scan button — icon/label spans so only the label text can be
-   animated; the button's own background/border/dimensions never change,
-   and button:disabled's default opacity fade (see the base button rule
-   near the top of this stylesheet) is explicitly overridden while
-   refreshing so the button stays fully legible, not faded. */
-#refreshBtn.refreshing{opacity:1;}
+/* Re-scan button — icon/label spans (icon itself never animates); a fixed
+   min-width keeps the button's footprint identical between "Re-scan" and
+   the longer "Scanning…" label, so switching states never shifts nearby
+   header controls. button:disabled's default opacity fade (see the base
+   button rule near the top of this stylesheet) is explicitly overridden
+   while refreshing so the button stays fully legible, not faded — the
+   dark TDAS background itself is otherwise untouched; only the border,
+   an interior sweep, and a breathing glow carry the green. */
+#refreshBtn{position:relative;overflow:hidden;min-width:120px;}
 #refreshBtn .scan-icon{display:inline-block;}
-#refreshBtn .scan-label{display:inline-block;}
-#refreshBtn.refreshing .scan-label{
-  background-image:linear-gradient(90deg, var(--text) 0%, var(--text) 40%, var(--green-text) 50%, var(--text) 60%, var(--text) 100%);
-  background-size:250% 100%;
-  background-position:125% 0;
-  -webkit-background-clip:text;
-  background-clip:text;
-  -webkit-text-fill-color:transparent;
-  color:transparent;
-  animation:scanLabelSweep 1.45s linear infinite;
+#refreshBtn .scan-label{display:inline-block;position:relative;z-index:1;}
+#refreshBtn.refreshing{
+  opacity:1;
+  border-color:var(--green-text);
+  animation:scanBtnGlow 2.1s ease-in-out infinite;
 }
-@keyframes scanLabelSweep{
-  0%   { background-position:125% 0; }
-  100% { background-position:-125% 0; }
+#refreshBtn.refreshing .scan-label{color:var(--green-text);font-weight:600;}
+/* Interior sweep — a soft green band clipped to the button's own bounds
+   (overflow:hidden above), sweeping strictly left to right. */
+#refreshBtn.refreshing::before{
+  content:'';
+  position:absolute;top:0;left:-60%;height:100%;width:60%;
+  background:linear-gradient(90deg, transparent 0%, rgba(62,207,150,0.32) 45%, rgba(62,207,150,0.32) 55%, transparent 100%);
+  animation:scanBtnSweep 1.6s ease-in-out infinite;
+  pointer-events:none;
+  z-index:0;
+}
+@keyframes scanBtnSweep{
+  0%   { left:-60%; }
+  100% { left:100%; }
+}
+@keyframes scanBtnGlow{
+  0%,100% { box-shadow:0 0 0 1px rgba(62,207,150,0.25), 0 0 6px rgba(62,207,150,0.25); }
+  50%     { box-shadow:0 0 0 1px rgba(62,207,150,0.5), 0 0 14px rgba(62,207,150,0.55); }
 }
 @media (prefers-reduced-motion: reduce){
-  #refreshBtn.refreshing .scan-label{
+  #refreshBtn.refreshing{
     animation:none;
-    background-image:none;
-    -webkit-background-clip:initial;
-    background-clip:initial;
-    -webkit-text-fill-color:initial;
-    color:var(--green-text);
+    box-shadow:0 0 0 1px rgba(62,207,150,0.4), 0 0 8px rgba(62,207,150,0.35);
+  }
+  #refreshBtn.refreshing::before{
+    animation:none;
+    left:0;width:100%;
+    background:rgba(62,207,150,0.14);
   }
 }
 
@@ -2006,7 +2020,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8C';
+const APP_BUILD = 'V5.0.0H8C1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -21723,15 +21737,20 @@ function _setRefreshLabel(text){
   const lbl = btn.querySelector('.scan-label');
   if(lbl) lbl.textContent = text;
 }
-// Toggles the button into/out of its animated "actively refreshing" state.
-// Used by masterRefresh() for the manual/master path — automatic
-// (background) refresh deliberately never calls this, per the "manual:
-// visible animation, automatic: silent" requirement.
+// Toggles the button into/out of its stronger "actively refreshing" state
+// (V5.0.0H8C1 — label + class only; the button element itself is global
+// chrome rendered once in the page header, not re-created per tab, so
+// this correctly stays visible/consistent across navigation during an
+// active refresh — see masterRefresh()'s own comment). Used by
+// masterRefresh() for the manual/master path — automatic (background)
+// refresh deliberately never calls this, per the "manual: visible active
+// state, automatic: silent" requirement.
 function _setRefreshButtonBusy(isBusy){
   const btn = document.getElementById('refreshBtn');
   if(!btn) return;
   btn.disabled = isBusy;
   btn.classList.toggle('refreshing', isBusy);
+  _setRefreshLabel(isBusy ? 'Scanning…' : 'Re-scan');
 }
 
 // ── TDAS V5.0.0H8C — Master Refresh orchestrator ────────────────────────────
@@ -21784,6 +21803,27 @@ async function masterRefresh(){
       console.error('[masterRefresh] market scan failed:', err);
     }
 
+    // TDAS V5.0.0H8C1 correction — runScan(false) only fetches PAIRS at the
+    // single currently-selected Scanner timeframe (confirmed by direct
+    // source trace: requestTimeframeSnapshot(s, tf, 'runScan'), one tf for
+    // the whole call). An active Watch or Trade on a DIFFERENT timeframe
+    // (e.g. a 4H Watch while Scanner is set to 1H) would not be touched by
+    // this scan at all, and would otherwise only catch up via the
+    // independent 5-minute background timer (setInterval(_tdSignalRefresh,
+    // TRADE_DESK_SIGNAL_REFRESH_MS) in the startup IIFE — confirmed still
+    // fully functional, untouched by this build) rather than immediately
+    // on a manual click, which breaks a manual refresh's implied "this is
+    // now current" promise for exactly those positions. _tdSignalRefresh()
+    // already does precisely the right thing — reads each active Watch/
+    // Trade's own journal-recorded tf (not the Scanner's), dispatches
+    // through the same requestTimeframeSnapshot coordinator so a symbol
+    // that's ALSO in PAIRS at the same tf as the scan just ran shares that
+    // one result rather than fetching twice, and never throws for an
+    // individual symbol's failure — so it is reused here verbatim as one
+    // more shared stage, not reimplemented or duplicated.
+    try{ await _tdSignalRefresh(); }
+    catch(err){ console.warn('[masterRefresh] _tdSignalRefresh failed (non-fatal):', err); }
+
     const _statusEl = document.getElementById('status');
     if(!scanOk){
       // TDAS V5.0.0H8C partial-failure doctrine — documented in the
@@ -21806,99 +21846,68 @@ async function masterRefresh(){
       console.warn('[masterRefresh] Sheets ownership pull failed — scan completed using local journal state');
     }
 
+    // TDAS V5.0.0H8C1 — Global Master Refresh Wiring. Page-specific
+    // repaint only (render + count functions using state already
+    // refreshed by the Sheets pull/reconcile/scan above) — deliberately
+    // NOT the old per-page fetch helpers (_tdLightweightRefresh(),
+    // _timingRefresh(), _tdSignalRefresh()), which the pre-H8C1
+    // Watch/Trade branches used to call directly. Those are their own
+    // additional data fetches, which "do not create separate market
+    // scans per page" rules out for the shared manual Re-scan button.
+    // They remain fully intact for their existing timer-driven and
+    // page-open call sites — only the manual-refresh-button path no
+    // longer duplicates them.
     const watchTab = document.getElementById('tab-watch');
-    if(watchTab && watchTab.classList.contains('active')) renderWatchPage();
+    if(watchTab && watchTab.classList.contains('active')){
+      renderWatchPage();
+      renderJournal();
+      updateWatchCount();
+      updateJournalCount();
+    }
     const tradeTab = document.getElementById('tab-trade');
-    if(tradeTab && tradeTab.classList.contains('active')) renderTradeDesk();
+    if(tradeTab && tradeTab.classList.contains('active')){
+      renderTradeDesk();
+      renderJournal();
+      updateTradeCount();
+      updateJournalCount();
+    }
+    const journalTab = document.getElementById('tab-journal');
+    if(journalTab && journalTab.classList.contains('active')){
+      renderJournal();
+      updateLivePnL();
+      updateTradeCount();
+      updateJournalCount();
+    }
   } finally {
     _masterRefreshRunning = false;
     _setRefreshButtonBusy(false);
   }
 }
 
+// TDAS V5.0.0H8C1 — Global Master Refresh Wiring. Previously this function
+// branched on which tab was active and ran three separate page-specific
+// manual-refresh sequences (Watch/Trade/Journal), each with its own
+// Sheets pull and its own ad hoc busy-state handling that never touched
+// _setRefreshButtonBusy()/the .refreshing class — only the Scanner/
+// fallback branch actually called masterRefresh(). That is the exact,
+// confirmed root cause of the reported defect: the shared top-right
+// Re-scan button never entered the same active state on Watch or Trade
+// as it did on Scanner, because those two pages were never running
+// masterRefresh() at all.
+//
+// The required doctrine is now "one authoritative masterRefresh() path,
+// one global busy state, from every page" — so this function no longer
+// branches by tab. Page-specific repaint (Watch/Trade/Journal render +
+// count functions) is preserved, but now lives inside masterRefresh()
+// itself as its own final step (see that function's own comment) rather
+// than in three separate bypass branches here.
 async function globalRefresh(){
-  const btn = document.getElementById('refreshBtn');
-  const watchActive   = document.getElementById('tab-watch')?.classList.contains('active');
-  const tradeActive   = document.getElementById('tab-trade')?.classList.contains('active');
-  const journalActive = document.getElementById('tab-journal')?.classList.contains('active');
-
-  console.log('[Global Refresh] activeTab:', watchActive?'watch':tradeActive?'trade':journalActive?'journal':'scanner/other');
-
-  // TDAS V5.0.0C — Dedicated Watch Page. _tdLightweightRefresh() and
-  // _timingRefresh() are now gated on the Watch tab being visible (they
-  // already exclusively handled watches — see their own comments), so
-  // they belong in this new branch, not the Trade branch below. Calling
-  // them from the Trade branch would now silently do nothing, since their
-  // own internal gate would reject a Trade-tab-visible call.
-  if(watchActive){
-    if(btn){ _setRefreshLabel('Syncing…'); btn.disabled=true; }
-    console.log('[Global Refresh] pulling Sheets');
-    await loadFromSheets();
-    console.log('[Global Refresh] rendering Watch page');
-    renderWatchPage();
-    renderJournal();
-    updateWatchCount();
-    updateJournalCount();
-    await _tdLightweightRefresh();
-    await _timingRefresh();
-    await _tdSignalRefresh();
-    _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
-    if(btn){ _setRefreshLabel('✓ Synced'); btn.disabled=false; }
-    setTimeout(()=>{ _setRefreshLabel('Re-scan'); }, 1500);
-    console.log('[Global Refresh] complete');
-    return;
-  }
-
-  if(tradeActive){
-    if(btn){ _setRefreshLabel('Syncing…'); btn.disabled=true; }
-    console.log('[Global Refresh] pulling Sheets');
-    await loadFromSheets();
-    console.log('[Global Refresh] rendering Trade Desk');
-    renderTradeDesk();
-    renderJournal();
-    updateTradeCount();
-    updateJournalCount();
-    // TDAS V4.5 bug fix — globalRefresh()'s Trade-tab branch was written
-    // before _tdSignalRefresh() existed (that was added in a later task,
-    // wired only into the 5-minute timer). Manual Re-scan on Trade Desk was
-    // therefore only ever refreshing prices + 1H timing — both of which are
-    // already kept fresh automatically by tab-independent timers — so
-    // clicking the button visibly did nothing. _tdSignalRefresh() already
-    // has its own guards (tab-active, page-visible, _scanRunning,
-    // self-overlap), so calling it directly here is exactly as safe as its
-    // timer-driven invocation; it also updates the status bar's
-    // "Signals/advisories" line itself on success.
-    // TDAS V5.0.0C — _tdLightweightRefresh()/_timingRefresh() calls moved
-    // to the watchActive branch above (see comment there); _tdSignalRefresh()
-    // remains here too since it also repaints active-trade cards.
-    await _tdSignalRefresh();
-    _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
-    if(btn){ _setRefreshLabel('✓ Synced'); btn.disabled=false; }
-    setTimeout(()=>{ _setRefreshLabel('Re-scan'); }, 1500);
-    console.log('[Global Refresh] complete');
-    return;
-  }
-
-  if(journalActive){
-    if(btn){ _setRefreshLabel('Syncing…'); btn.disabled=true; }
-    console.log('[Global Refresh] pulling Sheets for Journal');
-    await loadFromSheets();
-    renderJournal();
-    updateLivePnL();
-    updateTradeCount();
-    updateJournalCount();
-    if(btn){ _setRefreshLabel('✓ Synced'); btn.disabled=false; }
-    setTimeout(()=>{ _setRefreshLabel('Re-scan'); }, 1500);
-    console.log('[Global Refresh] complete');
-    return;
-  }
-
-  // Scanner / Confluence / Instruments
   return masterRefresh();
 }
 
 // Legacy alias — keeps any remaining internal callers working
 const handleRefresh = globalRefresh;
+
 
 function showTab(name){
   // TDAS V5.0.0A — Explicit Tab Keying Foundation. Activation now keys off
