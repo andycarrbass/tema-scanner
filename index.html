@@ -2020,7 +2020,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8C1';
+const APP_BUILD = 'V5.0.0H8C2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -19970,7 +19970,20 @@ async function _tdSignalRefresh(){
       // truthy (isSupersededWatch/isActiveWatch already make that
       // combination unreachable in practice, but the `||` guarantees at
       // most one call either way).
-      if ((activeEntry || watchEntry) && typeof renderCard==='function') renderCard(sym, currentScanData[sym]);
+      // TDAS V5.0.0H8C2 — symTf[sym]===fallbackTf guard added. Without it,
+      // this unconditional Scanner-card sync repaint (present since
+      // V4.10.3N, for Trade Ready button freshness) would push whichever
+      // timeframe THIS entry happens to be watched/traded at into
+      // whatever Scanner card currently occupies #c-{sym} — even when
+      // that's a different timeframe than the one currently selected in
+      // Scanner. fallbackTf is Scanner's own currently-selected
+      // timeframe (already computed above); if this entry's own tf
+      // doesn't match it, its data is not valid for the currently
+      // displayed Scanner card, so this card is left untouched — the
+      // watch/trade page's own repaint (via _repaintOrderTicketCard/
+      // _repaintWatchCard just above, unaffected by this guard) still
+      // gets the fresh data regardless.
+      if ((activeEntry || watchEntry) && typeof renderCard==='function' && symTf[sym] === fallbackTf) renderCard(sym, currentScanData[sym]);
     });
 
     // Status timestamp only advances on at least a partial success — if
@@ -21647,7 +21660,24 @@ function reconcileScannerOwnership(){
     const el = document.getElementById('c-'+sym);
     if(isScannerSymbolSuppressed(sym, tf)){
       if(el) el.remove();
-    } else if(el && currentScanData[sym]){
+    } else if(el && currentScanData[sym] && currentScanData[sym].tf === tf){
+      // TDAS V5.0.0H8C2 — the currentScanData[sym].tf===tf guard is the
+      // critical addition. currentScanData is symbol-keyed only (a
+      // longstanding, documented architectural constraint — see the
+      // V4.10.4x timeframe-registry migration notes), so a Watch/Trade
+      // signal refresh at a DIFFERENT timeframe than Scanner's current
+      // selection (e.g. an active 1H Watch on a symbol Scanner is
+      // currently showing at 4H) can leave currentScanData[sym] holding
+      // the wrong timeframe's data. Repainting a Scanner card from that
+      // value — as this line unconditionally did before this fix — is
+      // exactly how a 4H Scanner card could start showing 1H technical
+      // fields and, via renderCard()'s own tf-aware ownership check,
+      // incorrectly present "Watching →" based on a 1H watch that does
+      // not own the 4H card at all. If the cached data's own tf doesn't
+      // match what Scanner currently has selected, this card is left
+      // exactly as it was — never repainted from stale/wrong-tf data —
+      // rather than fabricating a fresh render from data that isn't
+      // actually valid for the currently selected Scanner timeframe.
       try{ renderCard(sym, currentScanData[sym]); }
       catch(err){ console.warn('[reconcileScannerOwnership] renderCard failed for',sym,err); }
     }
