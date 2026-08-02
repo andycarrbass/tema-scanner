@@ -151,6 +151,45 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 @media(max-width:480px){.lane-grid{grid-template-columns:minmax(0,1fr);}}
 .lane-empty{font-size:12px;color:var(--text3);padding:24px 0;text-align:center;border:1px dashed var(--border2);border-radius:var(--radius-sm);}
 
+/* TDAS V5.0.0H8C — Master Refresh + Atomic Scanner Rendering.
+   First-ever-load-only compact message (no card-shaped skeleton outlines).
+   Every subsequent manual/master refresh leaves existing cards untouched
+   instead of showing this at all — see runScan()'s own !auto block. */
+.scanner-loading-msg{font-size:13px;color:var(--text3);padding:40px 0;text-align:center;grid-column:1/-1;}
+
+/* Re-scan button — icon/label spans so only the label text can be
+   animated; the button's own background/border/dimensions never change,
+   and button:disabled's default opacity fade (see the base button rule
+   near the top of this stylesheet) is explicitly overridden while
+   refreshing so the button stays fully legible, not faded. */
+#refreshBtn.refreshing{opacity:1;}
+#refreshBtn .scan-icon{display:inline-block;}
+#refreshBtn .scan-label{display:inline-block;}
+#refreshBtn.refreshing .scan-label{
+  background-image:linear-gradient(90deg, var(--text) 0%, var(--text) 40%, var(--green-text) 50%, var(--text) 60%, var(--text) 100%);
+  background-size:250% 100%;
+  background-position:125% 0;
+  -webkit-background-clip:text;
+  background-clip:text;
+  -webkit-text-fill-color:transparent;
+  color:transparent;
+  animation:scanLabelSweep 1.45s linear infinite;
+}
+@keyframes scanLabelSweep{
+  0%   { background-position:125% 0; }
+  100% { background-position:-125% 0; }
+}
+@media (prefers-reduced-motion: reduce){
+  #refreshBtn.refreshing .scan-label{
+    animation:none;
+    background-image:none;
+    -webkit-background-clip:initial;
+    background-clip:initial;
+    -webkit-text-fill-color:initial;
+    color:var(--green-text);
+  }
+}
+
 /* ── Fixed-skeleton card ── */
 .card{
   width:340px;
@@ -1661,7 +1700,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
       <option value="1d">1D</option>
     </select>
     <div class="htf-note" id="htfNote">HTF: 1D</div>
-    <button id="refreshBtn" onclick="globalRefresh()">⟳ Re-scan</button>
+    <button id="refreshBtn" onclick="globalRefresh()"><span class="scan-icon">⟳</span> <span class="scan-label">Re-scan</span></button>
     <button id="livePriceBtn" onclick="triggerLivePriceUpdate()" style="display:none;">⟳ Live $</button>
     <span id="syncStatus" style="font-size:11px;color:var(--green-text);padding:0 4px;"></span>
   </div>
@@ -1967,7 +2006,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8B';
+const APP_BUILD = 'V5.0.0H8C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -21671,6 +21710,112 @@ function buildGrid(){
 // ── Tab switching ────────────────────────────────────────────────────────
 // ── Context-aware Refresh button ─────────────────────────────────────────
 // One button, one mental model. Behaviour depends on active tab.
+// ── TDAS V5.0.0H8C — Re-scan button label/state helpers ────────────────────
+// #refreshBtn's markup is now <span class="scan-icon">...</span>
+// <span class="scan-label">...</span> so the label can be animated
+// independently (see .scan-label CSS) without the button's own dimensions
+// changing. Every code path that used to set btn.textContent directly
+// (which would destroy the span structure) now goes through this helper
+// instead, so the spans survive every refresh cycle, not just the first.
+function _setRefreshLabel(text){
+  const btn = document.getElementById('refreshBtn');
+  if(!btn) return;
+  const lbl = btn.querySelector('.scan-label');
+  if(lbl) lbl.textContent = text;
+}
+// Toggles the button into/out of its animated "actively refreshing" state.
+// Used by masterRefresh() for the manual/master path — automatic
+// (background) refresh deliberately never calls this, per the "manual:
+// visible animation, automatic: silent" requirement.
+function _setRefreshButtonBusy(isBusy){
+  const btn = document.getElementById('refreshBtn');
+  if(!btn) return;
+  btn.disabled = isBusy;
+  btn.classList.toggle('refreshing', isBusy);
+}
+
+// ── TDAS V5.0.0H8C — Master Refresh orchestrator ────────────────────────────
+// The Scanner/Confluence/Instruments fallback of globalRefresh() (the same
+// click handler already reachable from every page via the shared top-right
+// Re-scan button) now calls this instead of runScan() directly. Sequence:
+//   1. guard against a duplicate concurrent master refresh (separate from
+//      runScan()'s own _scanRunning guard, which isn't set until step 3 —
+//      this one covers the Sheets-pull/reconcile window too);
+//   2. enter the animated busy state (manual-only — background/auto
+//      refresh never calls this function at all, so it stays silent);
+//   3. pull current Journal/Sheets ownership state (loadFromSheets() never
+//      throws — it returns false on failure, already caught internally);
+//   4. reconcile Scanner ownership against whatever local journal state
+//      now exists, regardless of whether the pull itself succeeded — same
+//      "reconcile against actual local state, don't depend on network
+//      success" doctrine H8B already established for commitJournalChange();
+//   5. run the selected-timeframe scan via the existing runScan(false) —
+//      now card-preserving by default (see runScan()'s own !auto block) —
+//      inside a try/catch so a genuinely catastrophic scan failure (not a
+//      per-symbol fetch failure, which runScan() already handles
+//      gracefully with individual error cards) cannot leave Scanner blank;
+//   6. on scan failure specifically: leave whatever cards are currently on
+//      screen completely untouched and surface a truthful status message;
+//   7. repaint Watch/Trade if currently visible (their own counts/state
+//      were already updated by the reconcile step and by runScan()'s own
+//      journal-dependent calls regardless of tab visibility);
+//   8. exit the busy state.
+// Reuses loadFromSheets()/reconcileScannerOwnership()/runScan() exactly as
+// they already exist — no second ownership cache, no parallel refresh
+// system, no new market-data fetch path.
+let _masterRefreshRunning = false;
+async function masterRefresh(){
+  if(_masterRefreshRunning){
+    if(DEBUG_MODE) console.warn('[masterRefresh] already in progress — ignoring duplicate call');
+    return;
+  }
+  _masterRefreshRunning = true;
+  _setRefreshButtonBusy(true);
+  try{
+    const pullOk = await loadFromSheets();
+    try{ reconcileScannerOwnership(); }
+    catch(err){ console.warn('[masterRefresh] reconcileScannerOwnership failed (non-fatal):', err); }
+
+    let scanOk = true;
+    try{
+      await runScan(false);
+    }catch(err){
+      scanOk = false;
+      console.error('[masterRefresh] market scan failed:', err);
+    }
+
+    const _statusEl = document.getElementById('status');
+    if(!scanOk){
+      // TDAS V5.0.0H8C partial-failure doctrine — documented in the
+      // delivery report: a genuinely catastrophic scan failure (not a
+      // per-symbol fetch failure, which runScan() already isolates)
+      // leaves whatever Scanner content is currently on screen completely
+      // untouched — never blanked, never replaced with skeletons or error
+      // placeholders for symbols that weren't actually re-fetched.
+      if(_statusEl){
+        _statusEl.textContent = '\u26a0 Refresh failed — previous results retained';
+        _statusEl.className = 'scanner-result-neutral';
+      }
+    } else if(!pullOk){
+      // Scan succeeded and rendered atomically (fresh, valid data), but
+      // the ownership pull itself failed — reconciliation above still ran
+      // against local journal state, so suppression stays consistent;
+      // this is a real but non-blocking degradation, logged rather than
+      // surfaced as a second competing banner over the just-refreshed
+      // status line.
+      console.warn('[masterRefresh] Sheets ownership pull failed — scan completed using local journal state');
+    }
+
+    const watchTab = document.getElementById('tab-watch');
+    if(watchTab && watchTab.classList.contains('active')) renderWatchPage();
+    const tradeTab = document.getElementById('tab-trade');
+    if(tradeTab && tradeTab.classList.contains('active')) renderTradeDesk();
+  } finally {
+    _masterRefreshRunning = false;
+    _setRefreshButtonBusy(false);
+  }
+}
+
 async function globalRefresh(){
   const btn = document.getElementById('refreshBtn');
   const watchActive   = document.getElementById('tab-watch')?.classList.contains('active');
@@ -21686,7 +21831,7 @@ async function globalRefresh(){
   // them from the Trade branch would now silently do nothing, since their
   // own internal gate would reject a Trade-tab-visible call.
   if(watchActive){
-    if(btn){ btn.textContent='Syncing…'; btn.disabled=true; }
+    if(btn){ _setRefreshLabel('Syncing…'); btn.disabled=true; }
     console.log('[Global Refresh] pulling Sheets');
     await loadFromSheets();
     console.log('[Global Refresh] rendering Watch page');
@@ -21698,14 +21843,14 @@ async function globalRefresh(){
     await _timingRefresh();
     await _tdSignalRefresh();
     _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
-    if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
-    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
+    if(btn){ _setRefreshLabel('✓ Synced'); btn.disabled=false; }
+    setTimeout(()=>{ _setRefreshLabel('Re-scan'); }, 1500);
     console.log('[Global Refresh] complete');
     return;
   }
 
   if(tradeActive){
-    if(btn){ btn.textContent='Syncing…'; btn.disabled=true; }
+    if(btn){ _setRefreshLabel('Syncing…'); btn.disabled=true; }
     console.log('[Global Refresh] pulling Sheets');
     await loadFromSheets();
     console.log('[Global Refresh] rendering Trade Desk');
@@ -21728,28 +21873,28 @@ async function globalRefresh(){
     // remains here too since it also repaints active-trade cards.
     await _tdSignalRefresh();
     _tdPriceLastMs = Date.now(); _updateTradeDeskStatusBar();
-    if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
-    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
+    if(btn){ _setRefreshLabel('✓ Synced'); btn.disabled=false; }
+    setTimeout(()=>{ _setRefreshLabel('Re-scan'); }, 1500);
     console.log('[Global Refresh] complete');
     return;
   }
 
   if(journalActive){
-    if(btn){ btn.textContent='Syncing…'; btn.disabled=true; }
+    if(btn){ _setRefreshLabel('Syncing…'); btn.disabled=true; }
     console.log('[Global Refresh] pulling Sheets for Journal');
     await loadFromSheets();
     renderJournal();
     updateLivePnL();
     updateTradeCount();
     updateJournalCount();
-    if(btn){ btn.textContent='✓ Synced'; btn.disabled=false; }
-    setTimeout(()=>{ const b=document.getElementById('refreshBtn'); if(b) b.textContent='⟳ Re-scan'; }, 1500);
+    if(btn){ _setRefreshLabel('✓ Synced'); btn.disabled=false; }
+    setTimeout(()=>{ _setRefreshLabel('Re-scan'); }, 1500);
     console.log('[Global Refresh] complete');
     return;
   }
 
   // Scanner / Confluence / Instruments
-  return runScan();
+  return masterRefresh();
 }
 
 // Legacy alias — keeps any remaining internal callers working
@@ -21799,6 +21944,11 @@ function showTab(name){
 // ── Main scan ────────────────────────────────────────────────────────────
 let _scanRunning   = false;
 let _scanGeneration = 0;  // incremented on every runScan() call; used to discard stale renders
+// TDAS V5.0.0H8C — true once the Scanner has successfully rendered a real
+// (non-skeleton) result at least once this session. Gates the first-load
+// compact loading message vs. preserving existing cards on every
+// subsequent manual/master refresh — see runScan()'s own !auto block.
+let _scannerHasRendered = false;
 // TDAS V4.9.5 T6 — current-completed-scan shadow census only. Rebuilt from
 // scratch on every runScan() call (see below); never persisted, never sent
 // over the network, never accumulated across scans.
@@ -21840,11 +21990,32 @@ async function runScan(auto){
   const btn=document.getElementById('refreshBtn');
   btn.disabled=true;
   if(!auto){
-    buildGrid();
+    // TDAS V5.0.0H8C — Master Refresh + Atomic Scanner Rendering.
+    // Manual Re-scan (auto omitted) used to unconditionally call
+    // buildGrid(), wiping every card to a loading skeleton before the
+    // fetch even started — the exact behaviour the V4.5 Task 2 fix above
+    // already eliminated for auto-refresh, left unaddressed here at the
+    // time. Now: a genuinely first-ever scan (no prior valid Scanner
+    // result exists yet — _scannerHasRendered is still false) shows a
+    // compact loading message instead of card-shaped skeleton outlines;
+    // any SUBSEQUENT manual/master refresh leaves the existing cards
+    // completely untouched while this fetch is in flight. The post-fetch
+    // atomic replace further down (gridEl.innerHTML = lanesHtml, followed
+    // synchronously by the render loops with no intervening await) is
+    // what actually swaps in the new result set — and because that swap
+    // is one uninterrupted synchronous block, there is no visible
+    // intermediate empty state either way.
+    if(!_scannerHasRendered){
+      const gridEl0 = document.getElementById('grid');
+      gridEl0.className = 'scanner-lanes';
+      gridEl0.innerHTML = '<div class="scanner-loading-msg">Fetching signals\u2026</div>';
+      const neutralEl0 = document.getElementById('neutralSection');
+      if(neutralEl0) neutralEl0.remove();
+      document.getElementById('summary').innerHTML='';
+    }
     const _statusEl0 = document.getElementById('status');
     _statusEl0.textContent=`FETCHING SIGNALS…`;
     _statusEl0.className='scanner-result-neutral';
-    document.getElementById('summary').innerHTML='';
   }
   // TDAS V4.10.4D — dispatch through the coordinator instead of calling
   // calcPair() directly: shares one calculation with any concurrent
@@ -22046,6 +22217,7 @@ async function runScan(auto){
     const gridEl = document.getElementById('grid');
     gridEl.className = 'scanner-lanes';
     gridEl.innerHTML = lanesHtml;
+    _scannerHasRendered = true; // TDAS V5.0.0H8C — first real result is in; future manual refreshes preserve cards instead of showing the loading message
     // Insert neutral section after the lanes
     let neutralEl = document.getElementById('neutralSection');
     if(neutralEl) neutralEl.remove();
