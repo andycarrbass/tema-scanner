@@ -2053,7 +2053,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.0.0H8E1';
+const APP_BUILD = 'V5.1.0C1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -4452,7 +4452,7 @@ function calcADXWithHistory(h, l, c, period, lookbackBars) {
   const pDI=smoothPDM.map((v,i)=>smoothTR[i]?100*v/smoothTR[i]:0);
   const mDI=smoothMDM.map((v,i)=>smoothTR[i]?100*v/smoothTR[i]:0);
   const dx=pDI.map((v,i)=>pDI[i]+mDI[i]?100*Math.abs(pDI[i]-mDI[i])/(pDI[i]+mDI[i]):0);
-  if (dx.length < period) return { value: null, prevValue: null };
+  if (dx.length < period) return { value: null, prevValue: null, recentValues: [] };
   let adxVal=dx.slice(0,period).reduce((a,b)=>a+b,0)/period;
   // Rolling window of only the last (lookbackBars+1) raw ADX values — the
   // minimum history required for the slope comparison, not a full series.
@@ -4464,7 +4464,15 @@ function calcADXWithHistory(h, l, c, period, lookbackBars) {
   }
   const value=Math.round(adxVal*10)/10;
   const prevValue=(_recent.length===lookbackBars+1) ? Math.round(_recent[0]*10)/10 : null;
-  return { value, prevValue };
+  // TDAS V5.1.0C — additive only. recentValues exposes the same rolling
+  // window this function already accumulates internally, rounded to 1dp,
+  // oldest-first. Existing callers (both current production call sites,
+  // unchanged) read only .value/.prevValue and are unaffected by this
+  // field'''s presence. Enables a genuine rolling-peak/decay reading when
+  // called with a larger lookbackBars (see v51AdxRollingPeakDecay()) without
+  // a second ADX implementation.
+  const recentValues=_recent.map(v=>Math.round(v*10)/10);
+  return { value, prevValue, recentValues };
 }
 
 // TDAS V4.9.2 T3 — 200MA chop-detection calibration. Approved provisional
@@ -11385,6 +11393,982 @@ DIAG.ownershipShadow = {
   presentationDisagreements: [],
 };
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.1.0C — FOUNDATIONS AND AUTHORITATIVE CONTRACT                  ║
+// ║                                                                          ║
+// ║  Everything in this block is additive and gated by DIAG.v51FoundationsLive.
+// ║  It computes a PARALLEL, confirmed-closed-bar evidence set alongside the ║
+// ║  existing live/legacy calculation path. It does not read from, write to, ║
+// ║  or alter any existing live variable, d.states, d.evaluation, d.regime,  ║
+// ║  d.lifecycle, d.authoritativeClassification, or any rendered card.       ║
+// ║                                                                          ║
+// ║  AUDIT FINDING (V5.1.0C foundations audit): today, only UT Bot (setup-tf ║
+// ║  and the embedded 1H execution layer) is genuinely computed from closed- ║
+// ║  only candles (calcPair()'s own closedHighs/closedLows/closedCloses,     ║
+// ║  built via raw.slice(0,-1) specifically "to exclude the live/forming     ║
+// ║  bar" — see that block's own header comment). TEMA17/92, SMA200,        ║
+// ║  SMA80/135, RSI, ATR and calcADXWithHistory() are all computed earlier   ║
+// ║  in calcPair() from the raw closes/highs/lows arrays, which still        ║
+// ║  include the currently-forming candle — confirmed by calcPair()'s own    ║
+// ║  code structure (a dedicated closed-only series is built and explicitly  ║
+// ║  labelled "NOT touched by this and remain[s] the normal-candle series    ║
+// ║  consumed elsewhere in this function" only for UT Bot's own normal-      ║
+// ║  candle branch). One exception: previousBarAtrDistance (V4.9.7) already  ║
+// ║  recomputes ATR/trendSMA/price from the closed-only shifted series and   ║
+// ║  is therefore already confirmed-bar-correct; currentBarAtrDistance is    ║
+// ║  not, because lastClose/atr/trendSMA in that expression are still the    ║
+// ║  live-including versions. See V5.1_PHASE_1_FOUNDATIONS_REPORT.md,        ║
+// ║  section "Confirmed-bar audit", for the full indicator-by-indicator      ║
+// ║  reuse map.                                                              ║
+// ║                                                                          ║
+// ║  DESIGN NOTE: maturity, separation trajectory, extension persistence,    ║
+// ║  ADX peak/decay and SMA80/135 confirmation are all implemented as PURE   ║
+// ║  recomputation over the already-fetched historical closed-bar arrays     ║
+// ║  (raw/rawH are fetched with 600/350-bar depth already, for every call)   ║
+// ║  rather than as mutable counters incremented across scans. This is a     ║
+// ║  stronger guarantee than "advance once per confirmed bar" — there is     ║
+// ║  nothing to advance, so repeated scans against the same still-forming    ║
+// ║  candle are trivially idempotent (identical inputs, identical outputs).  ║
+// ║  Only genuinely lifecycle-level state — debounce, flip counts, origin,   ║
+// ║  qualification timestamps, Skip/Missed suppression, alert cooldowns —    ║
+// ║  is persisted, and that persistence is explicitly gated on the confirmed ║
+// ║  bar ID actually having advanced for that identity (see                  ║
+// ║  v51AdvanceRuntimeState()).                                              ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// ── Versioned starting constants ────────────────────────────────────────────
+// TDAS V5.1 Outstanding Strategy Questions + Phase 1 Foundations spec,
+// Section 8 / "Initial versioned constants". Every value here is an explicit
+// starting hypothesis for paper/shadow calibration, not a claim of
+// statistical optimality — see the strategy doctrine document. Ranged
+// constants are deliberately not used; every threshold is one explicit
+// number. Later tuning must create a new ruleset version rather than
+// silently reinterpreting this one.
+const V51_RULESET_VERSION = 'V5.1_FOUNDATIONS_1';
+
+const V51_CONST = Object.freeze({
+  rulesetVersion:            V51_RULESET_VERSION,
+  adxAbsoluteFloor:          18,
+  adxFloorFourHLed:          21,
+  adxFloorDirectFourH:       25,
+  adxFloorStandaloneOneH:    29,
+  adxPeakWindowBars:         12,
+  adxMaterialDecayPct:       0.20,
+  extended1h:                2.5,
+  severelyExtended1h:        4.0,
+  extended4h:                2.0,
+  severelyExtended4h:        3.25,
+  temaSeparationNoiseFloorAtr: 0.5,
+  temaSeparationStrongAtr:   1.0,
+  maturity1hNascentMax:      3,
+  maturity1hEstablishedMax:  10,
+  maturity1hMatureMax:       20,
+  maturity4hNascentMax:      2,
+  maturity4hEstablishedMax:  6,
+  maturity4hMatureMax:       12,
+  smaConfirmBars1h:          2,
+  smaConfirmBars4h:          2,
+  extendedPersistenceBars:   3,
+  temaContractionPersistenceBars: 3,
+  alertCooldown1hHours:      3,
+  alertCooldown4hHours:      8,
+  // New in this build, not in the spec's table — a minimal "at/testing" band
+  // for SMA80/135 touch detection, ATR-normalised, mirroring the existing
+  // REGIME_MA_PRESSURE_PCT reasoning but on the ATR scale that the rest of
+  // the V5.1 evidence model uses (percentage-of-price is not comparable
+  // across symbols; ATR-normalised is).
+  smaTestBandAtr:            0.15,
+  // Chop contract: reuses the existing MA200_CHOP_WINDOW_BARS/
+  // MA200_CHOP_CROSSING_THRESHOLD crossing count (unchanged) and adds one
+  // new banding rule on top of that same number — "transitional" is not a
+  // second chop engine, it is one additional threshold read on the existing
+  // crossings count.
+  chopTransitionalCrossings: 2,
+});
+
+// ── Feature flags ────────────────────────────────────────────────────────
+// TDAS V5.1.0C — Foundations and Authoritative Contract. Suggested flag set
+// per the Phase 1 Foundations specification, section 15. v51FoundationsLive
+// gates ALL computation in this block; the current visible production path
+// (Trade Ready, Scanner classification, Watch, Trade, Full Analysis) reads
+// none of it. v51TradeReadyShadow/Visible and v51PremiumShadow/Visible are
+// declared now as the rollout contract for Phase 2/6 and are inert in this
+// build — nothing in this codebase reads them yet.
+DIAG.v51FoundationsLive   = true;  // TDAS V5.1.0C — computes _result.v51Evidence on every calcPair() call. Purely additive: no existing field is read or written by this flag. Rollback: set to false to stop all V5.1 computation; every existing live path is completely unaffected either way.
+DIAG.v51TradeReadyShadow  = false; // Reserved for Phase 2 — the redesigned Trade Ready classifier running in shadow. Not yet implemented; declared now so Phase 2 does not need a DIAG-block edit of its own.
+DIAG.v51TradeReadyVisible = false; // Reserved for Phase 4 — visible paper Trade Ready. Must remain false until an explicit, separate authorisation.
+DIAG.v51PremiumShadow     = false; // Reserved for Phase 2/6 — Premium Setup scoring in shadow. Not yet implemented.
+DIAG.v51PremiumVisible    = false; // Reserved for Phase 6 — visible Premium Setup. Must remain false until an explicit, separate authorisation.
+
+// ── Confirmed-bar identity ─────────────────────────────────────────────────
+const V51_TF_DURATION_MS = Object.freeze({ '1h': 3600000, '4h': 14400000, '1d': 86400000, '1w': 604800000 });
+
+function v51BarId(symbol, tf, openTimeMs) {
+  if (symbol == null || tf == null || openTimeMs == null) return null;
+  return symbol + ':' + tf + ':' + openTimeMs;
+}
+
+// closedCandles must be the SAME already-fetched, already-sliced closed-only
+// candle array calcPair() builds for UT Bot (raw.slice(0,-1) / rawH.slice(0,-1))
+// — no new fetch, no re-derivation. Returns null-safe identity: never
+// fabricates a bar ID when the input is empty/malformed.
+function v51ConfirmedBarIdentity(symbol, tf, closedCandles, evalWallClockMs) {
+  const evalTime = (evalWallClockMs != null) ? evalWallClockMs : Date.now();
+  if (!Array.isArray(closedCandles) || closedCandles.length === 0) {
+    return { timeframe: tf || null, barId: null, openTime: null, closeTime: null, isClosedBar: false, evalTime, complete: false };
+  }
+  const last = closedCandles[closedCandles.length - 1];
+  const openTime = (last && last.time != null) ? last.time : null;
+  const durationMs = V51_TF_DURATION_MS[tf] || null;
+  const closeTime = (openTime != null && durationMs != null) ? openTime + durationMs : null;
+  if (openTime == null) {
+    return { timeframe: tf || null, barId: null, openTime: null, closeTime: null, isClosedBar: false, evalTime, complete: false };
+  }
+  return { timeframe: tf, barId: v51BarId(symbol, tf, openTime), openTime, closeTime, isClosedBar: true, evalTime, complete: true };
+}
+
+// ── Confirmed-bar indicator recomputation ───────────────────────────────────
+// Reuses the existing tema()/sma()/calcRSI()/calcATR()/_ma200ChopFromCloses()
+// pure functions unchanged — this is literally the same math, called with
+// the closed-only arrays instead of the live-including ones already
+// available at calcPair()'s UT Bot construction site. No new formula.
+function v51ConfirmedIndicators(closedHighs, closedLows, closedCloses) {
+  if (!Array.isArray(closedCloses) || closedCloses.length < 201) {
+    // 201 confirmed closes required for a genuine confirmed SMA200 —
+    // insufficient depth is reported explicitly, never coerced.
+    return { complete: false, reason: 'INSUFFICIENT_CLOSED_HISTORY', depth: Array.isArray(closedCloses) ? closedCloses.length : 0 };
+  }
+  const t17a = tema(closedCloses, 17);
+  const t92a = tema(closedCloses, 92);
+  const ma200 = sma(closedCloses, 200);
+  const prevMa200 = sma(closedCloses.slice(0, -1), 200);
+  const sma80 = sma(closedCloses, 80);
+  const sma135 = sma(closedCloses, 135);
+  const rsi = calcRSI(closedCloses);
+  const atr = calcATR(closedHighs, closedLows, closedCloses, 14);
+  const chop = _ma200ChopFromCloses(closedCloses);
+  return {
+    complete: true,
+    t17a, t92a,
+    t17: t17a[t17a.length - 1], t92: t92a[t92a.length - 1],
+    ma200, prevMa200, sma80, sma135, rsi, atr, chop,
+    lastClosedPrice: closedCloses[closedCloses.length - 1],
+  };
+}
+
+// ── ADX rolling peak / material decay ───────────────────────────────────────
+// calcADXWithHistory() itself is extended (additively — new `recentValues`
+// field only, `value`/`prevValue` byte-identical) to expose its already-
+// accumulated rolling window. This call site is NEW (closed-only arrays,
+// V51_CONST.adxPeakWindowBars lookback) — it does not alter or replace
+// either existing production call site
+// (calcADXWithHistory(highs,lows,closes,ADX_PERIOD,ADX_SLOPE_LOOKBACK_BARS)
+// and its HTF counterpart), which remain byte-identical.
+function v51AdxRollingPeakDecay(closedHighs, closedLows, closedCloses) {
+  const calc = calcADXWithHistory(closedHighs, closedLows, closedCloses, ADX_PERIOD, V51_CONST.adxPeakWindowBars);
+  if (calc.value == null || !Array.isArray(calc.recentValues) || calc.recentValues.length === 0) {
+    return { complete: false, value: null, band: 'unknown', slope: 'unknown', peak: null, decayPct: null, materiallyDecaying: false };
+  }
+  const current = calc.value;
+  const window = calc.recentValues;
+  const peak = Math.max.apply(null, window);
+  const decayPct = (peak > 0) ? Math.round(((peak - current) / peak) * 1000) / 1000 : 0;
+  const materiallyDecaying = decayPct >= V51_CONST.adxMaterialDecayPct;
+  let slope = 'unknown';
+  if (calc.prevValue != null) {
+    slope = current > calc.prevValue ? 'rising' : (current < calc.prevValue ? 'falling' : 'flat');
+  }
+  let band;
+  if (current < 18) band = 'no_trend';
+  else if (current < 23) band = 'transitional';
+  else if (current < 30) band = 'confirmed';
+  else if (current <= 40) band = 'strong';
+  else band = 'extreme';
+  return { complete: true, value: current, band, slope, peak, decayPct, materiallyDecaying, windowSize: window.length };
+}
+
+// ── TEMA maturity / separation / trajectory ─────────────────────────────────
+// Bars-since-cross is derived directly from the confirmed t17a/t92a arrays —
+// no persisted counter. Trajectory/contraction persistence is derived the
+// same way, walking the trailing separation series.
+function v51TemaMaturityState(tf, t17a, t92a) {
+  if (!Array.isArray(t17a) || !Array.isArray(t92a) || t17a.length < 2 || t92a.length < 2) {
+    return { maturity: 'unknown', barsSinceCross: null, direction: 'unknown' };
+  }
+  const n = Math.min(t17a.length, t92a.length);
+  const sign = (i) => { const d = t17a[i] - t92a[i]; return d > 0 ? 1 : (d < 0 ? -1 : 0); };
+  const currentSign = sign(n - 1);
+  if (currentSign === 0) return { maturity: 'unknown', barsSinceCross: null, direction: 'unknown' };
+  let barsSinceCross = 0;
+  for (let i = n - 1; i > 0; i--) {
+    const s = sign(i);
+    if (s !== currentSign && s !== 0) break;
+    barsSinceCross++;
+    if (barsSinceCross >= 500) break; // hard cap — do not walk the entire fetched history unbounded
+  }
+  const isFourH = tf === '4h';
+  const nascentMax = isFourH ? V51_CONST.maturity4hNascentMax : V51_CONST.maturity1hNascentMax;
+  const establishedMax = isFourH ? V51_CONST.maturity4hEstablishedMax : V51_CONST.maturity1hEstablishedMax;
+  const matureMax = isFourH ? V51_CONST.maturity4hMatureMax : V51_CONST.maturity1hMatureMax;
+  let maturity;
+  if (barsSinceCross <= nascentMax) maturity = 'nascent';
+  else if (barsSinceCross <= establishedMax) maturity = 'established';
+  else if (barsSinceCross <= matureMax) maturity = 'mature';
+  else maturity = 'late';
+  return { maturity, barsSinceCross, direction: currentSign === 1 ? 'bullish' : 'bearish' };
+}
+
+function v51TemaSeparationState(atr, t17a, t92a, closedCloses) {
+  if (atr == null || !(atr > 0) || !Array.isArray(t17a) || !Array.isArray(t92a) || !Array.isArray(closedCloses)) {
+    return { separationAtr: null, band: 'unknown', trajectory: 'unknown', consecutiveCount: 0 };
+  }
+  const n = Math.min(t17a.length, t92a.length, closedCloses.length);
+  const lookback = Math.min(n, V51_CONST.temaContractionPersistenceBars + 3);
+  const series = [];
+  for (let i = n - lookback; i < n; i++) {
+    series.push(Math.abs(t17a[i] - t92a[i]) / atr);
+  }
+  const current = series[series.length - 1];
+  const band = current < V51_CONST.temaSeparationNoiseFloorAtr ? 'noise'
+    : current < V51_CONST.temaSeparationStrongAtr ? 'meaningful' : 'strong';
+  // Trajectory + persistence: walk backward while consecutive diffs keep the
+  // same sign as the most recent diff.
+  let trajectory = 'unknown', consecutiveCount = 0;
+  if (series.length >= 2) {
+    const lastDiff = series[series.length - 1] - series[series.length - 2];
+    trajectory = lastDiff > 0 ? 'expanding' : (lastDiff < 0 ? 'contracting' : 'holding');
+    if (trajectory === 'holding') {
+      consecutiveCount = 1;
+    } else {
+      for (let i = series.length - 1; i > 0; i--) {
+        const d = series[i] - series[i - 1];
+        const dirMatches = trajectory === 'expanding' ? d > 0 : d < 0;
+        if (!dirMatches) break;
+        consecutiveCount++;
+      }
+    }
+  }
+  return { separationAtr: Math.round(current * 1000) / 1000, band, trajectory, consecutiveCount };
+}
+
+// ── Extension state (reuses the existing extension calculation) ────────────
+// V4.9.7's previousBarAtrDistance is ALREADY genuinely confirmed-bar-correct
+// (computed from the closed-only shifted series). The V5.1 "current
+// confirmed extension" is exactly that same formula (|price - trendSMA| /
+// atr) applied to the confirmed indicator set — not a new formula. Persistence
+// is derived by walking the same trailing closed series, not by an
+// incrementing counter.
+// Reuses the existing extension formula (|price - trendSMA| / atr, exactly
+// V4.9.7's currentBarAtrDistance/previousBarAtrDistance shape) applied to
+// the confirmed closed-bar series at each of the trailing bars, so
+// persistence (consecutive Extended bars) is derived directly from history
+// rather than an incrementing counter. Needs highs/lows too, since a
+// genuine trailing ATR must be recomputed at each historical bar.
+function v51ExtensionStateFromSeries(tf, closedHighs, closedLows, closedCloses) {
+  const isFourH = tf === '4h' || tf === '1d';
+  const extendedThreshold = isFourH ? V51_CONST.extended4h : V51_CONST.extended1h;
+  const severeThreshold   = isFourH ? V51_CONST.severelyExtended4h : V51_CONST.severelyExtended1h;
+  const trendPeriod = isFourH ? 80 : 135;
+  const need = trendPeriod + 15;
+  const n = closedCloses.length;
+  if (n < need + V51_CONST.extendedPersistenceBars) {
+    return { complete: false, distanceAtr: null, tier: 'unknown', consecutiveAtOrAboveExtended: 0, persistenceEscalated: false };
+  }
+  const barsToCheck = V51_CONST.extendedPersistenceBars + 1; // current + N prior confirmed bars
+  const distances = [];
+  for (let back = 0; back < barsToCheck; back++) {
+    const end = n - back;
+    if (end < need) break;
+    const cSlice = closedCloses.slice(0, end);
+    const hSlice = closedHighs.slice(0, end);
+    const lSlice = closedLows.slice(0, end);
+    const trendSmaAtBar = sma(cSlice, trendPeriod);
+    const atrAtBar = calcATR(hSlice, lSlice, cSlice, 14);
+    const priceAtBar = cSlice[cSlice.length - 1];
+    if (trendSmaAtBar == null || atrAtBar == null || !(atrAtBar > 0)) { distances.push(null); continue; }
+    distances.push(Math.abs(priceAtBar - trendSmaAtBar) / atrAtBar);
+  }
+  const current = distances[0];
+  if (current == null) return { complete: false, distanceAtr: null, tier: 'unknown', consecutiveAtOrAboveExtended: 0, persistenceEscalated: false };
+  const tier = current >= severeThreshold ? 'severely_extended' : current >= extendedThreshold ? 'extended' : 'normal';
+  let consecutive = 0;
+  for (let i = 0; i < distances.length; i++) {
+    if (distances[i] != null && distances[i] >= extendedThreshold) consecutive++;
+    else break;
+  }
+  const persistenceEscalated = tier === 'extended' && consecutive >= V51_CONST.extendedPersistenceBars;
+  return {
+    complete: true,
+    distanceAtr: Math.round(current * 1000) / 1000,
+    tier: persistenceEscalated ? 'severely_extended' : tier,
+    tierBeforePersistence: tier,
+    consecutiveAtOrAboveExtended: consecutive,
+    persistenceEscalated,
+  };
+}
+
+// ── SMA80 / SMA135 confirmed-bar state machine ──────────────────────────────
+// Position + closed-bar persistence, never the raw UT cross label alone.
+// Confirmation window: V51_CONST.smaConfirmBars4h/1h consecutive confirmed
+// bars on the same side after a cross before the state resolves out of
+// Testing.
+function v51SmaStateMachine(tf, closedHighs, closedLows, closedCloses, direction, atr) {
+  const isFourH = tf === '4h' || tf === '1d';
+  const period = isFourH ? 80 : 135;
+  const confirmBars = isFourH ? V51_CONST.smaConfirmBars4h : V51_CONST.smaConfirmBars1h;
+  const n = closedCloses.length;
+  const need = period + confirmBars + 2;
+  if (n < need || (direction !== 'long' && direction !== 'short') || atr == null || !(atr > 0)) {
+    return { complete: false, state: 'Unknown', side: null, smaValue: null, consecutiveConfirmedBars: 0 };
+  }
+  // Recompute side (above/below/at) at each of the trailing bars. "At" uses
+  // the same ATR-normalised philosophy as the rest of the V5.1 evidence
+  // model (V51_CONST.smaTestBandAtr), not a percentage-of-price band — a
+  // fixed ATR distance here uses the CURRENT ATR throughout the short
+  // trailing walk, which is an approximation (recomputing a genuine trailing
+  // ATR at every one of the last few bars adds cost for a band whose only
+  // job is touch detection); documented here rather than silently assumed.
+  const barsToWalk = Math.min(n - period, confirmBars + 5);
+  const sides = []; // sides[0] = current, sides[1] = 1 bar back, ...
+  for (let back = 0; back < barsToWalk; back++) {
+    const end = n - back;
+    const slice = closedCloses.slice(0, end);
+    const smaAtBar = sma(slice, period);
+    const priceAtBar = slice[slice.length - 1];
+    if (smaAtBar == null) { sides.push(null); continue; }
+    const distAtr = Math.abs(priceAtBar - smaAtBar) / atr;
+    let side;
+    if (distAtr <= V51_CONST.smaTestBandAtr) side = 'at';
+    else side = priceAtBar > smaAtBar ? 'above' : 'below';
+    sides.push(side);
+  }
+  const currentSide = sides[0];
+  const smaValue = sma(closedCloses, period);
+  const alignedSide = direction === 'long' ? 'above' : 'below';
+  const counterSide = direction === 'long' ? 'below' : 'above';
+
+  if (currentSide === 'at' || currentSide == null) {
+    return { complete: true, state: 'Testing', side: currentSide, smaValue, consecutiveConfirmedBars: 0, period };
+  }
+
+  // Count consecutive confirmed bars on the current side.
+  let consecutive = 0;
+  for (let i = 0; i < sides.length; i++) {
+    if (sides[i] === currentSide) consecutive++;
+    else break;
+  }
+
+  // Did a side change occur within the confirmation window? If the side
+  // immediately prior to the current run differs, this is a fresh
+  // crossing still inside its confirmation window -> Testing until
+  // confirmBars is reached.
+  const withinConfirmationWindow = consecutive < confirmBars;
+
+  if (withinConfirmationWindow) {
+    return { complete: true, state: 'Testing', side: currentSide, smaValue, consecutiveConfirmedBars: consecutive, period };
+  }
+  if (currentSide === alignedSide) {
+    // Was the prior established side the counter side? -> Reclaimed. Was it
+    // already the aligned side before this run started? -> Holding. Without
+    // walking indefinitely we treat "just cleared the confirmation window
+    // on the aligned side" as Reclaimed for exactly one evaluation cycle
+    // (consecutive === confirmBars), then Holding thereafter.
+    const state = consecutive === confirmBars ? 'Reclaimed' : 'Holding';
+    return { complete: true, state, side: currentSide, smaValue, consecutiveConfirmedBars: consecutive, period };
+  }
+  // currentSide === counterSide, confirmed beyond the window -> Lost.
+  return { complete: true, state: 'Lost', side: currentSide, smaValue, consecutiveConfirmedBars: consecutive, period };
+}
+
+// ── Chop contract — clear / transitional / chop / unknown ───────────────────
+// Reuses _ma200ChopFromCloses() (unchanged, called here on the confirmed
+// closed-only series) and adds exactly one new banding rule on the SAME
+// already-computed crossings count — not a second chop engine.
+function v51ChopState(closedCloses) {
+  const raw = _ma200ChopFromCloses(closedCloses);
+  if (raw.state === 'unknown') return { state: 'unknown', crossings: null, source: raw };
+  if (raw.state === 'chop') return { state: 'chop', crossings: raw.crossings, source: raw };
+  // raw.state === 'clear' here (the only remaining production value).
+  if (raw.crossings != null && raw.crossings >= V51_CONST.chopTransitionalCrossings) {
+    return { state: 'transitional', crossings: raw.crossings, source: raw };
+  }
+  return { state: 'clear', crossings: raw.crossings, source: raw };
+}
+
+// ── 1D / adjacent narrow context ─────────────────────────────────────────────
+// Only genuinely narrow: audits and reuses whatever adjacent-timeframe
+// evidence calcPair() already fetched (htf = HTF[tf]). For a 4H setup this
+// IS 1D (HTF['4h']==='1d') — the narrow context1d field is populated. For a
+// 1H setup the adjacent fetch is 4H, not 1D; context1d is explicitly
+// not_applicable rather than silently reusing 4H data under a 1D label.
+// Section per doctrine: "1D is context, not a route" — this function never
+// produces a route result, only a state label.
+function v51AdjacentContextState(htfRegimeState, htfUtState, htfChopState) {
+  if (htfRegimeState == null || htfChopState == null) {
+    return { state: 'unknown', reasons: ['REQUIRED_EVIDENCE_MISSING'] };
+  }
+  if (htfChopState === 'chop' || htfChopState === 'unknown' || htfRegimeState === 'unknown' || htfRegimeState === 'unresolved_chop') {
+    return { state: 'unresolved', reasons: ['REGIME_UNRESOLVED'] };
+  }
+  const opposing = (htfRegimeState === 'confirmed_bullish' && htfUtState === 'bearish')
+    || (htfRegimeState === 'confirmed_bearish' && htfUtState === 'bullish');
+  if (opposing) return { state: 'opposing', reasons: ['CONTEXT_OPPOSING'] };
+  if (htfRegimeState === 'confirmed_bullish' || htfRegimeState === 'confirmed_bearish') {
+    return { state: 'aligned', reasons: [] };
+  }
+  return { state: 'neutral_non_opposing', reasons: ['REGIME_TRANSITIONAL'] };
+}
+
+function v51Context1dState(tf, htf, htfRegimeState, htfUtState, htfChopState) {
+  if (tf !== '4h' || htf !== '1d') {
+    return { state: 'not_applicable', reasons: ['CONTEXT_TIMEFRAME_NOT_1D'] };
+  }
+  return v51AdjacentContextState(htfRegimeState, htfUtState, htfChopState);
+}
+
+// ── Structural thesis contract ──────────────────────────────────────────────
+// Deterministic answer to: "is the strategic thesis structurally valid for
+// this direction?" Stable, machine-readable reason codes per the spec.
+const V51_THESIS_REASON = Object.freeze({
+  REGIME_UNRESOLVED: 'REGIME_UNRESOLVED',
+  REGIME_OPPOSING: 'REGIME_OPPOSING',
+  SETUP_CHOP: 'SETUP_CHOP',
+  TEMA_DIRECTION_OPPOSING: 'TEMA_DIRECTION_OPPOSING',
+  TEMA_SEPARATION_NOISE: 'TEMA_SEPARATION_NOISE',
+  CONTEXT_OPPOSING: 'CONTEXT_OPPOSING',
+  REQUIRED_EVIDENCE_MISSING: 'REQUIRED_EVIDENCE_MISSING',
+});
+
+function v51StructuralThesis(input) {
+  const direction = input.direction;
+  const regime = input.regime; // 'confirmed_bullish'|'confirmed_bearish'|'bullish_transitional'|'bearish_transitional'|'unknown'|'unresolved_chop'
+  const chopState = input.chopState; // clear|transitional|chop|unknown
+  const temaDirection = input.temaDirection; // 'bullish'|'bearish'|'unknown'
+  const separationBand = input.separationBand; // noise|meaningful|strong|unknown
+  const contextOpposing = input.contextOpposing; // true|false|null(unknown)
+  const reasons = [];
+
+  if (direction !== 'long' && direction !== 'short') {
+    return { result: 'limited_evaluation', reasons: [V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING] };
+  }
+  if (regime == null || regime === 'unknown') {
+    reasons.push(V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING);
+    return { result: 'limited_evaluation', reasons };
+  }
+  if (chopState === 'unknown') {
+    reasons.push(V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING);
+    return { result: 'limited_evaluation', reasons };
+  }
+  if (chopState === 'chop' || regime === 'unresolved_chop') {
+    reasons.push(V51_THESIS_REASON.SETUP_CHOP);
+    return { result: 'invalid', reasons };
+  }
+  const wantBullish = direction === 'long';
+  const regimeAligned = wantBullish
+    ? (regime === 'confirmed_bullish' || regime === 'bullish_transitional')
+    : (regime === 'confirmed_bearish' || regime === 'bearish_transitional');
+  if (!regimeAligned) {
+    reasons.push(V51_THESIS_REASON.REGIME_OPPOSING);
+    return { result: 'invalid', reasons };
+  }
+  if (temaDirection == null || temaDirection === 'unknown') {
+    reasons.push(V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING);
+    return { result: 'limited_evaluation', reasons };
+  }
+  const temaAligned = wantBullish ? temaDirection === 'bullish' : temaDirection === 'bearish';
+  if (!temaAligned) {
+    reasons.push(V51_THESIS_REASON.TEMA_DIRECTION_OPPOSING);
+    return { result: 'invalid', reasons };
+  }
+  if (separationBand == null || separationBand === 'unknown') {
+    reasons.push(V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING);
+    return { result: 'limited_evaluation', reasons };
+  }
+  if (separationBand === 'noise') {
+    // Phase 1 does not activate the nascent override — the reason code is
+    // returned so a later phase can apply it explicitly and visibly rather
+    // than silently.
+    reasons.push(V51_THESIS_REASON.TEMA_SEPARATION_NOISE);
+    return { result: 'invalid', reasons };
+  }
+  if (contextOpposing === true) {
+    reasons.push(V51_THESIS_REASON.CONTEXT_OPPOSING);
+    return { result: 'invalid', reasons };
+  }
+  if (contextOpposing == null) {
+    reasons.push(V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING);
+    return { result: 'limited_evaluation', reasons };
+  }
+  return { result: 'valid', reasons: [] };
+}
+
+// ── Route determination contract ────────────────────────────────────────────
+// Pure, shadow-only. Reuses _oneHTimingEvidenceFromD() UNCHANGED — the exact
+// existing function that already assembles genuine 1H UT/ADX/TEMA/RSI
+// execution-layer evidence for a 4H setup when d._1hTiming is populated
+// (Watch/Trade-owned symbols), and honestly reports sourceAvailable:false
+// otherwise (ordinary Scanner-only 4H symbols with no Watch/Trade — see the
+// Phase 1 report's Phase 2 blockers section: this is real evidence
+// unavailability, not a gap in this contract).
+const V51_ROUTE = Object.freeze({
+  FOUR_H_LED: 'four_h_led',
+  DIRECT_FOUR_H: 'direct_four_h',
+  STANDALONE_ONE_H: 'standalone_one_h',
+  LIMITED_EVALUATION: 'limited_evaluation',
+  NONE: 'none',
+});
+
+function v51UsableOneHExecutionConfirmation(oneHTimingEvidence, direction) {
+  if (!oneHTimingEvidence || oneHTimingEvidence.sourceAvailable !== true) {
+    return { usable: 'provisional_unavailable', reasons: ['EXECUTION_EVIDENCE_UNAVAILABLE'], inputs: oneHTimingEvidence || null };
+  }
+  const ut = oneHTimingEvidence.trigger;
+  const temaAligned = oneHTimingEvidence.tema && oneHTimingEvidence.tema.aligned === true;
+  const adxKnown = oneHTimingEvidence.adx && oneHTimingEvidence.adx.state && oneHTimingEvidence.adx.state !== 'unknown';
+  if (!ut || ut.state == null) {
+    return { usable: 'unknown', reasons: ['REQUIRED_EVIDENCE_MISSING'], inputs: oneHTimingEvidence };
+  }
+  if (ut.state === 'ready' && temaAligned && adxKnown) {
+    return { usable: true, reasons: [], inputs: oneHTimingEvidence };
+  }
+  return { usable: false, reasons: ['ONE_H_EXECUTION_NOT_READY'], inputs: oneHTimingEvidence };
+}
+
+function v51DetermineRoute(input) {
+  // input: { direction, setupTf, fourHThesis, oneHThesis, oneHExecution,
+  //          setupUtState, context1d, adjacentContext, evidenceComplete }
+  //
+  // TDAS V5.1.0C1 — Release Hygiene and Contract Clarification. Two
+  // narrow fixes, both to this function's OUTPUT SHAPE only — no doctrine
+  // change, no new route, no threshold change:
+  //
+  //  1. candidatesConsidered now lists every route family actually
+  //     evaluated (accepted OR rejected), not only ones that passed their
+  //     full gate. Previously an evaluated-but-rejected candidate (e.g.
+  //     four_h_led rejected for missing 1H evidence) left
+  //     candidatesConsidered empty while rejections still recorded a
+  //     reason for it — an inconsistent pair the caller could observe.
+  //  2. When the final route is `none` specifically because a 4H
+  //     candidate was rejected for EXECUTION_EVIDENCE_UNAVAILABLE (1H
+  //     execution evidence genuinely absent, not evaluated-and-failed),
+  //     completeness now reports 'limited_evaluation' rather than
+  //     'complete'. A route of `none` reached only because required
+  //     evidence never arrived is not the same claim as a route of `none`
+  //     reached after a full, evidenced evaluation — the two were
+  //     previously indistinguishable from completeness alone. This only
+  //     fires when no route was actually selected; a candidate that DID
+  //     resolve via a fully-evidenced alternate path (e.g. direct_four_h
+  //     succeeding while four_h_led was merely evidence-starved) still
+  //     reports 'complete', since a definitive route was genuinely found.
+  const candidates = [];
+  const evaluatedCandidates = [];
+  const rejections = {};
+
+  if (input.setupTf === '4h') {
+    // 4H-led
+    evaluatedCandidates.push(V51_ROUTE.FOUR_H_LED);
+    if (input.fourHThesis && input.fourHThesis.result === 'valid'
+      && input.oneHExecution && input.oneHExecution.usable === true
+      && (input.context1d.state === 'aligned' || input.context1d.state === 'neutral_non_opposing')) {
+      candidates.push(V51_ROUTE.FOUR_H_LED);
+    } else {
+      const reasons = [];
+      if (!input.fourHThesis || input.fourHThesis.result !== 'valid') reasons.push('FOUR_H_THESIS_NOT_VALID');
+      if (!input.oneHExecution || input.oneHExecution.usable === 'provisional_unavailable') reasons.push('EXECUTION_EVIDENCE_UNAVAILABLE');
+      else if (input.oneHExecution.usable !== true) reasons.push('ONE_H_EXECUTION_NOT_USABLE');
+      if (input.context1d.state === 'opposing' || input.context1d.state === 'unresolved') reasons.push('CONTEXT_1D_OPPOSING_OR_UNRESOLVED');
+      rejections[V51_ROUTE.FOUR_H_LED] = reasons;
+    }
+    // Direct 4H
+    evaluatedCandidates.push(V51_ROUTE.DIRECT_FOUR_H);
+    if (input.fourHThesis && input.fourHThesis.result === 'valid'
+      && (!input.oneHExecution || input.oneHExecution.usable !== true)
+      && input.setupUtState === 'aligned'
+      && input.context1d.state !== 'opposing') {
+      candidates.push(V51_ROUTE.DIRECT_FOUR_H);
+    } else {
+      const reasons = [];
+      if (!input.fourHThesis || input.fourHThesis.result !== 'valid') reasons.push('FOUR_H_THESIS_NOT_VALID');
+      if (input.oneHExecution && input.oneHExecution.usable === true) reasons.push('ONE_H_EXECUTION_USABLE_SO_FOUR_H_LED_APPLIES');
+      if (input.setupUtState !== 'aligned') reasons.push('SETUP_UT_NOT_EXACTLY_ALIGNED');
+      if (input.context1d.state === 'opposing') reasons.push('CONTEXT_1D_OPPOSING');
+      rejections[V51_ROUTE.DIRECT_FOUR_H] = reasons;
+    }
+  } else if (input.setupTf === '1h') {
+    // Standalone 1H
+    evaluatedCandidates.push(V51_ROUTE.STANDALONE_ONE_H);
+    if (input.oneHThesis && input.oneHThesis.result === 'valid'
+      && (input.adjacentContext.state === 'aligned' || input.adjacentContext.state === 'neutral_non_opposing')) {
+      candidates.push(V51_ROUTE.STANDALONE_ONE_H);
+    } else {
+      const reasons = [];
+      if (!input.oneHThesis || input.oneHThesis.result !== 'valid') reasons.push('ONE_H_THESIS_NOT_VALID');
+      if (input.adjacentContext.state === 'opposing' || input.adjacentContext.state === 'unresolved') reasons.push('ADJACENT_4H_OPPOSING_OR_UNRESOLVED');
+      rejections[V51_ROUTE.STANDALONE_ONE_H] = reasons;
+    }
+  } else {
+    // 1D and any other timeframe: no route exists in this phase — never a
+    // silent fallback, never a fabricated route.
+    return {
+      route: V51_ROUTE.NONE,
+      candidatesConsidered: [],
+      rejections: { [V51_ROUTE.NONE]: ['SETUP_TIMEFRAME_HAS_NO_ROUTE_MODEL'] },
+      completeness: 'complete',
+    };
+  }
+
+  if (!input.evidenceComplete) {
+    return { route: V51_ROUTE.LIMITED_EVALUATION, candidatesConsidered: evaluatedCandidates, rejections, completeness: 'limited_evaluation' };
+  }
+  if (candidates.length === 0) {
+    // No route qualified. Distinguish "genuinely evaluated and none
+    // qualified" from "couldn't be fully evaluated because required 1H
+    // execution evidence never arrived" — the caller must not read
+    // 'complete' as "this is a settled, fully-evidenced non-route".
+    const missingExecutionEvidence = Object.keys(rejections).some(
+      (r) => rejections[r].indexOf('EXECUTION_EVIDENCE_UNAVAILABLE') !== -1
+    );
+    return {
+      route: V51_ROUTE.NONE,
+      candidatesConsidered: evaluatedCandidates,
+      rejections,
+      completeness: missingExecutionEvidence ? 'limited_evaluation' : 'complete',
+    };
+  }
+  // Preference order when more than one nominally qualifies: 4H-led over
+  // Direct 4H (mirrors the mutual-exclusivity already built into the
+  // conditions above — this branch exists only as an explicit, auditable
+  // tie-break rather than relying on array order).
+  const preferenceOrder = [V51_ROUTE.FOUR_H_LED, V51_ROUTE.DIRECT_FOUR_H, V51_ROUTE.STANDALONE_ONE_H];
+  const selected = preferenceOrder.find((r) => candidates.indexOf(r) !== -1) || candidates[0];
+  return { route: selected, candidatesConsidered: evaluatedCandidates, rejections, completeness: 'complete' };
+}
+
+// ── Runtime lifecycle state — persistence ───────────────────────────────────
+// Namespaced + versioned localStorage entry, reusing the existing
+// safeParse()/safeStore() wrappers and STORAGE_KEYS convention unchanged.
+// Device/browser-local only — NOT yet cross-device authoritative (no Sheets
+// write in this phase). Malformed or older-version stored data is tolerated:
+// a version mismatch or a corrupt/missing entry both restore to a fresh,
+// empty, valid store rather than throwing or partially applying stale data.
+STORAGE_KEYS.v51RuntimeState = 'temaV51RuntimeState';
+
+function v51EmptyRuntimeStore() {
+  return { schemaVersion: V51_RULESET_VERSION, entries: {} };
+}
+
+function v51LoadRuntimeState() {
+  const raw = safeParse(STORAGE_KEYS.v51RuntimeState, null);
+  if (!raw || typeof raw !== 'object' || typeof raw.entries !== 'object' || raw.entries === null) {
+    return v51EmptyRuntimeStore();
+  }
+  if (raw.schemaVersion !== V51_RULESET_VERSION) {
+    // A ruleset/schema change never silently reinterprets old entries —
+    // start clean under the new version rather than guessing field meaning.
+    return v51EmptyRuntimeStore();
+  }
+  return raw;
+}
+
+function v51SaveRuntimeState(store) {
+  safeStore(STORAGE_KEYS.v51RuntimeState, store);
+}
+
+function v51IdentityKey(symbol, tf, route, direction) {
+  return symbol + '|' + tf + '|' + route + '|' + direction;
+}
+
+function v51EmptyRuntimeEntry(identity) {
+  return {
+    identity,
+    origin: null,               // 'scanner' | 'watch'
+    originalQualificationTime: null,
+    currentLaneEntryTime: null,
+    lastConfirmedBarId: { '1h': null, '4h': null, '1d': null },
+    debounceCount: 0,
+    premiumDwellCount: 0,
+    flipCount: 0,
+    flipWindowBarIds: [],
+    lifecycleState: 'none',     // 'none' | 'trade_ready' | 'premium' | 'lost'
+    skipSuppressed: false,
+    missedSuppressed: false,
+    alertCooldownUntil: null,
+    rulesetVersion: V51_RULESET_VERSION,
+  };
+}
+
+// Advances lifecycle counters for one identity ONLY if the supplied
+// confirmed bar ID is genuinely new for that timeframe on that identity —
+// this is the one place in the V5.1 layer where "advance once per confirmed
+// bar" is a real mutation, and it is guarded explicitly rather than implied.
+function v51AdvanceRuntimeState(store, identity, tf, barId, classificationNow) {
+  if (!store.entries[identity]) store.entries[identity] = v51EmptyRuntimeEntry(identity);
+  const entry = store.entries[identity];
+  const lastBarId = entry.lastConfirmedBarId[tf];
+  if (barId != null && barId === lastBarId) {
+    // Same confirmed bar already processed for this identity/timeframe —
+    // idempotent no-op. Non-counter fields (evidence) are recomputed fresh
+    // by the caller regardless; nothing here is re-incremented.
+    return { entry, advanced: false };
+  }
+  const priorState = entry.lifecycleState;
+  if (barId != null) entry.lastConfirmedBarId[tf] = barId;
+  if (classificationNow !== priorState) {
+    entry.flipCount += 1;
+    entry.flipWindowBarIds.push(barId);
+    if (entry.flipWindowBarIds.length > 10) entry.flipWindowBarIds.shift();
+    entry.lifecycleState = classificationNow;
+    if (classificationNow === 'trade_ready' || classificationNow === 'premium') {
+      if (!entry.originalQualificationTime) entry.originalQualificationTime = Date.now();
+      entry.currentLaneEntryTime = Date.now();
+    }
+  }
+  entry.debounceCount = (classificationNow === priorState) ? entry.debounceCount + 1 : 1;
+  entry.rulesetVersion = V51_RULESET_VERSION;
+  return { entry, advanced: true };
+}
+
+// ── Authoritative V5.1 evidence assembly ────────────────────────────────────
+// One versioned output object per evaluated symbol/direction/setup
+// candidate, per the Phase 1 Foundations spec section 13. Never mutates the
+// existing calcPair() result object beyond attaching this one new field.
+function v51EvaluationStatus(confirmedIndicators, barIdentity, adjacentBarIdentity) {
+  if (!barIdentity.complete) return 'failed';
+  if (!confirmedIndicators.complete) return 'limited_evaluation';
+  if (adjacentBarIdentity && !adjacentBarIdentity.complete) return 'limited_evaluation';
+  return 'complete';
+}
+
+function buildV51Evidence(ctx) {
+  // ctx carries every already-computed local from calcPair() needed here —
+  // see the call site's own header comment for the exact field list. No
+  // field in ctx triggers a new network call; everything is derived from
+  // data calcPair() already fetched for the existing live path.
+  // TDAS V5.1.0C checkpoint fix: `direction` is NOT taken from the caller's
+  // legacy-signal-derived hint below — that value is intrabar-price-
+  // sensitive (calcPair()'s `signal` depends on the live ticker price via
+  // `aboveMA`), which would silently reintroduce exactly the live-price
+  // contamination this evidence layer exists to eliminate. See the vertical
+  // -slice test's [2] section, which caught this directly: two scans of the
+  // same still-forming candle at different live prices produced two
+  // different `direction` values before this fix. ctx.direction is kept
+  // only as `legacyDirectionHint`, used solely as the identity label on the
+  // early bar-unavailable failure path below, where no confirmed TEMA
+  // exists yet to derive a direction from at all.
+  const { symbol, tf, htf, direction: legacyDirectionHint, closedHighs, closedLows, closedCloses, closedCandlesNormal,
+          htClosedCandlesNormal, hc, evalWallClockMs, oneHTimingEvidence, openTrade } = ctx;
+
+  const barIdentity = v51ConfirmedBarIdentity(symbol, tf, closedCandlesNormal, evalWallClockMs);
+  const adjacentBarIdentity = v51ConfirmedBarIdentity(symbol, htf, htClosedCandlesNormal, evalWallClockMs);
+
+  if (!barIdentity.complete) {
+    // Failure behaviour per spec section 7: do not advance counters, do not
+    // emit new authoritative state, mark incomplete/unknown explicitly.
+    return {
+      identity: { symbol, direction: legacyDirectionHint, setupTf: tf, executionTf: '1h', contextTf: htf, route: V51_ROUTE.NONE, rulesetVersion: V51_RULESET_VERSION },
+      rulesetVersion: V51_RULESET_VERSION,
+      evaluationStatus: 'failed',
+      confirmedBars: { setup: barIdentity, adjacent: adjacentBarIdentity },
+      route: { route: V51_ROUTE.NONE, candidatesConsidered: [], rejections: { [V51_ROUTE.NONE]: ['CONFIRMED_BAR_UNAVAILABLE'] }, completeness: 'failed' },
+      structuralThesis: { result: 'limited_evaluation', reasons: [V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING] },
+      tradeReadyShadow: { status: 'not_yet_activated' },
+      premiumShadow: { status: 'not_yet_activated' },
+      evidence: {},
+      warnings: [],
+      vetoes: [],
+      runtimeState: null,
+      diagnostics: { note: 'confirmed setup-timeframe bar unavailable' },
+    };
+  }
+
+  const confirmedIndicators = v51ConfirmedIndicators(closedHighs, closedLows, closedCloses);
+  // htClosedCandlesNormal is the SAME already-fetched, already-closed HTF
+  // candle series calcPair() builds for the HTF UT Bot — high/low are
+  // derived from it here rather than expecting a separate fetch/array.
+  const htClosedHighs = Array.isArray(htClosedCandlesNormal) ? htClosedCandlesNormal.map((c) => c.high) : [];
+  const htClosedLows  = Array.isArray(htClosedCandlesNormal) ? htClosedCandlesNormal.map((c) => c.low)  : [];
+  const adjacentIndicators = v51ConfirmedIndicators(htClosedHighs, htClosedLows, hc);
+
+  const adxState = confirmedIndicators.complete
+    ? v51AdxRollingPeakDecay(closedHighs, closedLows, closedCloses)
+    : { complete: false, value: null, band: 'unknown', slope: 'unknown', peak: null, decayPct: null, materiallyDecaying: false };
+
+  const temaMaturity = confirmedIndicators.complete
+    ? v51TemaMaturityState(tf, confirmedIndicators.t17a, confirmedIndicators.t92a)
+    : { maturity: 'unknown', barsSinceCross: null, direction: 'unknown' };
+
+  // Confirmed-bar direction: derived from the CLOSED TEMA cross only —
+  // never from the caller's legacy-signal hint (see the header comment on
+  // the destructure above). 'bullish'/'bearish' here map 1:1 to
+  // 'long'/'short' for thesis/route purposes; 'unknown' propagates
+  // honestly rather than falling back to a live-price-derived guess.
+  const direction = temaMaturity.direction === 'bullish' ? 'long'
+    : temaMaturity.direction === 'bearish' ? 'short' : 'unknown';
+
+  const temaSeparation = confirmedIndicators.complete
+    ? v51TemaSeparationState(confirmedIndicators.atr, confirmedIndicators.t17a, confirmedIndicators.t92a, closedCloses)
+    : { separationAtr: null, band: 'unknown', trajectory: 'unknown', consecutiveCount: 0 };
+
+  const extension = v51ExtensionStateFromSeries(tf, closedHighs, closedLows, closedCloses);
+
+  const smaState = confirmedIndicators.complete
+    ? v51SmaStateMachine(tf, closedHighs, closedLows, closedCloses, direction, confirmedIndicators.atr)
+    : { complete: false, state: 'Unknown', side: null, smaValue: null, consecutiveConfirmedBars: 0 };
+
+  const chopState = confirmedIndicators.complete ? v51ChopState(closedCloses) : { state: 'unknown', crossings: null };
+
+  const adjacentChopState = adjacentIndicators.complete ? v51ChopState(hc) : { state: 'unknown', crossings: null };
+
+  // Adjacent regime — reuses the SAME _ma200RegimeFromInputs() pure function
+  // already used for the setup-tf regime elsewhere in this codebase
+  // (unchanged, called here with the confirmed adjacent-tf inputs).
+  const setupRegime = confirmedIndicators.complete
+    ? _ma200RegimeFromInputs(
+        confirmedIndicators.lastClosedPrice > confirmedIndicators.ma200 ? 'above' : (confirmedIndicators.lastClosedPrice < confirmedIndicators.ma200 ? 'below' : 'unknown'),
+        confirmedIndicators.t92 > confirmedIndicators.ma200 ? 'above' : (confirmedIndicators.t92 < confirmedIndicators.ma200 ? 'below' : 'unknown'),
+        confirmedIndicators.ma200 != null && confirmedIndicators.prevMa200 != null
+          ? (confirmedIndicators.ma200 > confirmedIndicators.prevMa200 ? 'rising' : (confirmedIndicators.ma200 < confirmedIndicators.prevMa200 ? 'falling' : 'flat'))
+          : 'unknown',
+        chopState.state === 'transitional' ? 'clear' : chopState.state
+      )
+    : 'unknown';
+
+  const adjacentRegime = adjacentIndicators.complete
+    ? _ma200RegimeFromInputs(
+        adjacentIndicators.lastClosedPrice > adjacentIndicators.ma200 ? 'above' : (adjacentIndicators.lastClosedPrice < adjacentIndicators.ma200 ? 'below' : 'unknown'),
+        adjacentIndicators.t92 > adjacentIndicators.ma200 ? 'above' : (adjacentIndicators.t92 < adjacentIndicators.ma200 ? 'below' : 'unknown'),
+        adjacentIndicators.ma200 != null && adjacentIndicators.prevMa200 != null
+          ? (adjacentIndicators.ma200 > adjacentIndicators.prevMa200 ? 'rising' : (adjacentIndicators.ma200 < adjacentIndicators.prevMa200 ? 'falling' : 'flat'))
+          : 'unknown',
+        adjacentChopState.state === 'transitional' ? 'clear' : adjacentChopState.state
+      )
+    : 'unknown';
+
+  const adjacentUtDirection = ctx.htfUtBot ? (ctx.htfUtBot.direction === 1 ? 'bullish' : (ctx.htfUtBot.direction === -1 ? 'bearish' : 'unknown')) : 'unknown';
+
+  const context1d = v51Context1dState(tf, htf, adjacentRegime, adjacentUtDirection, adjacentChopState.state);
+  const adjacentContext = v51AdjacentContextState(adjacentRegime, adjacentUtDirection, adjacentChopState.state);
+
+  // Setup-tf UT alignment — computed here, against the CONFIRMED direction
+  // derived above, using ctx.utBot (the confirmed-bar UT Bot result
+  // calcPair() already computes — genuinely closed-bar-correct, unlike
+  // `signal`). Deliberately narrow: aligned/opposing/unknown only, not the
+  // full opposing_hard/opposing_transitional distinction
+  // _utOppositionFromValues() computes elsewhere (that needs recentLabel/
+  // freshness/smaConfirmed inputs this contract does not yet carry — see
+  // the Phase 1 report).
+  let setupUtState = 'unknown';
+  if (ctx.utBot && (ctx.utBot.direction === 1 || ctx.utBot.direction === -1) && direction !== 'unknown') {
+    const utDirLabel = ctx.utBot.direction === 1 ? 'long' : 'short';
+    setupUtState = (utDirLabel === direction) ? 'aligned' : 'opposing';
+  }
+
+  const fourHThesis = tf === '4h' ? v51StructuralThesis({
+    direction, regime: setupRegime, chopState: chopState.state,
+    temaDirection: temaMaturity.direction, separationBand: temaSeparation.band,
+    contextOpposing: context1d.state === 'opposing' ? true : (context1d.state === 'unresolved' || context1d.state === 'unknown' ? null : false),
+  }) : null;
+
+  const oneHThesis = tf === '1h' ? v51StructuralThesis({
+    direction, regime: setupRegime, chopState: chopState.state,
+    temaDirection: temaMaturity.direction, separationBand: temaSeparation.band,
+    contextOpposing: adjacentContext.state === 'opposing' ? true : (adjacentContext.state === 'unresolved' || adjacentContext.state === 'unknown' ? null : false),
+  }) : null;
+
+  const oneHExecution = v51UsableOneHExecutionConfirmation(oneHTimingEvidence, direction);
+
+  const evidenceComplete = confirmedIndicators.complete && adjacentIndicators.complete
+    && temaMaturity.maturity !== 'unknown' && temaSeparation.band !== 'unknown'
+    && (tf !== '4h' || context1d.state !== 'unknown')
+    && (tf !== '1h' || adjacentContext.state !== 'unknown');
+
+  const route = v51DetermineRoute({
+    direction, setupTf: tf, fourHThesis, oneHThesis, oneHExecution,
+    setupUtState, context1d, adjacentContext, evidenceComplete,
+  });
+
+  const evaluationStatus = v51EvaluationStatus(confirmedIndicators, barIdentity, adjacentBarIdentity);
+
+  // Runtime lifecycle — Phase 1 reports a diagnostic placeholder only. The
+  // persistence primitives below (v51LoadRuntimeState/v51SaveRuntimeState/
+  // v51AdvanceRuntimeState/v51EmptyRuntimeEntry) are complete and directly
+  // testable, but buildV51Evidence() deliberately does NOT call
+  // v51AdvanceRuntimeState() or v51SaveRuntimeState() here — per Phase 1
+  // guardrails, no live Skip/Missed/debounce/flip/Premium-dwell transition
+  // behaviour is created in this build. Wiring this evidence object into an
+  // actual advancing lifecycle is Phase 2 scope, once a redesigned
+  // classifier exists to drive "classificationNow" with a real value rather
+  // than the placeholder route-determined/none used here. This function is
+  // therefore read-only with respect to storage: it neither writes nor
+  // requires v51RuntimeState to exist.
+  const runtimeState = {
+    schemaVersion: V51_RULESET_VERSION,
+    identity: v51IdentityKey(symbol, tf, route.route, direction),
+    persisted: false,
+    note: 'Phase 1 diagnostic placeholder — lifecycle persistence primitives exist and are tested directly, but are not yet invoked by evidence evaluation. No write occurs here.',
+  };
+
+  return {
+    identity: { symbol, direction, setupTf: tf, executionTf: '1h', contextTf: htf, route: route.route, rulesetVersion: V51_RULESET_VERSION },
+    rulesetVersion: V51_RULESET_VERSION,
+    evaluationStatus,
+    confirmedBars: { setup: barIdentity, adjacent: adjacentBarIdentity },
+    route,
+    structuralThesis: tf === '4h' ? fourHThesis : (tf === '1h' ? oneHThesis : { result: 'limited_evaluation', reasons: [V51_THESIS_REASON.REQUIRED_EVIDENCE_MISSING] }),
+    tradeReadyShadow: { status: 'not_yet_activated', currentProductionClassification: null, blockingReasonCodes: [] },
+    premiumShadow: { status: 'not_yet_scored', eligibleRoute: route.route === V51_ROUTE.FOUR_H_LED, vetoes: [], architectureQuality: null, executionQuality: null, combinedScore: null },
+    evidence: {
+      regime: setupRegime,
+      chop: chopState,
+      adjacentRegime,
+      adjacentChop: adjacentChopState,
+      context1d,
+      adjacentContext,
+      tema: { maturity: temaMaturity, separation: temaSeparation },
+      adx: adxState,
+      extension,
+      sma: smaState,
+      oneHExecution,
+    },
+    warnings: [],
+    vetoes: [],
+    runtimeState,
+    diagnostics: {
+      confirmedIndicatorsComplete: confirmedIndicators.complete,
+      adjacentIndicatorsComplete: adjacentIndicators.complete,
+    },
+  };
+}
+
+// ── Diagnostics accessor ────────────────────────────────────────────────────
+// Deliberately NOT wired into openAnalysisPanel() or any render path — the
+// ordinary Full Analysis view is byte-unchanged by this build. Pure,
+// non-mutating, callable directly by tests or from the console for manual
+// inspection.
+function buildV51Diagnostic(d) {
+  if (!d || !d.v51Evidence) {
+    return { rulesetVersion: V51_RULESET_VERSION, available: false, reason: 'NO_V51_EVIDENCE_ON_RESULT' };
+  }
+  const ev = d.v51Evidence;
+  return {
+    rulesetVersion: ev.rulesetVersion,
+    available: true,
+    confirmedBarIds: ev.confirmedBars,
+    normalisedEvidenceStates: ev.evidence,
+    structuralThesisResult: ev.structuralThesis,
+    routeResult: ev.route,
+    missingEvidence: ev.evaluationStatus !== 'complete' ? ev.evaluationStatus : null,
+    currentProductionClassification: {
+      tradeReady: d.authoritativeClassification ? d.authoritativeClassification.tradeReady : null,
+      tradeReadyKnown: d.authoritativeClassification ? d.authoritativeClassification.tradeReadyKnown : null,
+      highConviction: d.authoritativeClassification ? d.authoritativeClassification.highConviction : null,
+    },
+    v51ShadowReadinessInputs: { tradeReadyShadow: ev.tradeReadyShadow, premiumShadow: ev.premiumShadow },
+    runtimeStateRestorationStatus: 'not_yet_wired_phase1_placeholder',
+  };
+}
+
+
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
 
 // ── UT Bot configuration ────────────────────────────────────────────────
@@ -13200,6 +14184,48 @@ async function calcPair(symbol,tf){
   // fallback to the legacy verdict.
   if (typeof _refreshShadowFromCurrentEvidence === 'function') {
     _refreshShadowFromCurrentEvidence(_result, { symbol });
+  }
+  // TDAS V5.1.0C — Foundations and Authoritative Contract. Attaches the
+  // parallel confirmed-bar evidence object at the same seam as the existing
+  // authoritative/shadow attachments above, using only locals calcPair()
+  // already computed (no new fetch). Gated entirely on
+  // DIAG.v51FoundationsLive; wrapped so an internal V5.1 failure can never
+  // affect the live scan result — every existing field on _result above
+  // this line is completely unaffected either way.
+  //
+  // The `direction` passed here is the legacy live-price-sensitive `signal`
+  // — buildV51Evidence() uses it ONLY as a label on the early bar-
+  // unavailable failure path; for every other purpose it derives its own
+  // confirmed direction from the closed TEMA cross (see that function's own
+  // header comment). This was a genuine defect caught by the vertical-slice
+  // test: passing `signal` straight through into thesis/route/UT-alignment
+  // logic let the live ticker price silently change confirmed-bar
+  // classification between two scans of the same still-forming candle.
+  // utBot is passed raw (not pre-resolved to aligned/opposing) so that
+  // resolution can happen against the confirmed direction inside
+  // buildV51Evidence() rather than against the legacy signal here.
+  if (DIAG.v51FoundationsLive) {
+    try {
+      const _v51OneHTiming = (typeof _oneHTimingEvidenceFromD === 'function') ? _oneHTimingEvidenceFromD(_result, null) : null;
+      _result.v51Evidence = buildV51Evidence({
+        symbol, tf, htf, direction: (signal === 'long' || signal === 'short') ? signal : 'unknown',
+        closedHighs, closedLows, closedCloses, closedCandlesNormal,
+        htClosedCandlesNormal, hc, htfUtBot, utBot,
+        evalWallClockMs: Date.now(),
+        oneHTimingEvidence: _v51OneHTiming,
+        openTrade: null,
+      });
+    } catch (_v51Err) {
+      // Never let a V5.1 evaluation failure affect the live scan result —
+      // report it as an explicit failed evidence object instead of letting
+      // it propagate or silently dropping the field.
+      _result.v51Evidence = {
+        rulesetVersion: V51_RULESET_VERSION,
+        evaluationStatus: 'failed',
+        error: 'V51_EVALUATION_THREW',
+        errorMessage: (_v51Err && _v51Err.message) ? _v51Err.message : String(_v51Err),
+      };
+    }
   }
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
