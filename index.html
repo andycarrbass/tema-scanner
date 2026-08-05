@@ -11584,7 +11584,7 @@ function v51AdxRollingPeakDecay(closedHighs, closedLows, closedCloses) {
   else if (current < 30) band = 'confirmed';
   else if (current <= 40) band = 'strong';
   else band = 'extreme';
-  return { complete: true, value: current, band, slope, peak, decayPct, materiallyDecaying, windowSize: window.length };
+  return { complete: true, value: current, prevValue: calc.prevValue, band, slope, peak, decayPct, materiallyDecaying, windowSize: window.length };
 }
 
 // ── TEMA maturity / separation / trajectory ─────────────────────────────────
@@ -12329,6 +12329,24 @@ function buildV51Evidence(ctx) {
       extension,
       sma: smaState,
       oneHExecution,
+      // TDAS V5.1.0D — additive raw scalar values, needed by the shared-
+      // pipeline shadow comparison layer to construct a shape-compatible
+      // confirmed-bar `d` view for calling the real computeStates()/
+      // classifyRegime()/evaluateSetup() unmodified. Not read by anything
+      // in Phase 1; purely additive to this contract.
+      raw: confirmedIndicators.complete ? {
+        complete: true,
+        t17: confirmedIndicators.t17, t92: confirmedIndicators.t92,
+        prevT17: confirmedIndicators.t17a[confirmedIndicators.t17a.length - 2],
+        prevT92: confirmedIndicators.t92a[confirmedIndicators.t92a.length - 2],
+        ma200: confirmedIndicators.ma200, prevMa200: confirmedIndicators.prevMa200,
+        sma80: confirmedIndicators.sma80, sma135: confirmedIndicators.sma135,
+        rsi: confirmedIndicators.rsi, atr: confirmedIndicators.atr,
+        adx: adxState.complete ? adxState.value : null,
+        adxPrev: adxState.complete ? adxState.prevValue : null,
+        lastClosedPrice: confirmedIndicators.lastClosedPrice,
+        prevClosedPrice: closedCloses.length >= 2 ? closedCloses[closedCloses.length - 2] : null,
+      } : { complete: false },
     },
     warnings: [],
     vetoes: [],
@@ -12368,6 +12386,274 @@ function buildV51Diagnostic(d) {
   };
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.1.0D — Closed-Candle Migration Shadow Audit                    ║
+// ║                                                                          ║
+// ║  READ-ONLY comparison layer. Builds a confirmed-bar shadow view of the  ║
+// ║  8 shared strategy functions (computeStates/classifyRegime/evaluateSetup║
+// ║  /buildEvidence/_shadowEvaluate/buildAdvisory/buildTechnicalSummaryHtml ║
+// ║  /buildAuthoritativeSortKey) and compares it field-by-field against the ║
+// ║  existing live-candle result — WITHOUT switching anything live. Every   ║
+// ║  one of those 8 functions is called EXACTLY AS BEFORE, unmodified, on a ║
+// ║  freshly-constructed LOCAL shadow object — never on `d` itself, never   ║
+// ║  mutating `d`. Attached as _result.v51SharedPipelineShadow, gated on    ║
+// ║  DIAG.v51SharedPipelineShadow, wrapped in try/catch.                    ║
+// ║                                                                          ║
+// ║  ARCHITECTURAL FINDING this build exists to act on: computeStates(),    ║
+// ║  classifyRegime(), evaluateSetup(), buildAdvisory() and                 ║
+// ║  buildTechnicalSummaryHtml() are single, shared functions — not         ║
+// ║  Scanner/Watch/Trade variants. _result.states/.regime/.evaluation are   ║
+// ║  assigned exactly once, unconditionally, inside calcPair() itself,      ║
+// ║  before any renderer sees the result (renderCard() and                 ║
+// ║  renderWatchCard() both call buildTechnicalSummaryHtml(d) on the same   ║
+// ║  object). There is no seam at which "Scanner's evidence" and "Watch's   ║
+// ║  evidence" are different things — they are the same object, computed    ║
+// ║  once. A renderer-level confirmed-data substitution would therefore     ║
+// ║  either silently migrate Watch/Trade too, or require a second,          ║
+// ║  duplicate evaluation engine. Neither is acceptable — hence shadow-only ║
+// ║  in this build. See V5.1.0D_SHADOW_AUDIT_REPORT.md for the full         ║
+// ║  per-function migration-readiness table and the proposed shared-core    ║
+// ║  architecture (confirmed strategy evaluation + live price/execution     ║
+// ║  overlay = one internally consistent calcPair result).                  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+DIAG.v51SharedPipelineShadow = true; // TDAS V5.1.0D — read-only comparison only. Computes _result.v51SharedPipelineShadow; never read by any classification, presentation, sorting, or persistence path. Rollback: set to false to stop computing it entirely — every existing field is completely unaffected either way, in both states.
+
+// ── Confirmed-bar shadow `d` construction ───────────────────────────────────
+// Pure. Returns a NEW object — never mutates the real `d`/`confirmedD`
+// passed in. Overrides only the setup-timeframe fields proven (by direct
+// source audit — see the report) to be currently live-candle-sourced:
+// t17/t92/prevT92, ma200/prevMa200, rsi, atr, adx/adxPrev3, the derived
+// crossLong/crossShort/temaWidening/aboveMA/aboveTrendSMA/maDist booleans,
+// and the setup-tf 200MA chop state. HTF/adjacent fields (htfT92, htfMa200,
+// htfAdx, htfMa200ChopState, htfUtBot, htfTrendContext, htfAlign) are left
+// UNTOUCHED — the audit confirmed these are already computed from hc[]
+// (rawH.slice(0,-1)), i.e. already closed-bar-correct, so overriding them
+// would be pointless and would risk masking a genuine future regression if
+// that ever changed. `signal` itself is also left untouched here — see
+// buildV51SharedPipelineShadow()'s own header comment for why it is
+// recomputed by the caller instead of overridden in this function.
+function v51BuildConfirmedShadowD(d) {
+  const ev = d && d.v51Evidence;
+  const raw = ev && ev.evidence && ev.evidence.raw;
+  if (!raw || !raw.complete) return null;
+
+  const tf = d.tf;
+  const isFourH = tf === '4h' || tf === '1d';
+  const trendSMA = isFourH ? raw.sma80 : raw.sma135;
+  const confirmedPrice = raw.lastClosedPrice;
+
+  const crossLong = raw.t17 != null && raw.t92 != null ? raw.t17 > raw.t92 : null;
+  const crossShort = raw.t17 != null && raw.t92 != null ? raw.t17 < raw.t92 : null;
+  const temaSepNow = (raw.t17 != null && raw.t92 != null && confirmedPrice) ? Math.abs(raw.t17 - raw.t92) / confirmedPrice * 100 : null;
+  const temaSepPrev = (raw.prevT17 != null && raw.prevT92 != null && raw.prevClosedPrice) ? Math.abs(raw.prevT17 - raw.prevT92) / raw.prevClosedPrice * 100 : null;
+  const temaWidening = (temaSepNow != null && temaSepPrev != null) ? temaSepNow > temaSepPrev : null;
+  const aboveMA = raw.ma200 != null && confirmedPrice != null ? confirmedPrice > raw.ma200 : null;
+  const maDist = raw.ma200 != null && confirmedPrice != null ? (confirmedPrice - raw.ma200) / raw.ma200 * 100 : null;
+  const aboveTrendSMA = trendSMA != null && confirmedPrice != null ? confirmedPrice > trendSMA : null;
+  const adxTrending = raw.adx != null ? raw.adx >= 25 : null;
+  const adxStrong = raw.adx != null ? raw.adx >= 40 : null;
+  const rsiOk_long = raw.rsi != null ? raw.rsi < 70 : true;
+  const rsiOk_short = raw.rsi != null ? raw.rsi > 30 : true;
+
+  // Shallow clone — every field NOT explicitly listed below is inherited
+  // unchanged from the real `d` (including price, P&L-adjacent fields, htf*
+  // fields, utBot, session/candle-countdown fields, signal itself).
+  const shadow = Object.assign({}, d);
+  shadow.t17 = raw.t17; shadow.t92 = raw.t92; shadow.prevT92 = raw.prevT92;
+  shadow.ma200 = raw.ma200; shadow.prevMa200 = raw.prevMa200;
+  shadow.rsi = raw.rsi; shadow.atr = raw.atr;
+  shadow.adx = raw.adx; shadow.adxPrev3 = raw.adxPrev; shadow.adxTrending = adxTrending; shadow.adxStrong = adxStrong;
+  shadow.crossLong = crossLong; shadow.crossShort = crossShort; shadow.temaSep = temaSepNow; shadow.temaWidening = temaWidening;
+  shadow.aboveMA = aboveMA; shadow.maDist = maDist; shadow.aboveTrendSMA = aboveTrendSMA;
+  shadow.rsiOk_long = rsiOk_long; shadow.rsiOk_short = rsiOk_short;
+  shadow.ma200ChopState = ev.evidence.chop && ev.evidence.chop.source ? ev.evidence.chop.source : shadow.ma200ChopState;
+  // Confirmed-bar direction — same closed-TEMA-cross derivation
+  // buildV51Evidence() itself already uses, not the live signal/aboveMA
+  // crossover. Kept local to this shadow, never written back to `d`.
+  shadow.signal = crossLong === true && aboveMA === true ? 'long'
+    : crossShort === true && aboveMA === false ? 'short' : 'neutral';
+  // states/regime/evaluation/evidence/authoritativeClassification are
+  // deliberately NOT copied forward from `d` — the caller recomputes them
+  // fresh against this shadow object via the real, unmodified functions.
+  shadow.states = null; shadow.regime = null; shadow.evaluation = null;
+  shadow.evidence = null; shadow.authoritativeClassification = null;
+  return shadow;
+}
+
+// ── Field-by-field map — declarative, used by both the comparison engine
+// and directly inspectable/testable. Not prose — an actual data structure
+// so "which fields does X read/write" is a checkable fact, not a claim.
+function v51SharedPipelineFieldMap() {
+  return {
+    computeStates: {
+      reads: ['t17', 't92', 'prevT92', 'ma200', 'prevMa200', 'rsi', 'atr', 'adx', 'adxPrev3', 'crossLong', 'crossShort', 'temaWidening', 'aboveMA', 'maDist', 'aboveTrendSMA', 'utBot', 'utFresh', 'utLongConfirm', 'utShortConfirm', 'htfMa200', 'htfPrevMa200', 'htfT92', 'htfAdx', 'htfAdxPrev3'],
+      mutatesInput: false,
+      downstreamConsumers: ['classifyRegime', 'evaluateSetup', 'buildDecisionDotsHtml', 'buildFilterLineHtml', 'buildSnapshot'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: ['utBot (already closed-bar)', 'htf* fields (already closed-bar)'],
+      liveOnlyOverlayRequired: [],
+    },
+    classifyRegime: {
+      reads: ['states.aboveMA', 'states.maDist', 'states.crossLong', 'states.crossShort', 'states.temaWidening', 'states.adxTrending', 'states.utLongConfirm', 'states.utShortConfirm', 'states.rsi', 'states.aboveTrendSMA', 'states.htfTrendContext'],
+      mutatesInput: false,
+      downstreamConsumers: ['evaluateSetup', 'buildSnapshot', 'buildDecisionDotsHtml', 'buildTechnicalSummaryHtml (legacy fallback path)'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: [],
+      liveOnlyOverlayRequired: [],
+    },
+    evaluateSetup: {
+      reads: ['states', 'regime', 'signal', 'score', 'htfTrendContext (via getHtfDirectionState)', 'htfUtBot (via getHtfDirectionState)'],
+      mutatesInput: false,
+      downstreamConsumers: ['buildAdvisory', 'buildDecisionDotsHtml', '_buildLegacyTechnicalSummaryModel'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: ['score (currently live-derived — see report open question)'],
+      liveOnlyOverlayRequired: [],
+    },
+    buildEvidence: {
+      reads: ['d (full object)', 'entry (journal resolution — impure lookup, not part of d)'],
+      mutatesInput: false,
+      downstreamConsumers: ['_shadowEvaluate', 'buildTechnicalSummaryHtml (evidence path)'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: ['entry resolution stays impure/unchanged'],
+      liveOnlyOverlayRequired: [],
+    },
+    _shadowEvaluate: {
+      reads: ['ev (MarketEvidence — buildEvidence output)'],
+      mutatesInput: false,
+      downstreamConsumers: ['buildAuthoritativeClassification', 'v51DetermineRoute (already consumes confirmed data independently)'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: [],
+      liveOnlyOverlayRequired: [],
+    },
+    buildAdvisory: {
+      reads: ['d.evaluation', 'd.regime', 'd.authoritativeClassification', 'd.states', 'd.signal', 'entry.openTrade'],
+      mutatesInput: false,
+      downstreamConsumers: ['renderCard', 'renderWatchCard', 'buildActiveScannerPlaceholderHtml', '_buildFullAnalysisCopyText'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: ['entry.openTrade must remain a live journal object — trade management stays live per doctrine'],
+      liveOnlyOverlayRequired: ['P&L/distance figures inside advisory detail text, if any — audit per-string before activation'],
+    },
+    buildTechnicalSummaryHtml: {
+      reads: ['d.evidence', 'd.regime (legacy fallback)', 'd.states (legacy fallback)', 'd.signal'],
+      mutatesInput: false,
+      downstreamConsumers: ['renderCard', 'renderWatchCard'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: ['legacy fallback model (_buildLegacyTechnicalSummaryModel) — must keep working unchanged'],
+      liveOnlyOverlayRequired: [],
+    },
+    buildAuthoritativeSortKey: {
+      reads: ['d.authoritativeClassification', 'context (route/direction resolver)'],
+      mutatesInput: false,
+      downstreamConsumers: ['runScan() live sort comparator', 'buildScannerSortShadowCensus (diagnostic)'],
+      canConsumeConfirmedViewDirectly: true,
+      flagCanSwitchAtomically: true,
+      legacyCompatibilityFieldsRequired: [],
+      liveOnlyOverlayRequired: [],
+      note: 'The only genuinely Scanner-exclusive function of the eight — confirmed via exhaustive call-site search (exactly 2 call sites, neither on Watch/Trade).',
+    },
+  };
+}
+
+// ── Comparison engine ────────────────────────────────────────────────────
+// Runs the SAME 8 functions, unmodified, once against the real `d` (via its
+// already-attached fields — never recomputed here) and once against a fresh
+// local shadow object. Never mutates `d`. Never mutates the shadow beyond
+// its own local construction. Wrapped by the caller in try/catch.
+function buildV51SharedPipelineShadow(d, symbol, entry) {
+  const barId = d.v51Evidence && d.v51Evidence.confirmedBars && d.v51Evidence.confirmedBars.setup
+    ? d.v51Evidence.confirmedBars.setup.barId : null;
+
+  const shadowD = v51BuildConfirmedShadowD(d);
+  if (!shadowD) {
+    return {
+      symbol, timeframe: d.tf, rulesetVersion: V51_RULESET_VERSION,
+      status: 'unavailable', reason: 'CONFIRMED_RAW_VALUES_UNAVAILABLE',
+      confirmedBarId: barId, legacyBarContext: 'live/forming (unchanged)',
+      fieldsDifferent: [], differenceReasonCodes: [],
+    };
+  }
+
+  // Run the real, unmodified pipeline against the shadow — same call order
+  // calcPair() itself uses.
+  shadowD.states = computeStates(shadowD);
+  shadowD.regime = classifyRegime(shadowD.states);
+  shadowD.evaluation = evaluateSetup(shadowD);
+  shadowD.evidence = buildEvidence(shadowD, entry);
+  const shadowRawEval = _shadowEvaluate(shadowD.evidence);
+  const shadowAuthClass = (typeof buildAuthoritativeClassification === 'function')
+    ? buildAuthoritativeClassification(shadowD, shadowRawEval) : null;
+  shadowD.authoritativeClassification = shadowAuthClass;
+  let shadowAdvisory = null;
+  try { shadowAdvisory = buildAdvisory(shadowD, { openTrade: null }); } catch (e) { shadowAdvisory = null; }
+  let shadowTechSummary = null;
+  try { shadowTechSummary = buildTechnicalSummaryHtml(shadowD); } catch (e) { shadowTechSummary = null; }
+  let legacyTechSummary = null;
+  try { legacyTechSummary = buildTechnicalSummaryHtml(d); } catch (e) { legacyTechSummary = null; }
+  let shadowSortKey = null, legacySortKey = null;
+  try {
+    if (typeof buildAuthoritativeSortKey === 'function' && typeof _resolveAuthoritativeSortContext === 'function') {
+      const ctx = _resolveAuthoritativeSortContext(symbol, (typeof journal !== 'undefined') ? journal : []);
+      legacySortKey = buildAuthoritativeSortKey(d, ctx);
+      shadowSortKey = buildAuthoritativeSortKey(shadowD, ctx);
+    }
+  } catch (e) { shadowSortKey = null; legacySortKey = null; }
+
+  // ── Field-by-field diff with reason codes ──────────────────────────────
+  const fieldsDifferent = [];
+  const differenceReasonCodes = [];
+  function cmp(label, legacyVal, confirmedVal, reasonCode) {
+    const a = JSON.stringify(legacyVal === undefined ? null : legacyVal);
+    const b = JSON.stringify(confirmedVal === undefined ? null : confirmedVal);
+    if (a !== b) { fieldsDifferent.push(label); differenceReasonCodes.push(reasonCode); }
+  }
+
+  cmp('regime.direction', d.regime && d.regime.direction, shadowD.regime && shadowD.regime.direction, 'REGIME_DIRECTION_DIFFERS');
+  cmp('regime.key', d.regime && d.regime.key, shadowD.regime && shadowD.regime.key, 'REGIME_KEY_DIFFERS');
+  cmp('states.crossLong', d.states && d.states.crossLong, shadowD.states && shadowD.states.crossLong, 'TEMA_CROSS_DIFFERS');
+  cmp('states.adxTrending', d.states && d.states.adxTrending, shadowD.states && shadowD.states.adxTrending, 'ADX_TRENDING_DIFFERS');
+  cmp('evaluation.actionBias', d.evaluation && d.evaluation.actionBias, shadowD.evaluation && shadowD.evaluation.actionBias, 'EVALUATION_ACTION_BIAS_DIFFERS');
+  cmp('evaluation.tradeBias', d.evaluation && d.evaluation.tradeBias, shadowD.evaluation && shadowD.evaluation.tradeBias, 'EVALUATION_TRADE_BIAS_DIFFERS');
+  let legacyAdvisory = null;
+  try { legacyAdvisory = buildAdvisory(d, { openTrade: null }); } catch (e) { legacyAdvisory = null; }
+  cmp('advisory.action', legacyAdvisory && legacyAdvisory.action, shadowAdvisory && shadowAdvisory.action, 'ADVISORY_ACTION_DIFFERS');
+  cmp('tradeReady', d.authoritativeClassification && d.authoritativeClassification.tradeReady, shadowAuthClass && shadowAuthClass.tradeReady, 'TRADE_READY_DIFFERS');
+  cmp('highConviction', d.authoritativeClassification && d.authoritativeClassification.highConviction, shadowAuthClass && shadowAuthClass.highConviction, 'HIGH_CONVICTION_DIFFERS');
+  cmp('sortBucket', legacySortKey && legacySortKey.bucket, shadowSortKey && shadowSortKey.bucket, 'SORT_BUCKET_DIFFERS');
+  cmp('technicalSummaryHtml', legacyTechSummary, shadowTechSummary, 'TECHNICAL_SUMMARY_TEXT_DIFFERS');
+
+  return {
+    symbol, timeframe: d.tf, rulesetVersion: V51_RULESET_VERSION,
+    status: 'compared',
+    confirmedBarId: barId,
+    legacyBarContext: 'live/forming (intrabar price + forming candle indicator values)',
+    legacyDirection: d.signal, confirmedDirection: shadowD.signal,
+    legacyTemaState: { crossLong: d.states && d.states.crossLong, temaWidening: d.states && d.states.temaWidening },
+    confirmedTemaState: { crossLong: shadowD.states && shadowD.states.crossLong, temaWidening: shadowD.states && shadowD.states.temaWidening },
+    legacyAdx: d.adx, confirmedAdx: shadowD.adx,
+    legacyRegime: d.regime && d.regime.key, confirmedRegime: shadowD.regime && shadowD.regime.key,
+    legacyExtension: d.currentBarAtrDistance, confirmedExtension: d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.extension,
+    legacyClassification: d.evaluation && d.evaluation.actionBias,
+    confirmedClassification: shadowD.evaluation && shadowD.evaluation.actionBias,
+    legacyAdvisoryAction: legacyAdvisory && legacyAdvisory.action,
+    confirmedAdvisoryAction: shadowAdvisory && shadowAdvisory.action,
+    legacySortBucket: legacySortKey && legacySortKey.bucket,
+    confirmedSortBucket: shadowSortKey && shadowSortKey.bucket,
+    evidenceSourceAttribution: {
+      strategyEvidence: 'confirmed-closed-bar (this shadow only — production still live)',
+      livePriceFields: 'live/intrabar (unchanged in both legacy and this shadow — price itself is not overridden)',
+    },
+    fieldsDifferent,
+    differenceReasonCodes,
+  };
+}
 
 const ACTIVE_EXCHANGE = 'split'; // Signals: Binance candles | Prices: Bitunix live — see SplitSourceAdapter
 
@@ -14224,6 +14510,26 @@ async function calcPair(symbol,tf){
         evaluationStatus: 'failed',
         error: 'V51_EVALUATION_THREW',
         errorMessage: (_v51Err && _v51Err.message) ? _v51Err.message : String(_v51Err),
+      };
+    }
+  }
+  // TDAS V5.1.0D — Closed-Candle Migration Shadow Audit. Read-only
+  // comparison only — see shadow_block.js header comment / the report for
+  // the full architectural rationale. Gated on DIAG.v51SharedPipelineShadow;
+  // wrapped so a failure here can never affect the live scan result. Reuses
+  // resolveMarketEvidenceEntry(symbol, _result.tf) exactly as the live
+  // buildEvidence() call above already does — same pure resolver, called
+  // fresh, no new lookup pattern introduced.
+  if (DIAG.v51SharedPipelineShadow) {
+    try {
+      _result.v51SharedPipelineShadow = buildV51SharedPipelineShadow(
+        _result, symbol, resolveMarketEvidenceEntry(symbol, _result.tf)
+      );
+    } catch (_v51ShadowErr) {
+      _result.v51SharedPipelineShadow = {
+        symbol, timeframe: _result.tf, rulesetVersion: V51_RULESET_VERSION,
+        status: 'failed', error: 'V51_SHADOW_COMPARISON_THREW',
+        errorMessage: (_v51ShadowErr && _v51ShadowErr.message) ? _v51ShadowErr.message : String(_v51ShadowErr),
       };
     }
   }
