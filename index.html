@@ -2053,7 +2053,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.0E';
+const APP_BUILD = 'V5.1.0F';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -6434,20 +6434,31 @@ function _marketEvidenceMaRelation(above, distPct) {
 //     1H timing side-channel) — also genuinely 1H data, when present.
 // Neither branch ever mislabels non-1H data as 1H, and neither branch
 // falls back to the other when its own genuine source is missing.
-function _oneHTimingEvidenceFromD(d, openTrade) {
+function _oneHTimingEvidenceFromD(d, openTrade, strategicDirection) {
   const isSetupOneH = !!(d && d.tf === '1h');
   const oneHTiming = (d && d._1hTiming) || null;
   const sourceAvailable = isSetupOneH || !!oneHTiming;
 
   const _unknownAdxSlopeT4 = { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false };
 
-  // Intended trade direction: a genuine active open trade's own direction
-  // takes priority; otherwise the scanner card's own resolved signal
-  // (d.signal, already 'long'/'short'/'neutral'). Never inferred from
-  // adjacent-timeframe data.
+  // TDAS V5.1.0F — Shared-Core Activation and 1H Timing Boundary Closure.
+  // `strategicDirection`, when explicitly supplied as 'long'/'short',
+  // replaces the IMPLICIT d.signal fallback specifically — closing the
+  // last known boundary where this function's direction could silently
+  // disagree with the shared-core-selected signal/states/regime/
+  // evaluation. It does NOT override a genuine open trade's own direction:
+  // openTrade.signal is a historical, immutable fact about what direction
+  // the trade was actually opened in, and must keep priority regardless of
+  // how the current strategic re-evaluation reads. Every existing caller
+  // that does NOT pass a third argument (there are many, outside
+  // calcPair()'s own two call sites) is completely unaffected: the
+  // fallback chain below is byte-identical to the pre-V5.1.0F logic when
+  // strategicDirection is omitted.
   const direction = (openTrade && (openTrade.signal === 'long' || openTrade.signal === 'short'))
     ? openTrade.signal
-    : ((d && (d.signal === 'long' || d.signal === 'short')) ? d.signal : 'unknown');
+    : ((strategicDirection === 'long' || strategicDirection === 'short')
+        ? strategicDirection
+        : ((d && (d.signal === 'long' || d.signal === 'short')) ? d.signal : 'unknown'));
 
   let rsiValue = null, adxValue = null, adxSlopeObj = _unknownAdxSlopeT4, temaState = 'unknown';
   if (isSetupOneH) {
@@ -6488,7 +6499,7 @@ function _oneHTimingEvidenceFromD(d, openTrade) {
   };
 }
 
-function _marketEvidenceComponents(d, openTrade) {
+function _marketEvidenceComponents(d, openTrade, strategicDirection) {
   const st = (d && d.states) || {};
 
   // TEMA structure: direction (crossLong/crossShort) kept strictly
@@ -6598,7 +6609,7 @@ function _marketEvidenceComponents(d, openTrade) {
   // dependent trendSMA/aboveTrendSMA concept, and T4's already-resolved
   // oneHTimingEvidence). No fabricated 1H evidence, no relabeling of
   // adjacent-timeframe data as 1H.
-  const oneHTimingEvidence = _oneHTimingEvidenceFromD(d, openTrade);
+  const oneHTimingEvidence = _oneHTimingEvidenceFromD(d, openTrade, strategicDirection);
   const direction = oneHTimingEvidence.direction; // same intended-direction resolution T4 already performs
 
   function _utLabelFromSignal(sig) {
@@ -6702,7 +6713,7 @@ function _marketEvidenceComponents(d, openTrade) {
   };
 }
 
-function buildEvidence(d, entry) {
+function buildEvidence(d, entry, strategicDirection) {
   const SAFE_DEFAULT = {
     direction: 'neutral', alignment: 'none', alignmentDissent: null,
     htfContext: 'unknown', marketContext: 'unknown',
@@ -6807,7 +6818,7 @@ function buildEvidence(d, entry) {
       // TDAS V4.8 Evidence Transparency Fix — additive only, see
       // _marketEvidenceComponents()'s own header comment. None of the
       // fields above are changed by this addition.
-      components: _marketEvidenceComponents(d, openTrade),
+      components: _marketEvidenceComponents(d, openTrade, strategicDirection),
     };
   } catch (err) {
     if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) {
@@ -11903,8 +11914,10 @@ function v51StructuralThesis(input) {
 }
 
 // ── Route determination contract ────────────────────────────────────────────
-// Pure, shadow-only. Reuses _oneHTimingEvidenceFromD() UNCHANGED — the exact
-// existing function that already assembles genuine 1H UT/ADX/TEMA/RSI
+// Pure, shadow-only. Reuses _oneHTimingEvidenceFromD() — additively
+// extended in V5.1.0F with an explicit strategicDirection parameter (see
+// that function's own header comment), but otherwise the exact existing
+// function that already assembles genuine 1H UT/ADX/TEMA/RSI
 // execution-layer evidence for a 4H setup when d._1hTiming is populated
 // (Watch/Trade-owned symbols), and honestly reports sourceAvailable:false
 // otherwise (ordinary Scanner-only 4H symbols with no Watch/Trade — see the
@@ -12432,7 +12445,7 @@ function buildV51Diagnostic(d) {
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
 DIAG.v51SharedPipelineShadow = true; // TDAS V5.1.0D — read-only comparison only. Computes _result.v51SharedPipelineShadow; never read by any classification, presentation, sorting, or persistence path. Rollback: set to false to stop computing it entirely — every existing field is completely unaffected either way, in both states.
-DIAG.v51SharedCoreLive = false; // TDAS V5.1.0E — Shared-Core Closed-Candle Authority. When true, the single atomic-select point in calcPair() (search "ATOMIC SELECT") assigns _result.states/.regime/.evaluation/.evidence/.shadowEvaluation/.shadowComparison/.authoritativeClassification/.score/.signal from the confirmed-bar bundle instead of the legacy live-candle bundle — every downstream consumer (buildAdvisory, buildTechnicalSummaryHtml, buildAuthoritativeSortKey, classifyLifecycle, every renderer) is unmodified and inherits the switch automatically, INCLUDING signal itself (audited exhaustively across every d.signal consumer — see the report — and corrected from this build's own earlier draft, which left signal live and was rejected as internally inconsistent). Defaults false: the legacy strategic path remains the shipped behaviour until this is explicitly authorised. Rollback: set back to false — the legacy bundle is always fully computed regardless of this flag's value, so no other change, cache clear, or data migration is required. _result.liveSignal is a separate, always-live field (never switched, in either flag state) preserving the original forming-candle direction for the one genuine remaining live consumer (_oneHTimingEvidenceFromD()'s existing, unmodified direction fallback, which runs earlier in calcPair() regardless of this flag).
+DIAG.v51SharedCoreLive = true; // TDAS V5.1.0F — Shared-Core Activation and 1H Timing Boundary Closure. PRODUCTION ACTIVATION: the single atomic-select point in calcPair() (search "ATOMIC SELECT") now assigns _result.states/.regime/.evaluation/.evidence/.shadowEvaluation/.shadowComparison/.authoritativeClassification/.score/.signal from the confirmed-bar bundle instead of the legacy live-candle bundle by default — every downstream consumer (buildAdvisory, buildTechnicalSummaryHtml, buildAuthoritativeSortKey, classifyLifecycle, every renderer) is unmodified and inherits the switch automatically, including signal itself. The one remaining pre-switch boundary (_oneHTimingEvidenceFromD()'s direction input) is closed in this build too — see that function's own header comment and _v51EarlyStrategicDirection above. _result.liveSignal remains a separate, always-live field in both flag states, preserving the original forming-candle direction. Rollback: set back to false — the legacy bundle is always fully computed regardless of this flag's value, so no other change, cache clear, or data migration is required; every prior build's legacy path, confirmed path, and shadow comparator remain fully intact.
 
 // ── Confirmed-bar shadow `d` construction ───────────────────────────────────
 // Pure. Returns a NEW object — never mutates the real `d`/`confirmedD`
@@ -14514,10 +14527,11 @@ async function calcPair(symbol,tf){
   // ║  here is sufficient for all of them, with no renderer rewrite.       ║
   // ║  _result.liveSignal (assigned unconditionally, always, at _result's  ║
   // ║  own construction — see above) preserves the true live/forming-      ║
-  // ║  candle direction, for the one genuine remaining live consumer:      ║
-  // ║  _oneHTimingEvidenceFromD()'s existing, unmodified direction         ║
-  // ║  fallback, which runs earlier in this function regardless of this    ║
-  // ║  flag and is out of scope to touch. target2/stop15/structStop/       ║
+  // ║  candle direction. TDAS V5.1.0F closes the one remaining pre-switch  ║
+  // ║  boundary: _oneHTimingEvidenceFromD()'s direction input is now       ║
+  // ║  explicit (_v51EarlyStrategicDirection below, and the per-bundle     ║
+  // ║  d.signal for the buildEvidence()-embedded call) rather than an      ║
+  // ║  implicit live read. target2/stop15/structStop/                      ║
   // ║  structR/displayR/fib1618/fib2618/fibRetrace618 remain unaffected —  ║
   // ║  they are computed earlier in this function, upstream of this        ║
   // ║  block, from the original live `signal` local, and this switch does ║
@@ -14541,9 +14555,39 @@ async function calcPair(symbol,tf){
   // states/regime/evaluation (it takes an explicit ctx of raw calcPair
   // locals, never d.states/.regime/.evaluation) — this is a pure reorder,
   // verified byte-equivalent by a dedicated regression test.
+  //
+  // TDAS V5.1.0F — closes the one remaining pre-switch direction boundary.
+  // _oneHTimingEvidenceFromD() is called here, for v51Evidence's own
+  // oneHExecution field, BEFORE the confirmed bundle exists (it's needed
+  // to help BUILD v51Evidence, which the confirmed bundle itself depends
+  // on — a genuine ordering constraint, not an oversight). Rather than let
+  // this one call silently read the live `signal` regardless of the flag,
+  // a cheap, early confirmed-direction estimate is computed here — reusing
+  // v51ConfirmedIndicators() (no new fetch, same function Phase 1 already
+  // uses) plus the same crossLong/aboveMA derivation
+  // v51BuildConfirmedShadowD() uses internally — and passed explicitly.
+  // When the flag is off, or the estimate can't be computed, this falls
+  // back to the legacy live `signal`, exactly as before.
+  let _v51EarlyStrategicDirection = (signal === 'long' || signal === 'short') ? signal : 'unknown';
+  if (DIAG.v51SharedCoreLive) {
+    try {
+      const _v51EarlyIndicators = v51ConfirmedIndicators(closedHighs, closedLows, closedCloses);
+      if (_v51EarlyIndicators.complete) {
+        const _v51EarlyCrossLong = _v51EarlyIndicators.t17 > _v51EarlyIndicators.t92;
+        const _v51EarlyCrossShort = _v51EarlyIndicators.t17 < _v51EarlyIndicators.t92;
+        const _v51EarlyAboveMA = _v51EarlyIndicators.lastClosedPrice > _v51EarlyIndicators.ma200;
+        if (_v51EarlyCrossLong && _v51EarlyAboveMA) _v51EarlyStrategicDirection = 'long';
+        else if (_v51EarlyCrossShort && !_v51EarlyAboveMA) _v51EarlyStrategicDirection = 'short';
+        else _v51EarlyStrategicDirection = 'neutral';
+      }
+    } catch (_v51EarlyErr) {
+      // Keep the legacy fallback already assigned above — never throws out
+      // of this block, never affects the live scan result.
+    }
+  }
   if (DIAG.v51FoundationsLive) {
     try {
-      const _v51OneHTiming = (typeof _oneHTimingEvidenceFromD === 'function') ? _oneHTimingEvidenceFromD(_result, null) : null;
+      const _v51OneHTiming = (typeof _oneHTimingEvidenceFromD === 'function') ? _oneHTimingEvidenceFromD(_result, null, _v51EarlyStrategicDirection) : null;
       _result.v51Evidence = buildV51Evidence({
         symbol, tf, htf, direction: (signal === 'long' || signal === 'short') ? signal : 'unknown',
         closedHighs, closedLows, closedCloses, closedCandlesNormal,
@@ -14571,7 +14615,7 @@ async function calcPair(symbol,tf){
   _result.regime = classifyRegime(_result.states);
   _result.evaluation = evaluateSetup(_result);
   const _v51LegacyEntry = resolveMarketEvidenceEntry(symbol, _result.tf);
-  _result.evidence = buildEvidence(_result, _v51LegacyEntry);
+  _result.evidence = buildEvidence(_result, _v51LegacyEntry, _result.signal);
   _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
   if (typeof _refreshShadowFromCurrentEvidence === 'function') {
     _refreshShadowFromCurrentEvidence(_result, { symbol });
@@ -14599,7 +14643,7 @@ async function calcPair(symbol,tf){
         _v51ConfirmedD.states = computeStates(_v51ConfirmedD);
         _v51ConfirmedD.regime = classifyRegime(_v51ConfirmedD.states);
         _v51ConfirmedD.evaluation = evaluateSetup(_v51ConfirmedD);
-        _v51ConfirmedD.evidence = buildEvidence(_v51ConfirmedD, _v51LegacyEntry);
+        _v51ConfirmedD.evidence = buildEvidence(_v51ConfirmedD, _v51LegacyEntry, _v51ConfirmedD.signal);
         if (typeof _refreshShadowFromCurrentEvidence === 'function') {
           _refreshShadowFromCurrentEvidence(_v51ConfirmedD, { symbol });
         }
@@ -14646,11 +14690,11 @@ async function calcPair(symbol,tf){
     // colour silently disagree with the Advisory verdict shown right next
     // to them. _result.liveSignal (set unconditionally above, before this
     // switch, regardless of the flag) preserves access to the original
-    // live/forming-candle direction for the one confirmed genuine
-    // consumer of it — _oneHTimingEvidenceFromD()'s existing, unmodified,
-    // out-of-scope-to-touch direction fallback — which already runs
-    // earlier in this function, before this switch, and is unaffected by
-    // it either way.
+    // live/forming-candle direction, available to any consumer that
+    // genuinely needs it. TDAS V5.1.0F: _oneHTimingEvidenceFromD()'s own
+    // direction input — the one remaining pre-switch boundary identified
+    // in V5.1.0E — is now explicit rather than an implicit live read; see
+    // _v51EarlyStrategicDirection and that function's own header comment.
     _result.signal = _v51ConfirmedBundle.signal;
     _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
   }
