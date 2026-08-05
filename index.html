@@ -2053,7 +2053,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.0D';
+const APP_BUILD = 'V5.1.0E';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -12346,6 +12346,20 @@ function buildV51Evidence(ctx) {
         adxPrev: adxState.complete ? adxState.prevValue : null,
         lastClosedPrice: confirmedIndicators.lastClosedPrice,
         prevClosedPrice: closedCloses.length >= 2 ? closedCloses[closedCloses.length - 2] : null,
+        // TDAS V5.1.0E — closed-volume pair for the confirmed score's
+        // Volume-ok component. Deliberate, documented semantic shift from
+        // the legacy component (which compares the still-accumulating
+        // forming candle's volume against a 20-bar average that itself
+        // includes that same forming candle): this compares the LAST
+        // CLOSED candle's volume against a 20-bar average of closed
+        // candles ending at that same last closed candle — the same
+        // "last bar vs. its own trailing average" shape, shifted one bar
+        // to be fully closed. Uses the existing avgVol() helper, unchanged.
+        closedVolLast: (function () {
+          const vols = closedCandlesNormal.map(function (c) { return c.volume; });
+          return vols.length ? vols[vols.length - 1] : null;
+        })(),
+        closedVolAvg20: avgVol(closedCandlesNormal.map(function (c) { return c.volume; }), 20),
       } : { complete: false },
     },
     warnings: [],
@@ -12418,6 +12432,7 @@ function buildV51Diagnostic(d) {
 // ╚══════════════════════════════════════════════════════════════════════════╝
 
 DIAG.v51SharedPipelineShadow = true; // TDAS V5.1.0D — read-only comparison only. Computes _result.v51SharedPipelineShadow; never read by any classification, presentation, sorting, or persistence path. Rollback: set to false to stop computing it entirely — every existing field is completely unaffected either way, in both states.
+DIAG.v51SharedCoreLive = false; // TDAS V5.1.0E — Shared-Core Closed-Candle Authority. When true, the single atomic-select point in calcPair() (search "ATOMIC SELECT") assigns _result.states/.regime/.evaluation/.evidence/.shadowEvaluation/.shadowComparison/.authoritativeClassification/.score/.signal from the confirmed-bar bundle instead of the legacy live-candle bundle — every downstream consumer (buildAdvisory, buildTechnicalSummaryHtml, buildAuthoritativeSortKey, classifyLifecycle, every renderer) is unmodified and inherits the switch automatically, INCLUDING signal itself (audited exhaustively across every d.signal consumer — see the report — and corrected from this build's own earlier draft, which left signal live and was rejected as internally inconsistent). Defaults false: the legacy strategic path remains the shipped behaviour until this is explicitly authorised. Rollback: set back to false — the legacy bundle is always fully computed regardless of this flag's value, so no other change, cache clear, or data migration is required. _result.liveSignal is a separate, always-live field (never switched, in either flag state) preserving the original forming-candle direction for the one genuine remaining live consumer (_oneHTimingEvidenceFromD()'s existing, unmodified direction fallback, which runs earlier in calcPair() regardless of this flag).
 
 // ── Confirmed-bar shadow `d` construction ───────────────────────────────────
 // Pure. Returns a NEW object — never mutates the real `d`/`confirmedD`
@@ -12433,6 +12448,32 @@ DIAG.v51SharedPipelineShadow = true; // TDAS V5.1.0D — read-only comparison on
 // that ever changed. `signal` itself is also left untouched here — see
 // buildV51SharedPipelineShadow()'s own header comment for why it is
 // recomputed by the caller instead of overridden in this function.
+// ── Confirmed score — same 7-component additive-with-cap formula as the
+// production score (calcPair() lines ~14291-14302: TEMA sep up to 40, RSI
+// ok +20, Volume ok +15, HTF alignment +25, UT confirm +15, ADX trending
+// +10, High liquidity +5; final Math.min(Math.round(raw),100)). NOT a
+// normalisation of a 130-point raw sum to 100 — reproduces the exact same
+// additive-then-cap shape, byte-for-byte, so two setups that would score
+// 100 under the legacy formula for different reasons still score 100 here
+// for the analogous reasons. temaSepConfirmed is passed in rather than
+// re-read off `shadow` to avoid relying on assignment order within the
+// caller. highLiquidity is read from `shadow` — inherited unchanged from
+// `d` by the caller (session/time-of-day only, not candle-derived).
+function v51ConfirmedScore(shadow, temaSepConfirmed) {
+  if (shadow.signal === 'neutral' || shadow.signal == null) return 0;
+  let score = 0;
+  score += Math.min((temaSepConfirmed || 0) * 20, 40);
+  if (shadow.signal === 'long' && shadow.rsiOk_long) score += 20;
+  if (shadow.signal === 'short' && shadow.rsiOk_short) score += 20;
+  if (shadow.volOk) score += 15;
+  if (shadow.htfAlign === 'aligned') score += 25;
+  if (shadow.signal === 'long' && shadow.utLongConfirm) score += 15;
+  if (shadow.signal === 'short' && shadow.utShortConfirm) score += 15;
+  if (shadow.adxTrending) score += 10;
+  if (shadow.highLiquidity) score += 5;
+  return Math.min(Math.round(score), 100);
+}
+
 function v51BuildConfirmedShadowD(d) {
   const ev = d && d.v51Evidence;
   const raw = ev && ev.evidence && ev.evidence.raw;
@@ -12473,6 +12514,28 @@ function v51BuildConfirmedShadowD(d) {
   // crossover. Kept local to this shadow, never written back to `d`.
   shadow.signal = crossLong === true && aboveMA === true ? 'long'
     : crossShort === true && aboveMA === false ? 'short' : 'neutral';
+  // TDAS V5.1.0E — confirmed score. htfAlign/utLongConfirm/utShortConfirm/
+  // highLiquidity are inherited unchanged from `d` above (already
+  // confirmed-bar for the first three; not candle-derived at all for the
+  // fourth) — only htfAlign's comparison against direction needs
+  // recomputing here, against the confirmed `shadow.signal` rather than
+  // the live `d.signal` it would otherwise still reflect.
+  const htfLongConfirmed = d.htfLong, htfShortConfirmed = d.htfShort;
+  let htfAlignConfirmed = 'neutral';
+  if (d.htfAlign === 'insufficient') {
+    htfAlignConfirmed = 'insufficient';
+  } else {
+    if (shadow.signal === 'long' && htfLongConfirmed === true) htfAlignConfirmed = 'aligned';
+    if (shadow.signal === 'short' && htfShortConfirmed === true) htfAlignConfirmed = 'aligned';
+    if (shadow.signal === 'long' && htfShortConfirmed === true) htfAlignConfirmed = 'conflict';
+    if (shadow.signal === 'short' && htfLongConfirmed === true) htfAlignConfirmed = 'conflict';
+  }
+  shadow.htfAlign = htfAlignConfirmed;
+  const confirmedVolRatio = (raw.closedVolAvg20 != null && raw.closedVolAvg20 > 0 && raw.closedVolLast != null)
+    ? raw.closedVolLast / raw.closedVolAvg20 : null;
+  shadow.volRatio = confirmedVolRatio;
+  shadow.volOk = confirmedVolRatio != null ? confirmedVolRatio >= 0.8 : true;
+  shadow.score = v51ConfirmedScore(shadow, temaSepNow);
   // states/regime/evaluation/evidence/authoritativeClassification are
   // deliberately NOT copied forward from `d` — the caller recomputes them
   // fresh against this shadow object via the real, unmodified functions.
@@ -12563,48 +12626,54 @@ function v51SharedPipelineFieldMap() {
 }
 
 // ── Comparison engine ────────────────────────────────────────────────────
-// Runs the SAME 8 functions, unmodified, once against the real `d` (via its
-// already-attached fields — never recomputed here) and once against a fresh
-// local shadow object. Never mutates `d`. Never mutates the shadow beyond
-// its own local construction. Wrapped by the caller in try/catch.
-function buildV51SharedPipelineShadow(d, symbol, entry) {
-  const barId = d.v51Evidence && d.v51Evidence.confirmedBars && d.v51Evidence.confirmedBars.setup
-    ? d.v51Evidence.confirmedBars.setup.barId : null;
+// TDAS V5.1.0E — signature changed from V5.1.0D: now takes the two EXPLICIT
+// bundles calcPair() already computed (legacy and confirmed), rather than
+// reconstructing "legacy" from a live `d` object and building its own
+// confirmed shadow. This is required once DIAG.v51SharedCoreLive can be
+// true: at that point _result's own fields ARE the confirmed bundle, so
+// re-deriving "legacy" from _result would silently compare the confirmed
+// path against itself. Each bundle is a plain object carrying
+// {states,regime,evaluation,evidence,shadowEvaluation,shadowComparison,
+// authoritativeClassification,score,signal,symbol,adx,currentBarAtrDistance}
+// — exactly what calcPair() already has in hand from computing it, nothing
+// recomputed here. confirmedBundle may be null (confirmed evidence
+// unavailable) — handled explicitly, never fabricated. Still fully pure:
+// builds two small wrapper objects locally, calls buildAdvisory/
+// buildTechnicalSummaryHtml/buildAuthoritativeSortKey unmodified on each,
+// never mutates either input bundle.
+function buildV51SharedPipelineShadow(legacyBundle, confirmedBundle, symbol, tf, v51Evidence) {
+  const barId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.setup
+    ? v51Evidence.confirmedBars.setup.barId : null;
 
-  const shadowD = v51BuildConfirmedShadowD(d);
-  if (!shadowD) {
+  if (!confirmedBundle) {
     return {
-      symbol, timeframe: d.tf, rulesetVersion: V51_RULESET_VERSION,
+      symbol, timeframe: tf, rulesetVersion: V51_RULESET_VERSION,
       status: 'unavailable', reason: 'CONFIRMED_RAW_VALUES_UNAVAILABLE',
       confirmedBarId: barId, legacyBarContext: 'live/forming (unchanged)',
       fieldsDifferent: [], differenceReasonCodes: [],
     };
   }
 
-  // Run the real, unmodified pipeline against the shadow — same call order
-  // calcPair() itself uses.
-  shadowD.states = computeStates(shadowD);
-  shadowD.regime = classifyRegime(shadowD.states);
-  shadowD.evaluation = evaluateSetup(shadowD);
-  shadowD.evidence = buildEvidence(shadowD, entry);
-  const shadowRawEval = _shadowEvaluate(shadowD.evidence);
-  const shadowAuthClass = (typeof buildAuthoritativeClassification === 'function')
-    ? buildAuthoritativeClassification(shadowD, shadowRawEval) : null;
-  shadowD.authoritativeClassification = shadowAuthClass;
-  let shadowAdvisory = null;
-  try { shadowAdvisory = buildAdvisory(shadowD, { openTrade: null }); } catch (e) { shadowAdvisory = null; }
-  let shadowTechSummary = null;
-  try { shadowTechSummary = buildTechnicalSummaryHtml(shadowD); } catch (e) { shadowTechSummary = null; }
-  let legacyTechSummary = null;
-  try { legacyTechSummary = buildTechnicalSummaryHtml(d); } catch (e) { legacyTechSummary = null; }
-  let shadowSortKey = null, legacySortKey = null;
+  // Minimal d-shaped wrappers — exactly the fields buildAdvisory()/
+  // buildTechnicalSummaryHtml()/buildAuthoritativeSortKey() actually read
+  // (per v51SharedPipelineFieldMap()), nothing more.
+  const legacyD = { states: legacyBundle.states, regime: legacyBundle.regime, evaluation: legacyBundle.evaluation, evidence: legacyBundle.evidence, authoritativeClassification: legacyBundle.authoritativeClassification, signal: legacyBundle.signal, symbol, tf };
+  const confirmedD = { states: confirmedBundle.states, regime: confirmedBundle.regime, evaluation: confirmedBundle.evaluation, evidence: confirmedBundle.evidence, authoritativeClassification: confirmedBundle.authoritativeClassification, signal: confirmedBundle.signal, symbol, tf };
+
+  let legacyAdvisory = null, confirmedAdvisory = null;
+  try { legacyAdvisory = buildAdvisory(legacyD, { openTrade: null }); } catch (e) { legacyAdvisory = null; }
+  try { confirmedAdvisory = buildAdvisory(confirmedD, { openTrade: null }); } catch (e) { confirmedAdvisory = null; }
+  let legacyTechSummary = null, confirmedTechSummary = null;
+  try { legacyTechSummary = buildTechnicalSummaryHtml(legacyD); } catch (e) { legacyTechSummary = null; }
+  try { confirmedTechSummary = buildTechnicalSummaryHtml(confirmedD); } catch (e) { confirmedTechSummary = null; }
+  let legacySortKey = null, confirmedSortKey = null;
   try {
     if (typeof buildAuthoritativeSortKey === 'function' && typeof _resolveAuthoritativeSortContext === 'function') {
       const ctx = _resolveAuthoritativeSortContext(symbol, (typeof journal !== 'undefined') ? journal : []);
-      legacySortKey = buildAuthoritativeSortKey(d, ctx);
-      shadowSortKey = buildAuthoritativeSortKey(shadowD, ctx);
+      legacySortKey = buildAuthoritativeSortKey(legacyD, ctx);
+      confirmedSortKey = buildAuthoritativeSortKey(confirmedD, ctx);
     }
-  } catch (e) { shadowSortKey = null; legacySortKey = null; }
+  } catch (e) { legacySortKey = null; confirmedSortKey = null; }
 
   // ── Field-by-field diff with reason codes ──────────────────────────────
   const fieldsDifferent = [];
@@ -12615,40 +12684,40 @@ function buildV51SharedPipelineShadow(d, symbol, entry) {
     if (a !== b) { fieldsDifferent.push(label); differenceReasonCodes.push(reasonCode); }
   }
 
-  cmp('regime.direction', d.regime && d.regime.direction, shadowD.regime && shadowD.regime.direction, 'REGIME_DIRECTION_DIFFERS');
-  cmp('regime.key', d.regime && d.regime.key, shadowD.regime && shadowD.regime.key, 'REGIME_KEY_DIFFERS');
-  cmp('states.crossLong', d.states && d.states.crossLong, shadowD.states && shadowD.states.crossLong, 'TEMA_CROSS_DIFFERS');
-  cmp('states.adxTrending', d.states && d.states.adxTrending, shadowD.states && shadowD.states.adxTrending, 'ADX_TRENDING_DIFFERS');
-  cmp('evaluation.actionBias', d.evaluation && d.evaluation.actionBias, shadowD.evaluation && shadowD.evaluation.actionBias, 'EVALUATION_ACTION_BIAS_DIFFERS');
-  cmp('evaluation.tradeBias', d.evaluation && d.evaluation.tradeBias, shadowD.evaluation && shadowD.evaluation.tradeBias, 'EVALUATION_TRADE_BIAS_DIFFERS');
-  let legacyAdvisory = null;
-  try { legacyAdvisory = buildAdvisory(d, { openTrade: null }); } catch (e) { legacyAdvisory = null; }
-  cmp('advisory.action', legacyAdvisory && legacyAdvisory.action, shadowAdvisory && shadowAdvisory.action, 'ADVISORY_ACTION_DIFFERS');
-  cmp('tradeReady', d.authoritativeClassification && d.authoritativeClassification.tradeReady, shadowAuthClass && shadowAuthClass.tradeReady, 'TRADE_READY_DIFFERS');
-  cmp('highConviction', d.authoritativeClassification && d.authoritativeClassification.highConviction, shadowAuthClass && shadowAuthClass.highConviction, 'HIGH_CONVICTION_DIFFERS');
-  cmp('sortBucket', legacySortKey && legacySortKey.bucket, shadowSortKey && shadowSortKey.bucket, 'SORT_BUCKET_DIFFERS');
-  cmp('technicalSummaryHtml', legacyTechSummary, shadowTechSummary, 'TECHNICAL_SUMMARY_TEXT_DIFFERS');
+  cmp('regime.direction', legacyBundle.regime && legacyBundle.regime.direction, confirmedBundle.regime && confirmedBundle.regime.direction, 'REGIME_DIRECTION_DIFFERS');
+  cmp('regime.key', legacyBundle.regime && legacyBundle.regime.key, confirmedBundle.regime && confirmedBundle.regime.key, 'REGIME_KEY_DIFFERS');
+  cmp('states.crossLong', legacyBundle.states && legacyBundle.states.crossLong, confirmedBundle.states && confirmedBundle.states.crossLong, 'TEMA_CROSS_DIFFERS');
+  cmp('states.adxTrending', legacyBundle.states && legacyBundle.states.adxTrending, confirmedBundle.states && confirmedBundle.states.adxTrending, 'ADX_TRENDING_DIFFERS');
+  cmp('evaluation.actionBias', legacyBundle.evaluation && legacyBundle.evaluation.actionBias, confirmedBundle.evaluation && confirmedBundle.evaluation.actionBias, 'EVALUATION_ACTION_BIAS_DIFFERS');
+  cmp('evaluation.tradeBias', legacyBundle.evaluation && legacyBundle.evaluation.tradeBias, confirmedBundle.evaluation && confirmedBundle.evaluation.tradeBias, 'EVALUATION_TRADE_BIAS_DIFFERS');
+  cmp('advisory.action', legacyAdvisory && legacyAdvisory.action, confirmedAdvisory && confirmedAdvisory.action, 'ADVISORY_ACTION_DIFFERS');
+  cmp('tradeReady', legacyBundle.authoritativeClassification && legacyBundle.authoritativeClassification.tradeReady, confirmedBundle.authoritativeClassification && confirmedBundle.authoritativeClassification.tradeReady, 'TRADE_READY_DIFFERS');
+  cmp('highConviction', legacyBundle.authoritativeClassification && legacyBundle.authoritativeClassification.highConviction, confirmedBundle.authoritativeClassification && confirmedBundle.authoritativeClassification.highConviction, 'HIGH_CONVICTION_DIFFERS');
+  cmp('sortBucket', legacySortKey && legacySortKey.bucket, confirmedSortKey && confirmedSortKey.bucket, 'SORT_BUCKET_DIFFERS');
+  cmp('technicalSummaryHtml', legacyTechSummary, confirmedTechSummary, 'TECHNICAL_SUMMARY_TEXT_DIFFERS');
+  cmp('score', legacyBundle.score, confirmedBundle.score, 'SCORE_DIFFERS');
 
   return {
-    symbol, timeframe: d.tf, rulesetVersion: V51_RULESET_VERSION,
+    symbol, timeframe: tf, rulesetVersion: V51_RULESET_VERSION,
     status: 'compared',
     confirmedBarId: barId,
     legacyBarContext: 'live/forming (intrabar price + forming candle indicator values)',
-    legacyDirection: d.signal, confirmedDirection: shadowD.signal,
-    legacyTemaState: { crossLong: d.states && d.states.crossLong, temaWidening: d.states && d.states.temaWidening },
-    confirmedTemaState: { crossLong: shadowD.states && shadowD.states.crossLong, temaWidening: shadowD.states && shadowD.states.temaWidening },
-    legacyAdx: d.adx, confirmedAdx: shadowD.adx,
-    legacyRegime: d.regime && d.regime.key, confirmedRegime: shadowD.regime && shadowD.regime.key,
-    legacyExtension: d.currentBarAtrDistance, confirmedExtension: d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.extension,
-    legacyClassification: d.evaluation && d.evaluation.actionBias,
-    confirmedClassification: shadowD.evaluation && shadowD.evaluation.actionBias,
+    legacyDirection: legacyBundle.signal, confirmedDirection: confirmedBundle.signal,
+    legacyTemaState: { crossLong: legacyBundle.states && legacyBundle.states.crossLong, temaWidening: legacyBundle.states && legacyBundle.states.temaWidening },
+    confirmedTemaState: { crossLong: confirmedBundle.states && confirmedBundle.states.crossLong, temaWidening: confirmedBundle.states && confirmedBundle.states.temaWidening },
+    legacyAdx: legacyBundle.adx, confirmedAdx: confirmedBundle.adx,
+    legacyRegime: legacyBundle.regime && legacyBundle.regime.key, confirmedRegime: confirmedBundle.regime && confirmedBundle.regime.key,
+    legacyExtension: legacyBundle.currentBarAtrDistance, confirmedExtension: v51Evidence && v51Evidence.evidence && v51Evidence.evidence.extension,
+    legacyClassification: legacyBundle.evaluation && legacyBundle.evaluation.actionBias,
+    confirmedClassification: confirmedBundle.evaluation && confirmedBundle.evaluation.actionBias,
+    legacyScore: legacyBundle.score, confirmedScore: confirmedBundle.score,
     legacyAdvisoryAction: legacyAdvisory && legacyAdvisory.action,
-    confirmedAdvisoryAction: shadowAdvisory && shadowAdvisory.action,
+    confirmedAdvisoryAction: confirmedAdvisory && confirmedAdvisory.action,
     legacySortBucket: legacySortKey && legacySortKey.bucket,
-    confirmedSortBucket: shadowSortKey && shadowSortKey.bucket,
+    confirmedSortBucket: confirmedSortKey && confirmedSortKey.bucket,
     evidenceSourceAttribution: {
-      strategyEvidence: 'confirmed-closed-bar (this shadow only — production still live)',
-      livePriceFields: 'live/intrabar (unchanged in both legacy and this shadow — price itself is not overridden)',
+      strategyEvidence: 'confirmed-closed-bar (this comparison always diffs true legacy vs true confirmed, regardless of which one DIAG.v51SharedCoreLive currently selects as authoritative)',
+      livePriceFields: 'live/intrabar (unchanged in both bundles — price itself is never overridden)',
     },
     fieldsDifferent,
     differenceReasonCodes,
@@ -14353,7 +14422,18 @@ async function calcPair(symbol,tf){
     }
 
   }
-  const _result={price,t17,t92,prevT92,ma200,prevMa200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,htfAlign,htf,tf,score,
+  const _result={price,t17,t92,prevT92,ma200,prevMa200,aboveMA,aboveMA_closed,maDist,rsi,atr,volRatio,volOk,signal,
+    // TDAS V5.1.0E — liveSignal is the permanent, always-live snapshot of
+    // the original forming-candle-derived direction, captured here before
+    // _result.signal itself can later be switched to the confirmed
+    // direction under DIAG.v51SharedCoreLive. Exists so any consumer that
+    // genuinely needs the live value (none identified as required in this
+    // build's audit beyond _oneHTimingEvidenceFromD()'s existing, already-
+    // documented, unmodified use of the pre-switch d.signal) has a clearly
+    // named place to read it from, rather than d.signal being overloaded
+    // to mean two different things depending on the flag.
+    liveSignal:signal,
+    htfAlign,htf,tf,score,
     // TDAS V4.9.7 — additive closed-candle execution-extension inputs.
     currentBarAtrDistance,previousBarAtrDistance,
     rsiOk_long,rsiOk_short,temaSep,swingHigh,swingLow,stop15,target2,crossLong,crossShort,
@@ -14371,6 +14451,17 @@ async function calcPair(symbol,tf){
     displayR,
     minsRemaining,secsRemaining,candleClosePct,
     session,sessionColor,highLiquidity,overlap,temaWidening,highConviction,trendSMA,trendSMALabel,aboveTrendSMA,ema50,ema50State,ema50Label,ema50Color,ema50Dist,fib1618,fib2618,fibRetrace618,swingH50,swingL50,
+    // TDAS V5.1.0E — additive exposure of the already-computed htfLong/
+    // htfShort locals (previously calcPair-internal only, used to derive
+    // htfAlign a few lines above but never themselves attached to
+    // _result). Needed so v51BuildConfirmedShadowD() can recompute a
+    // confirmed-bar htfAlign against the confirmed direction without
+    // re-deriving HTF structure — htfLong/htfShort are already confirmed-
+    // bar-correct (computed from hc[], the closed HTF series). Placed here
+    // rather than nearer htfTrendContext specifically to avoid disturbing
+    // the pre-existing trailing literal test_ma200_adjacent_context.js
+    // asserts verbatim (see that literal's own comment below).
+    htfLong,htfShort,
     tradeStage,tradeAgeHours,
     // TDAS V4.9.2 T3 — additive 200MA chop-detection state (setup).
     // Already computed above via _ma200ChopFromCloses(closes) — no
@@ -14391,105 +14482,65 @@ async function calcPair(symbol,tf){
     // re-derivation here.
     htfMa200ChopState,
     htfTrendContext,htfWidening,htfUtBot,htfAbove,htfMaDist};
-  // TDAS Phase 0: attach compute-once state object — all builders read from d.states
-  _result.states = computeStates(_result);
-  // TDAS Phase 1: classify market regime from Phase-0 states — pure, no re-derivation
-  _result.regime = classifyRegime(_result.states);
-  // TDAS Phase 1.5: evaluate setup quality from states + regime — pure, no re-derivation
-  _result.evaluation = evaluateSetup(_result);
-  // TDAS V4.8 Phase B Shadow Fix — _1hTiming carry-forward (root-cause fix
-  // for the MarketEvidence oneHUt "None · 1H" audit).
-  //
-  // Root cause identified: _1hTiming is not part of calcPair()'s own
-  // calculation — see _calc1HTiming()'s own header comment — it's
-  // maintained by a separate engine and stored only on
-  // currentScanData[symbol]._1hTiming (populated by _timingRefresh() for
-  // active watches and _ensureActiveTrade1HTiming()/_ensure1HTimingFor()
-  // for active open trades). Every caller that replaces
-  // currentScanData[symbol] wholesale with a fresh calcPair() result —
-  // runScan()'s regular Scanner cycle, in particular — was silently
-  // discarding any already-computed _1hTiming for that symbol on every
-  // scan tick, because a fresh calcPair() result naturally has no
-  // _1hTiming field of its own. _tdSignalRefresh() already worked around
-  // this manually for its own Trade-Desk-only refresh path (see its own
-  // "must be explicitly carried forward" comment); this preserves the same
-  // value here, inside calcPair() itself, so every caller — including
-  // runScan(), which this fix does not otherwise touch — benefits
-  // automatically without runScan()'s own code needing to change. This is
-  // a plain carry-forward of an already-computed, independently-maintained
-  // value; it does not recalculate UT Bot, fetch additional candles, or
-  // duplicate _calc1HTiming()'s logic in any way.
+  // ╔════════════════════════════════════════════════════════════════════╗
+  // ║  TDAS V5.1.0E — Shared-Core Closed-Candle Authority                 ║
+  // ║                                                                      ║
+  // ║  DOCTRINE: Strategy evidence, classification and advisory state use  ║
+  // ║  confirmed closed candles. Live price, P&L, entry/stop/target        ║
+  // ║  distances, breach checks and execution-management values remain    ║
+  // ║  intrabar overlays.                                                  ║
+  // ║                                                                      ║
+  // ║  This block computes the shared strategic pipeline TWICE — once     ║
+  // ║  against the live/legacy view (_result itself, unchanged from every  ║
+  // ║  prior build) and once against a confirmed-bar shadow view (built by ║
+  // ║  the existing, proven v51BuildConfirmedShadowD()) — using the exact  ║
+  // ║  same unmodified computeStates()/classifyRegime()/evaluateSetup()/   ║
+  // ║  buildEvidence()/_refreshShadowFromCurrentEvidence() functions both  ║
+  // ║  times. DIAG.v51SharedCoreLive then selects, ATOMICALLY, ONCE, which ║
+  // ║  bundle becomes authoritative on _result — every downstream reader   ║
+  // ║  (buildAdvisory, buildTechnicalSummaryHtml, buildAuthoritativeSort-   ║
+  // ║  Key, classifyLifecycle, every renderer) is unmodified and inherits  ║
+  // ║  the switch because they already read only _result.states/.regime/   ║
+  // ║  .evaluation/.evidence/.authoritativeClassification/.signal — never  ║
+  // ║  a per-renderer substitution.                                        ║
+  // ║                                                                      ║
+  // ║  _result.signal SWITCHES too (corrected from this build's own first  ║
+  // ║  draft, which left it live and was rejected as internally            ║
+  // ║  inconsistent — see V5.1.0E_SHARED_CORE_CLOSED_AUTHORITY_REPORT.md). ║
+  // ║  Every one of the ~20 consumers of d.signal audited in that report — ║
+  // ║  renderCard's card-class colour, classifyLifecycle, buildV1Entry's   ║
+  // ║  persisted Journal field, buildDecisionDotsHtml, the Full Analysis   ║
+  // ║  "Signal" row, and others — reads this one field, so switching it    ║
+  // ║  here is sufficient for all of them, with no renderer rewrite.       ║
+  // ║  _result.liveSignal (assigned unconditionally, always, at _result's  ║
+  // ║  own construction — see above) preserves the true live/forming-      ║
+  // ║  candle direction, for the one genuine remaining live consumer:      ║
+  // ║  _oneHTimingEvidenceFromD()'s existing, unmodified direction         ║
+  // ║  fallback, which runs earlier in this function regardless of this    ║
+  // ║  flag and is out of scope to touch. target2/stop15/structStop/       ║
+  // ║  structR/displayR/fib1618/fib2618/fibRetrace618 remain unaffected —  ║
+  // ║  they are computed earlier in this function, upstream of this        ║
+  // ║  block, from the original live `signal` local, and this switch does ║
+  // ║  not retroactively recompute them; they are genuine live/execution   ║
+  // ║  overlays by construction, not by this flag's choice.                ║
+  // ╚════════════════════════════════════════════════════════════════════╝
+
+  // (1) _1hTiming carry-forward — moved earlier than pre-V5.1.0E builds so
+  // it precedes v51Evidence's own use of it. No dependency issue: this is
+  // a plain carry-forward of an independently-maintained value (see the
+  // original TDAS V4.8 Phase B Shadow Fix rationale, unchanged) — it does
+  // not depend on, or get depended on by, anything between here and its
+  // previous position.
   if (typeof currentScanData !== 'undefined' && currentScanData && currentScanData[symbol] && currentScanData[symbol]._1hTiming) {
     _result._1hTiming = currentScanData[symbol]._1hTiming;
   }
-  // TDAS V4.8 Phase B — Phase 1.75: calculate MarketEvidence in parallel.
-  // Additive/diagnostic only — no existing consumer reads d.evidence yet.
-  // Resolved entry passed explicitly; buildEvidence() performs no journal
-  // lookup of its own.
-  //
-  // TDAS V4.8 Phase B Shadow Fix: uses the dedicated
-  // resolveMarketEvidenceEntry(symbol, setupTf) resolver, NOT
-  // resolveJournalEntry(symbol) — a historical completed trade on this
-  // symbol must never surface as MarketEvidence stage:'terminal' for a
-  // fresh setup with no current watch/open trade. _result.tf is the
-  // setup/scan timeframe for this calcPair() call. classifyLifecycle()
-  // below intentionally still uses the full resolveJournalEntry(symbol)
-  // result (including closedEntry) — that is correct, unchanged Lifecycle
-  // behaviour and out of scope for this fix, so the two calls can no
-  // longer share a single resolved entry.
-  _result.evidence = buildEvidence(_result, resolveMarketEvidenceEntry(symbol, _result.tf));
-  // TDAS V4.8 Phase B Shadow Fix (2nd audit) — records which _1hTiming
-  // reference this evidence was built from. calcPair() itself always
-  // rebuilds evidence fresh on every call, so this marker isn't needed
-  // here for correctness — it exists so openAnalysisPanel()'s cached/
-  // conditional late-binding path (which does NOT always rebuild) can
-  // reliably detect staleness relative to a _1hTiming value that changed
-  // via a background driver in between calcPair() calls. See that call
-  // site's own comment for the full root-cause explanation.
-  _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
-  // TDAS V4.10.0B — Authoritative Classification Adapter Foundation.
-  // Attaches _result.authoritativeClassification (per the V4.10.0A audit's
-  // recommended seam) for EVERY calcPair() caller — including
-  // _tdSignalRefresh(), which previously received no shadow diagnostics at
-  // all (see the audit's D-9 finding). Calls the existing, single
-  // authorised _refreshShadowFromCurrentEvidence() helper directly rather
-  // than re-implementing its logic, so _shadowEvaluate() is invoked
-  // exactly once for this evidence build — that one call also produces
-  // _result.shadowEvaluation/_result.shadowComparison (unchanged shape,
-  // just attached here instead of only via runScan()'s later, now-no-op
-  // call to the same helper). rebuildEvidence is intentionally omitted:
-  // evidence was just built on the lines above, so there is nothing to
-  // rebuild here — only the shadow/adapter build step runs.
-  //
-  // TDAS V4.10.0D — Evaluation-Driven Trade Ready Activation. Superseded
-  // the prior "foundation only" note: _result.authoritativeClassification
-  // is now read live by _buildScannerAdvisory()'s tradeReady gate whenever
-  // DIAG.evaluationEngineLive is true (the delivered default as of this
-  // build) and the result is genuinely known — see that function's own
-  // header comment for the exact policy and the mandatory Stage-0/unknown
-  // fallback to the legacy verdict.
-  if (typeof _refreshShadowFromCurrentEvidence === 'function') {
-    _refreshShadowFromCurrentEvidence(_result, { symbol });
-  }
-  // TDAS V5.1.0C — Foundations and Authoritative Contract. Attaches the
-  // parallel confirmed-bar evidence object at the same seam as the existing
-  // authoritative/shadow attachments above, using only locals calcPair()
-  // already computed (no new fetch). Gated entirely on
-  // DIAG.v51FoundationsLive; wrapped so an internal V5.1 failure can never
-  // affect the live scan result — every existing field on _result above
-  // this line is completely unaffected either way.
-  //
-  // The `direction` passed here is the legacy live-price-sensitive `signal`
-  // — buildV51Evidence() uses it ONLY as a label on the early bar-
-  // unavailable failure path; for every other purpose it derives its own
-  // confirmed direction from the closed TEMA cross (see that function's own
-  // header comment). This was a genuine defect caught by the vertical-slice
-  // test: passing `signal` straight through into thesis/route/UT-alignment
-  // logic let the live ticker price silently change confirmed-bar
-  // classification between two scans of the same still-forming candle.
-  // utBot is passed raw (not pre-resolved to aligned/opposing) so that
-  // resolution can happen against the confirmed direction inside
-  // buildV51Evidence() rather than against the legacy signal here.
+
+  // (2) v51Evidence — moved earlier than pre-V5.1.0E builds so it precedes
+  // the confirmed-shadow build below, which requires it. buildV51Evidence()
+  // itself is unchanged and was already proven independent of
+  // states/regime/evaluation (it takes an explicit ctx of raw calcPair
+  // locals, never d.states/.regime/.evaluation) — this is a pure reorder,
+  // verified byte-equivalent by a dedicated regression test.
   if (DIAG.v51FoundationsLive) {
     try {
       const _v51OneHTiming = (typeof _oneHTimingEvidenceFromD === 'function') ? _oneHTimingEvidenceFromD(_result, null) : null;
@@ -14502,9 +14553,6 @@ async function calcPair(symbol,tf){
         openTrade: null,
       });
     } catch (_v51Err) {
-      // Never let a V5.1 evaluation failure affect the live scan result —
-      // report it as an explicit failed evidence object instead of letting
-      // it propagate or silently dropping the field.
       _result.v51Evidence = {
         rulesetVersion: V51_RULESET_VERSION,
         evaluationStatus: 'failed',
@@ -14513,17 +14561,112 @@ async function calcPair(symbol,tf){
       };
     }
   }
-  // TDAS V5.1.0D — Closed-Candle Migration Shadow Audit. Read-only
-  // comparison only — see shadow_block.js header comment / the report for
-  // the full architectural rationale. Gated on DIAG.v51SharedPipelineShadow;
-  // wrapped so a failure here can never affect the live scan result. Reuses
-  // resolveMarketEvidenceEntry(symbol, _result.tf) exactly as the live
-  // buildEvidence() call above already does — same pure resolver, called
-  // fresh, no new lookup pattern introduced.
+
+  // (3) LEGACY strategic bundle — the exact original sequence every prior
+  // build used, byte-identical in logic, now captured into a named bundle
+  // rather than left implicit, so the shadow comparator (6) can be handed
+  // it explicitly instead of reconstructing it from _result's current
+  // (possibly-since-overwritten) fields.
+  _result.states = computeStates(_result);
+  _result.regime = classifyRegime(_result.states);
+  _result.evaluation = evaluateSetup(_result);
+  const _v51LegacyEntry = resolveMarketEvidenceEntry(symbol, _result.tf);
+  _result.evidence = buildEvidence(_result, _v51LegacyEntry);
+  _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
+  if (typeof _refreshShadowFromCurrentEvidence === 'function') {
+    _refreshShadowFromCurrentEvidence(_result, { symbol });
+  }
+  const _v51LegacyBundle = {
+    states: _result.states, regime: _result.regime, evaluation: _result.evaluation,
+    evidence: _result.evidence, shadowEvaluation: _result.shadowEvaluation,
+    shadowComparison: _result.shadowComparison, authoritativeClassification: _result.authoritativeClassification,
+    score: _result.score, signal: _result.signal, symbol,
+    adx: _result.adx, currentBarAtrDistance: _result.currentBarAtrDistance,
+  };
+
+  // (4) CONFIRMED strategic bundle — same functions, unmodified, run
+  // against the confirmed-bar shadow object instead. Computed
+  // unconditionally whenever confirmed evidence is available (independent
+  // of DIAG.v51SharedCoreLive) so the shadow comparator always has a
+  // genuine confirmed bundle to compare against, and so flipping the flag
+  // never has to recompute anything — the atomic switch in (5) is a pure
+  // selection, not a trigger for new work.
+  let _v51ConfirmedBundle = null;
+  if (DIAG.v51FoundationsLive) {
+    try {
+      const _v51ConfirmedD = v51BuildConfirmedShadowD(_result);
+      if (_v51ConfirmedD) {
+        _v51ConfirmedD.states = computeStates(_v51ConfirmedD);
+        _v51ConfirmedD.regime = classifyRegime(_v51ConfirmedD.states);
+        _v51ConfirmedD.evaluation = evaluateSetup(_v51ConfirmedD);
+        _v51ConfirmedD.evidence = buildEvidence(_v51ConfirmedD, _v51LegacyEntry);
+        if (typeof _refreshShadowFromCurrentEvidence === 'function') {
+          _refreshShadowFromCurrentEvidence(_v51ConfirmedD, { symbol });
+        }
+        _v51ConfirmedBundle = {
+          states: _v51ConfirmedD.states, regime: _v51ConfirmedD.regime, evaluation: _v51ConfirmedD.evaluation,
+          evidence: _v51ConfirmedD.evidence, shadowEvaluation: _v51ConfirmedD.shadowEvaluation,
+          shadowComparison: _v51ConfirmedD.shadowComparison, authoritativeClassification: _v51ConfirmedD.authoritativeClassification,
+          score: _v51ConfirmedD.score, signal: _v51ConfirmedD.signal, symbol,
+          adx: _v51ConfirmedD.adx, currentBarAtrDistance: null,
+        };
+      }
+    } catch (_v51CoreErr) {
+      _v51ConfirmedBundle = null; // fail closed — never switch on a broken confirmed build
+    }
+  }
+
+  // (5) ATOMIC SELECT — the single point the shared strategic result is
+  // chosen. Rollback is exactly DIAG.v51SharedCoreLive = false; nothing
+  // else needs to change, and the legacy bundle computed in (3) remains
+  // fully intact on _result whenever the flag is off or the confirmed
+  // bundle is unavailable.
+  if (DIAG.v51SharedCoreLive && _v51ConfirmedBundle) {
+    _result.states = _v51ConfirmedBundle.states;
+    _result.regime = _v51ConfirmedBundle.regime;
+    _result.evaluation = _v51ConfirmedBundle.evaluation;
+    _result.evidence = _v51ConfirmedBundle.evidence;
+    _result.shadowEvaluation = _v51ConfirmedBundle.shadowEvaluation;
+    _result.shadowComparison = _v51ConfirmedBundle.shadowComparison;
+    _result.authoritativeClassification = _v51ConfirmedBundle.authoritativeClassification;
+    _result.score = _v51ConfirmedBundle.score;
+    // TDAS V5.1.0E — _result.signal now switches too. Every consumer of
+    // d.signal (renderCard's card-class colour, buildDecisionDotsHtml,
+    // _buildFullAnalysisCopyText's "Signal" row, classifyLifecycle,
+    // buildV1Entry's persisted Signal field, buildFilterLineHtml,
+    // buildSnapshot, and others — audited exhaustively, see
+    // V5.1.0E_SHARED_CORE_CLOSED_AUTHORITY_REPORT.md) reads this single
+    // field, so switching it here is sufficient for every one of them to
+    // inherit the confirmed direction automatically — no renderer rewrite
+    // needed, exactly the same "atomic switch, unmodified consumers"
+    // property the rest of this build relies on. Genuinely mismatched
+    // before this: leaving states/regime/evaluation confirmed while signal
+    // stayed live would have let classifyLifecycle(), _buildFullAnalysis-
+    // CopyText()'s displayed "Signal" row, and the card's own border
+    // colour silently disagree with the Advisory verdict shown right next
+    // to them. _result.liveSignal (set unconditionally above, before this
+    // switch, regardless of the flag) preserves access to the original
+    // live/forming-candle direction for the one confirmed genuine
+    // consumer of it — _oneHTimingEvidenceFromD()'s existing, unmodified,
+    // out-of-scope-to-touch direction fallback — which already runs
+    // earlier in this function, before this switch, and is unaffected by
+    // it either way.
+    _result.signal = _v51ConfirmedBundle.signal;
+    _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
+  }
+  // else: _result already holds the complete legacy bundle from (3) —
+  // nothing further to assign.
+
+  // (6) V5.1.0D shadow comparator — V5.1.0E note: now handed the two
+  // EXPLICIT bundles from (3)/(4) directly, never reconstructing "legacy"
+  // from _result's own current fields. This is the fix required by this
+  // build: once (5) has run, _result's fields ARE the confirmed bundle
+  // whenever the flag is on, so comparing "_result vs a freshly-rebuilt
+  // shadow" would silently compare the confirmed path against itself.
   if (DIAG.v51SharedPipelineShadow) {
     try {
       _result.v51SharedPipelineShadow = buildV51SharedPipelineShadow(
-        _result, symbol, resolveMarketEvidenceEntry(symbol, _result.tf)
+        _v51LegacyBundle, _v51ConfirmedBundle, symbol, _result.tf, _result.v51Evidence
       );
     } catch (_v51ShadowErr) {
       _result.v51SharedPipelineShadow = {
@@ -14533,6 +14676,7 @@ async function calcPair(symbol,tf){
       };
     }
   }
+
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
   _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
