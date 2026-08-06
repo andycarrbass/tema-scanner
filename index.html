@@ -2053,7 +2053,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.0F';
+const APP_BUILD = 'V5.1.1A';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -12342,6 +12342,12 @@ function buildV51Evidence(ctx) {
       extension,
       sma: smaState,
       oneHExecution,
+      // TDAS V5.1.1A — additive 4H SMA200 slope, same ATR-normalised
+      // formula and lookback as the new 1H evidence contract. Does not
+      // replace or alter the existing regime engine (evidence.regime
+      // above, unchanged) — a distinct, additional signal for the future
+      // Trade Ready classifier to use alongside it.
+      sma200Slope: confirmedIndicators.complete ? v511FourHSma200Slope(closedCloses, closedHighs, closedLows) : { sma200: null, sma200Previous: null, sma200SlopeDelta: null, sma200SlopeAtr: null, sma200SlopeState: 'unknown', complete: false },
       // TDAS V5.1.0D — additive raw scalar values, needed by the shared-
       // pipeline shadow comparison layer to construct a shape-compatible
       // confirmed-bar `d` view for calling the real computeStates()/
@@ -12446,6 +12452,278 @@ function buildV51Diagnostic(d) {
 
 DIAG.v51SharedPipelineShadow = true; // TDAS V5.1.0D — read-only comparison only. Computes _result.v51SharedPipelineShadow; never read by any classification, presentation, sorting, or persistence path. Rollback: set to false to stop computing it entirely — every existing field is completely unaffected either way, in both states.
 DIAG.v51SharedCoreLive = true; // TDAS V5.1.0F — Shared-Core Activation and 1H Timing Boundary Closure. PRODUCTION ACTIVATION: the single atomic-select point in calcPair() (search "ATOMIC SELECT") now assigns _result.states/.regime/.evaluation/.evidence/.shadowEvaluation/.shadowComparison/.authoritativeClassification/.score/.signal from the confirmed-bar bundle instead of the legacy live-candle bundle by default — every downstream consumer (buildAdvisory, buildTechnicalSummaryHtml, buildAuthoritativeSortKey, classifyLifecycle, every renderer) is unmodified and inherits the switch automatically, including signal itself. The one remaining pre-switch boundary (_oneHTimingEvidenceFromD()'s direction input) is closed in this build too — see that function's own header comment and _v51EarlyStrategicDirection above. _result.liveSignal remains a separate, always-live field in both flag states, preserving the original forming-candle direction. Rollback: set back to false — the legacy bundle is always fully computed regardless of this flag's value, so no other change, cache clear, or data migration is required; every prior build's legacy path, confirmed path, and shadow comparator remain fully intact.
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.1.1A — Staged 1H Evidence Acquisition and SMA200 Slope           ║
+// ║  Foundations                                                              ║
+// ║                                                                            ║
+// ║  Prerequisite build for the five-check Trade Ready V1 classifier. Adds   ║
+// ║  ONE shared, reusable confirmed-candle evidence calculator (used by      ║
+// ║  Watch/Trade's existing _calc1HTiming() AND the new staged Scanner       ║
+// ║  path — never two divergent implementations of UT/SMA200/ATR/            ║
+// ║  extension/RSI/ADX), staged/prefiltered acquisition for ordinary         ║
+// ║  Scanner 4H candidates, an in-memory confirmed-bar-keyed cache, and      ║
+// ║  ATR-normalised SMA200 slope for both 1H and 4H. No Trade Ready          ║
+// ║  classifier, no test UI, no advisory/lifecycle change in this build.     ║
+// ║                                                                          ║
+// ║  AUDIT FINDING preserved deliberately, not silently fixed: the existing  ║
+// ║  _calc1HTiming() UT Bot calculation uses STANDARD (non-Heikin-Ashi)      ║
+// ║  candles, diverging from the setup-timeframe UT Bot (which DOES use     ║
+// ║  Heikin Ashi per UT_BOT_SOURCE_MODE). Correcting this would be an        ║
+// ║  unauthorised change to existing Watch/Trade advisory behaviour — this   ║
+// ║  build preserves it exactly, in the one shared calculator, so Watch/     ║
+// ║  Trade output is byte-identical to before. See the report.               ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+DIAG.v511StagedOneHEvidence = true; // TDAS V5.1.1A — gates staged 1H evidence acquisition for prefiltered ordinary 4H Scanner symbols. Computes _result.v511OneHEvidence only; never read by any classification, advisory, sorting, or persistence path in this build. Rollback: set to false to stop the staged fetch entirely — Watch/Trade's existing _calc1HTiming() path is completely independent of this flag and is unaffected either way.
+
+// ── V1 versioned constants — explicit starting calibration, not proven optimums ──
+const V511_ONE_H_EVIDENCE_RULESET_VERSION = 'V5.1.1A_1H_EVIDENCE_1';
+const V511_SMA200_SLOPE_LOOKBACK_BARS = 10;
+const V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR = 0.20;
+const V511_ONE_H_KLINE_REQUEST_COUNT = 300; // TDAS V5.1.1A — widened from _calc1HTiming()'s prior 200. That 200 was based on a stale "Bitunix hard limit" comment; signal candles route through SplitSourceAdapter -> Binance, whose own adapter comment confirms up to 1000 candles per request. 300 raw - 1 forming = 299 confirmed, comfortably above the 210 confirmed closes SMA200-now + SMA200-10-bars-ago requires.
+
+// ── Shared confirmed-candle evidence calculator ─────────────────────────────
+// Pure with respect to its inputs (symbol, already-fetched raw candles,
+// timeframe label) — no fetch of its own. Used by BOTH _calc1HTiming()
+// (Watch/Trade, thin wrapper below) and the new staged Scanner path. This
+// is the ONE place UT Bot / SMA200 / ATR / TEMA92 extension / RSI / ADX are
+// computed for a confirmed 1H (or any) timeframe — never duplicated.
+function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
+  const fetchedAt = Date.now();
+  if (!Array.isArray(rawKlines) || rawKlines.length < 1) {
+    return {
+      status: 'incomplete', symbol, timeframe, confirmedBarId: null, lastClosedPrice: null,
+      completeness: 'no_data', missingFields: ['all'], fetchedAt,
+      rulesetVersion: V511_ONE_H_EVIDENCE_RULESET_VERSION,
+    };
+  }
+  // Exclude the forming candle — the same raw.slice(0,-1) convention used
+  // everywhere else in this codebase for confirmed-bar evidence.
+  const closedCandles = rawKlines.slice(0, -1);
+  const closedH = closedCandles.map((k) => k.high);
+  const closedL = closedCandles.map((k) => k.low);
+  const closedC = closedCandles.map((k) => k.close);
+  const closedTimes = closedCandles.map((k) => k.time);
+
+  // SMA200-now (needs 200 confirmed closes) + SMA200-10-confirmed-bars-ago
+  // (needs the trailing 200-window shifted back 10 more) => 210 confirmed
+  // closes minimum. Below that, report incomplete honestly rather than
+  // fabricate a partial-window SMA200.
+  if (closedC.length < (200 + V511_SMA200_SLOPE_LOOKBACK_BARS)) {
+    return {
+      status: 'incomplete', symbol, timeframe,
+      confirmedBarId: closedTimes.length ? (symbol + ':' + timeframe + ':' + closedTimes[closedTimes.length - 1]) : null,
+      lastClosedPrice: closedC.length ? closedC[closedC.length - 1] : null,
+      completeness: 'insufficient_history', missingFields: ['sma200', 'sma200Previous', 'sma200SlopeDelta', 'sma200SlopeAtr', 'sma200SlopeState'],
+      fetchedAt, rulesetVersion: V511_ONE_H_EVIDENCE_RULESET_VERSION,
+      confirmedDepth: closedC.length, requiredDepth: 200 + V511_SMA200_SLOPE_LOOKBACK_BARS,
+    };
+  }
+
+  // UT Bot — deliberately STANDARD (non-Heikin-Ashi) candles, matching
+  // _calc1HTiming()'s existing pre-V5.1.1A behaviour exactly. See this
+  // block's own header comment for why this is preserved, not corrected.
+  const utBotRaw = calcUTBot(closedH, closedL, closedC, UT_BOT_KEY_VALUE, UT_BOT_ATR_PERIOD);
+
+  const t17a = tema(closedC, 17);
+  const t92a = tema(closedC, 92);
+  const tema17 = t17a[t17a.length - 1];
+  const tema92 = t92a[t92a.length - 1];
+  const temaDirection = tema17 > tema92 ? 'bullish' : (tema17 < tema92 ? 'bearish' : 'neutral');
+
+  const lastClosedPrice = closedC[closedC.length - 1];
+  const sma200 = sma(closedC, 200);
+  const sma200Previous = sma(closedC.slice(0, closedC.length - V511_SMA200_SLOPE_LOOKBACK_BARS), 200);
+  const atr = calcATR(closedH, closedL, closedC, 14);
+
+  let sma200SlopeDelta = null, sma200SlopeAtr = null, sma200SlopeState = 'unknown';
+  if (sma200 != null && sma200Previous != null && atr != null && atr > 0) {
+    sma200SlopeDelta = sma200 - sma200Previous;
+    sma200SlopeAtr = Math.round((sma200SlopeDelta / atr) * 1000) / 1000;
+    if (sma200SlopeAtr >= V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR) sma200SlopeState = 'rising';
+    else if (sma200SlopeAtr <= -V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR) sma200SlopeState = 'falling';
+    else sma200SlopeState = 'flat';
+  }
+  const priceAboveSma200 = sma200 != null ? lastClosedPrice > sma200 : null;
+
+  const sma135 = sma(closedC, 135);
+  const sma135Prev = sma135 != null ? sma(closedC.slice(0, -1), 135) : null;
+  let sma135Slope = 'unknown';
+  if (sma135 != null && sma135Prev != null) {
+    const delta = sma135 - sma135Prev;
+    const negligible = Math.abs(delta) < Math.abs(sma135Prev) * 0.0001;
+    sma135Slope = negligible ? 'flat' : (delta > 0 ? 'rising' : 'falling');
+  }
+  // TDAS V5.1.1A — TEMA92 extension, owner-confirmed anchor. Values only —
+  // no classification, no threshold gate in this build.
+  let extensionSignedAtr = null, extensionAbsoluteAtr = null;
+  if (atr != null && atr > 0 && tema92 != null) {
+    extensionSignedAtr = Math.round(((lastClosedPrice - tema92) / atr) * 1000) / 1000;
+    extensionAbsoluteAtr = Math.abs(extensionSignedAtr);
+  }
+
+  const rsi = calcRSI(closedC, 14);
+  const adxCalc = calcADXWithHistory(closedH, closedL, closedC, ADX_PERIOD, ADX_SLOPE_LOOKBACK_BARS);
+  const adx = adxCalc.value;
+  const adxSlope = _adxSlopeFromValues(adx, adxCalc.prevValue);
+
+  const confirmedBarId = symbol + ':' + timeframe + ':' + closedTimes[closedTimes.length - 1];
+  const missingFields = [];
+  if (atr == null) missingFields.push('atr');
+  if (rsi == null) missingFields.push('rsi');
+  if (adx == null) missingFields.push('adx');
+
+  return {
+    status: missingFields.length ? 'incomplete' : 'complete',
+    symbol, timeframe, confirmedBarId, lastClosedPrice,
+    utDirection: utBotRaw.direction === 1 ? 'bullish' : (utBotRaw.direction === -1 ? 'bearish' : 'unknown'),
+    utBarsSinceFlip: utBotRaw.barsAgoFlip != null ? utBotRaw.barsAgoFlip : null,
+    tema17, tema92, temaDirection,
+    sma200, sma200Previous, sma200SlopeDelta, sma200SlopeAtr, sma200SlopeState, priceAboveSma200,
+    sma135, sma135Slope, sma135Previous: sma135Prev,
+    atr, extensionAnchor: 'TEMA92', extensionSignedAtr, extensionAbsoluteAtr,
+    rsi, adx, adxSlope, adxPrevious: adxCalc.prevValue,
+    source: 'confirmed_closed_candles', fetchedAt,
+    cacheKey: confirmedBarId + ':' + V511_ONE_H_EVIDENCE_RULESET_VERSION,
+    completeness: missingFields.length ? 'partial' : 'complete',
+    missingFields,
+    rulesetVersion: V511_ONE_H_EVIDENCE_RULESET_VERSION,
+    // Not part of the spec's named contract — additive, internal, lets
+    // _calc1HTiming() derive its own recentSignal1h field without a
+    // second calcUTBot() call (avoiding a divergent second implementation).
+    _utBotRaw: utBotRaw,
+  };
+}
+
+// ── 4H SMA200 slope — same formula, additive to confirmed 4H evidence ──────
+// Pure. Takes the already-fetched confirmed 4H closed arrays calcPair()
+// already has in scope — no new fetch, no new indicator implementation
+// (reuses sma()/calcATR() exactly as the shared 1H calculator does).
+function v511FourHSma200Slope(closedCloses, closedHighs, closedLows) {
+  if (!Array.isArray(closedCloses) || closedCloses.length < (200 + V511_SMA200_SLOPE_LOOKBACK_BARS)) {
+    return { sma200: null, sma200Previous: null, sma200SlopeDelta: null, sma200SlopeAtr: null, sma200SlopeState: 'unknown', complete: false };
+  }
+  const sma200 = sma(closedCloses, 200);
+  const sma200Previous = sma(closedCloses.slice(0, closedCloses.length - V511_SMA200_SLOPE_LOOKBACK_BARS), 200);
+  const atr = calcATR(closedHighs, closedLows, closedCloses, 14);
+  if (sma200 == null || sma200Previous == null || atr == null || !(atr > 0)) {
+    return { sma200, sma200Previous, sma200SlopeDelta: null, sma200SlopeAtr: null, sma200SlopeState: 'unknown', complete: false };
+  }
+  const sma200SlopeDelta = sma200 - sma200Previous;
+  const sma200SlopeAtr = Math.round((sma200SlopeDelta / atr) * 1000) / 1000;
+  const sma200SlopeState = sma200SlopeAtr >= V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR ? 'rising'
+    : sma200SlopeAtr <= -V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR ? 'falling' : 'flat';
+  return { sma200, sma200Previous, sma200SlopeDelta, sma200SlopeAtr, sma200SlopeState, complete: true };
+}
+
+// ── Staged-acquisition prefilter ────────────────────────────────────────────
+// Reads ONLY fields already computed by every 4H calcPair() call — zero
+// extra cost to decide whether to fetch. Deliberately broader than the
+// eventual Trade Ready checks (no ADX/separation threshold here) so
+// near-qualified setups aren't excluded from research. Never itself a
+// user-visible classifier.
+function v511PrefilterPassesForOneHAcquisition(d, utBot) {
+  if (!d || d.signal !== 'long' && d.signal !== 'short') {
+    return { passed: false, reason: 'DIRECTION_NEUTRAL_OR_UNKNOWN' };
+  }
+  const utDir = utBot && (utBot.direction === 1 ? 'long' : (utBot.direction === -1 ? 'short' : null));
+  if (!utDir || utDir !== d.signal) {
+    return { passed: false, reason: 'UT_NOT_ALIGNED' };
+  }
+  const rawComplete = d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.raw && d.v51Evidence.evidence.raw.complete === true;
+  if (!rawComplete) {
+    return { passed: false, reason: 'INSUFFICIENT_4H_EVIDENCE' };
+  }
+  return { passed: true, reason: 'PLAUSIBLE_4H_CANDIDATE' };
+}
+
+// ── In-memory confirmed-bar-keyed cache ─────────────────────────────────────
+// Compact evidence records only — never raw candle arrays, never
+// localStorage. Keyed by symbol + confirmed 1H bar ID + ruleset version, so
+// a new confirmed bar naturally invalidates the old entry (new key) without
+// explicit eviction logic beyond the size cap below.
+const V511_ONE_H_EVIDENCE_CACHE = new Map();
+const V511_ONE_H_EVIDENCE_CACHE_MAX = 500;
+function v511GetCachedOneHEvidence(symbol, evidence) {
+  if (!evidence || !evidence.cacheKey) return null;
+  const key = symbol + ':' + evidence.cacheKey;
+  return V511_ONE_H_EVIDENCE_CACHE.get(key) || null;
+}
+function v511SetCachedOneHEvidence(symbol, evidence) {
+  if (!evidence || !evidence.cacheKey || evidence.status !== 'complete') return; // never cache incomplete/failed as if valid
+  const key = symbol + ':' + evidence.cacheKey;
+  if (V511_ONE_H_EVIDENCE_CACHE.size >= V511_ONE_H_EVIDENCE_CACHE_MAX && !V511_ONE_H_EVIDENCE_CACHE.has(key)) {
+    const oldestKey = V511_ONE_H_EVIDENCE_CACHE.keys().next().value;
+    if (oldestKey !== undefined) V511_ONE_H_EVIDENCE_CACHE.delete(oldestKey);
+  }
+  V511_ONE_H_EVIDENCE_CACHE.set(key, evidence);
+}
+
+// ── Staged acquisition entry point ──────────────────────────────────────────
+// Called from calcPair() as an AWAITED step — resolves before calcPair()
+// returns, so runScan()'s existing Promise.allSettled(...) atomic-render
+// architecture already waits for it with zero orchestration changes.
+async function v511AcquireStagedOneHEvidence(symbol, d, utBot) {
+  const prefilter = v511PrefilterPassesForOneHAcquisition(d, utBot);
+  const base = {
+    status: 'not_attempted', acquisitionReason: prefilter.reason, prefilterPassed: prefilter.passed,
+    requestMade: false, cacheHit: false, source: null, confirmedBarId: null,
+    evidence: null, missingFields: [], errorCode: null,
+    rulesetVersion: V511_ONE_H_EVIDENCE_RULESET_VERSION,
+  };
+  if (!prefilter.passed) return base;
+  if (!DIAG.v511StagedOneHEvidence) {
+    return Object.assign({}, base, { status: 'skipped_flag_off' });
+  }
+
+  // Reuse current Watch/Trade _1hTiming when it carries the new confirmed-
+  // evidence contract, is for the same symbol, is genuinely complete, AND
+  // was computed under the CURRENT ruleset version — avoids a duplicate
+  // fetch for symbols that already have current 1H data, while never
+  // silently reusing evidence computed under an older ruleset (different
+  // thresholds/lookback) as if it were current.
+  const existing = (typeof currentScanData !== 'undefined' && currentScanData[symbol] && currentScanData[symbol]._1hTiming)
+    ? currentScanData[symbol]._1hTiming : null;
+  if (existing && existing.confirmedEvidence && existing.confirmedEvidence.status === 'complete'
+    && existing.confirmedEvidence.rulesetVersion === V511_ONE_H_EVIDENCE_RULESET_VERSION) {
+    return Object.assign({}, base, {
+      status: 'complete', source: 'watch_trade_reuse', confirmedBarId: existing.confirmedEvidence.confirmedBarId,
+      evidence: existing.confirmedEvidence, missingFields: existing.confirmedEvidence.missingFields || [],
+    });
+  }
+
+  const cachedByBar = null; // no confirmed bar ID known yet without a fetch — cache is checked AFTER fetch, keyed by the real confirmed bar
+
+  try {
+    const raw1h = await fetchKlines(symbol, '1h', V511_ONE_H_KLINE_REQUEST_COUNT);
+    if (!raw1h || raw1h.length < 20) {
+      return Object.assign({}, base, { status: 'failed', requestMade: true, errorCode: 'INSUFFICIENT_RAW_KLINES' });
+    }
+    const evidence = _calcConfirmedEvidenceFromKlines(symbol, raw1h, '1h');
+    const cached = v511GetCachedOneHEvidence(symbol, evidence);
+    if (cached) {
+      return Object.assign({}, base, {
+        status: 'complete', requestMade: true, cacheHit: true, source: 'cache',
+        confirmedBarId: cached.confirmedBarId, evidence: cached, missingFields: cached.missingFields || [],
+      });
+    }
+    v511SetCachedOneHEvidence(symbol, evidence);
+    return Object.assign({}, base, {
+      status: evidence.status === 'complete' ? 'complete' : 'incomplete',
+      requestMade: true, cacheHit: false, source: 'fresh_fetch',
+      confirmedBarId: evidence.confirmedBarId, evidence,
+      missingFields: evidence.missingFields || [],
+      errorCode: evidence.status === 'complete' ? null : 'INSUFFICIENT_CONFIRMED_HISTORY',
+    });
+  } catch (_v511FetchErr) {
+    return Object.assign({}, base, {
+      status: 'failed', requestMade: true,
+      errorCode: (_v511FetchErr && _v511FetchErr.message) ? _v511FetchErr.message : 'FETCH_THREW',
+    });
+  }
+}
+
 
 // ── Confirmed-bar shadow `d` construction ───────────────────────────────────
 // Pure. Returns a NEW object — never mutates the real `d`/`confirmedD`
@@ -14717,6 +14995,28 @@ async function calcPair(symbol,tf){
         symbol, timeframe: _result.tf, rulesetVersion: V51_RULESET_VERSION,
         status: 'failed', error: 'V51_SHADOW_COMPARISON_THREW',
         errorMessage: (_v51ShadowErr && _v51ShadowErr.message) ? _v51ShadowErr.message : String(_v51ShadowErr),
+      };
+    }
+  }
+
+  // TDAS V5.1.1A — Staged 1H Evidence Acquisition. Awaited here, before
+  // calcPair() returns, so runScan()'s existing
+  // await Promise.allSettled(PAIRS.map(...)) atomic-render architecture
+  // already waits for it with zero orchestration changes — no skeleton
+  // cards, no second refresh path. Only attempted for 4H setups (4H owns
+  // the strategic thesis per doctrine); the prefilter inside decides
+  // whether a fetch actually happens. Wrapped so a failure here can never
+  // affect the live scan result — every existing field on _result is
+  // completely unaffected either way.
+  if (_result.tf === '4h') {
+    try {
+      _result.v511OneHEvidence = await v511AcquireStagedOneHEvidence(symbol, _result, utBot);
+    } catch (_v511StagedErr) {
+      _result.v511OneHEvidence = {
+        status: 'failed', acquisitionReason: null, prefilterPassed: null,
+        requestMade: false, cacheHit: false, source: null, confirmedBarId: null,
+        evidence: null, missingFields: [], errorCode: 'STAGED_ACQUISITION_THREW',
+        rulesetVersion: V511_ONE_H_EVIDENCE_RULESET_VERSION,
       };
     }
   }
@@ -21195,63 +21495,37 @@ function _derive1HTimingState(signal4h, htfAlign, aboveMA, utBot1h) {
 // Returns { state, direction, updatedAt } or null on failure.
 async function _calc1HTiming(symbol) {
   try {
-    // 200 bars of 1H: enough for UT Bot warmup AND TEMA-92 AND SMA-200 approximation.
-    // (Bitunix hard limit is 200 candles — this is the maximum available.)
-    const raw1h = await fetchKlines(symbol, '1h', 200);
+    // TDAS V5.1.1A — widened from 200 to 300 (the prior 200 was based on a
+    // stale "Bitunix hard limit" comment; signal candles route through
+    // SplitSourceAdapter -> Binance, whose own adapter comment confirms up
+    // to 1000 candles per request). Now derives every structural field from
+    // the ONE shared confirmed-candle evidence calculator instead of a
+    // second, parallel computation — see that function's own header
+    // comment for why UT Bot here deliberately still uses STANDARD
+    // (non-Heikin-Ashi) candles, preserving this function's exact
+    // pre-V5.1.1A behaviour for Watch/Trade.
+    const raw1h = await fetchKlines(symbol, '1h', V511_ONE_H_KLINE_REQUEST_COUNT);
     if (!raw1h || raw1h.length < 20) return null;
 
-    const h = raw1h.map(k => k.high);
-    const l = raw1h.map(k => k.low);
-    const c = raw1h.map(k => k.close);
+    const shared = _calcConfirmedEvidenceFromKlines(symbol, raw1h, '1h');
+    if (shared.status !== 'complete') return null; // preserves the existing "insufficient data -> null" contract
 
-    // Use all-but-last bar for UT Bot (completed candles only)
-    const closedH = h.slice(0, -1);
-    const closedL = l.slice(0, -1);
-    const closedC = c.slice(0, -1);
-    const utBot1h = calcUTBot(closedH, closedL, closedC, 4, 10);
+    const utBot1h = shared._utBotRaw;
+    const crossLong1h = shared.temaDirection === 'bullish'; // true = 1H TEMA bullish
+    const ma200_1h = shared.sma200;
+    const lastClose1h = shared.lastClosedPrice;
+    const aboveMA1h = shared.priceAboveSma200;
+    const maDist1h = ma200_1h !== null ? (lastClose1h - ma200_1h) / ma200_1h * 100 : null;
 
-    // ── 1H structural values for trade management warning ─────────────────
-    // TEMA cross — computed on all closed candles
-    const t17a1h = tema(closedC, 17);
-    const t92a1h = tema(closedC, 92);
-    const t17_1h = t17a1h[t17a1h.length - 1];
-    const t92_1h = t92a1h[t92a1h.length - 1];
-    const crossLong1h = t17_1h > t92_1h; // true = 1H TEMA bullish
-
-    // 1H 200 SMA — sma() returns null if insufficient bars, handled defensively
-    const ma200_1h   = sma(closedC, 200);
-    const lastClose1h = closedC[closedC.length - 1];
-    const aboveMA1h  = ma200_1h !== null ? lastClose1h > ma200_1h : null;
-    const maDist1h   = ma200_1h !== null ? (lastClose1h - ma200_1h) / ma200_1h * 100 : null;
-
-    // 1H 135 SMA — matches the UT Bot timing chart's own trend reference.
-    // Phase 1B addition: does not alter UT Bot or 4H signal logic.
-    const sma135_1h      = sma(closedC, 135);
+    const sma135_1h = shared.sma135;
     const aboveSma135_1h = sma135_1h !== null ? lastClose1h > sma135_1h : null;
-    // Slope: compare against the SMA135 value one bar earlier (same closed
-    // series, one bar shorter) — same measured-slope approach as TEMA 92.
-    const sma135Prev_1h      = sma135_1h !== null ? sma(closedC.slice(0, -1), 135) : null;
-    let sma135Slope_1h = 'unknown';
-    let sma135SlopeDelta_1h = null;
-    if (sma135_1h !== null && sma135Prev_1h !== null) {
-      sma135SlopeDelta_1h = sma135_1h - sma135Prev_1h;
-      const negligible = Math.abs(sma135SlopeDelta_1h) < Math.abs(sma135Prev_1h) * 0.0001;
-      sma135Slope_1h = negligible ? 'flat' : (sma135SlopeDelta_1h > 0 ? 'rising' : 'falling');
-    }
+    const sma135Slope_1h = shared.sma135Slope;
+    const sma135SlopeDelta_1h = (sma135_1h != null && shared.sma135Previous != null) ? sma135_1h - shared.sma135Previous : null;
 
-    // TDAS V4.9.3 T4 — 1H RSI and 1H ADX(+slope), additive. Reuses the
-    // SAME already-fetched closed 1H candles (closedH/closedL/closedC)
-    // this function already uses for UT Bot/TEMA/SMA200/SMA135 above — no
-    // new fetch. Reuses the existing calcRSI() (period 14, same as setup-
-    // tf) and T2's shared calcADXWithHistory() helper (no second,
-    // independent RSI or ADX implementation). This is the FIRST time 1H
-    // RSI/ADX have existed anywhere in this codebase — audited and
-    // confirmed genuinely absent before this task.
-    const rsi1h = calcRSI(closedC, 14);
-    const _adxCalc1h = calcADXWithHistory(closedH, closedL, closedC, ADX_PERIOD, ADX_SLOPE_LOOKBACK_BARS);
-    const adx1h = _adxCalc1h.value;
-    const adxPrev3_1h = _adxCalc1h.prevValue;
-    const adxSlope1h = _adxSlopeFromValues(adx1h, adxPrev3_1h);
+    const rsi1h = shared.rsi;
+    const adx1h = shared.adx;
+    const adxPrev3_1h = shared.adxPrevious;
+    const adxSlope1h = shared.adxSlope;
 
     // Get 4H context from currentScanData (must already exist from last scan)
     const d4h = currentScanData[symbol];
@@ -21268,8 +21542,9 @@ async function _calc1HTiming(symbol) {
     // (Task Case C) independent of whatever timeframe the current view/
     // d.tf happens to be — see that function's own comments for the full
     // root-cause explanation. This does not change UT Bot's calculation in
-    // any way; calcUTBot() itself, above, is untouched — only its
-    // already-computed result is no longer thrown away.
+    // any way; calcUTBot() itself, inside the shared calculator, is
+    // unchanged — only its already-computed result is no longer thrown
+    // away.
     return {
       ...(timing || {}),
       crossLong1h,
@@ -21288,6 +21563,9 @@ async function _calc1HTiming(symbol) {
       // TDAS V4.9.3 T4 — additive 1H RSI/ADX(+slope) evidence inputs.
       rsi1h, adx1h, adxPrev3_1h, adxSlope1h,
       updatedAt: new Date().toISOString(),
+      // TDAS V5.1.1A — additive confirmed-evidence contract (SMA200 slope,
+      // TEMA92 extension, etc.) alongside every pre-existing field above.
+      confirmedEvidence: shared,
     };
   } catch(e) {
     if(DEBUG_MODE) console.warn('[1H Timing] calc failed for', symbol, e.message);
