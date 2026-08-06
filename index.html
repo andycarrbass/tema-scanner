@@ -1296,6 +1296,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 /* ── Trade Desk v2.0 ─────────────────────────────────────────────────── */
 .trade-desk-header{display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px;}
 .trade-desk-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;}
+/* TDAS V5.1.1C — Setups page lanes. Same shape as .trade-desk-grid
+   (Watch/Trade's existing two-column pattern), reused rather than a new
+   layout system — Trade Ready left, Premium Setups right on desktop. */
+.setups-lanes{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;}
+.setups-lane{min-width:0;}
 .trade-col{min-width:0;width:100%;}
 .trade-col-header{font-size:12px;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;color:var(--text3);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--border2);}
 /* Inner card grid — tiles cards at same width as scanner (270px min) */
@@ -1756,6 +1761,9 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 
   .trade-desk-grid{grid-template-columns:1fr;}
   .trade-col{width:100%;}
+  /* TDAS V5.1.1C — Setups mobile: stack Trade Ready above Premium Setups. */
+  .setups-lanes{grid-template-columns:1fr;}
+  .setups-lane{width:100%;}
   /* Tighten header on mobile */
   body{padding:18px 14px;}
   h1{font-size:18px;}
@@ -1788,11 +1796,11 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   </div>
 </div>
 
-<!-- Tabs — v2.0: Scan · Confluence ⭐ · Trade 📈 · Journal · Instruments ⚙ -->
+<!-- Tabs — v5.1.1C: Scan · Watch · Setups (chart icon) · Trade · Journal · Instruments -->
 <div class="tabs">
   <button class="tab active" data-tab-key="scanner" onclick="showTab('scanner')"><span class="tab-full">🔍 Scanner</span><span class="tab-short">🔍</span></button>
-  <button class="tab" data-tab-key="confluence" onclick="showTab('confluence')"><span class="tab-full">🔗 Confluence</span><span class="tab-short">🔗</span> <span id="confCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="watch" onclick="showTab('watch')"><span class="tab-full">👁 Watch</span><span class="tab-short">👁</span> <span id="watchCount" style="font-size:10px;color:var(--text3);"></span></button>
+  <button class="tab" data-tab-key="setups" onclick="showTab('setups')" aria-label="Setups — Trade Ready and Premium shadow candidates"><span class="tab-full">📊 Setups</span><span class="tab-short">📊</span> <span id="setupsCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="trade" onclick="showTab('trade')"><span class="tab-full">⚡ Trade</span><span class="tab-short">⚡</span> <span id="tradeCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="journal" onclick="showTab('journal')"><span class="tab-full">📝 Journal</span><span class="tab-short">📝</span> <span id="journalCount" style="font-size:10px;color:var(--text3);"></span></button>
   <button class="tab" data-tab-key="settings" onclick="showTab('settings')"><span class="tab-full">⚙ Instruments</span><span class="tab-short">⚙</span></button>
@@ -1808,20 +1816,16 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   <div class="scanner-lanes" id="grid"></div>
 </div>
 
-<!-- Confluence tab -->
-<div id="tab-confluence" class="tab-panel">
-  <div class="log-section-header" style="margin-bottom:8px;">
-    <div>
-      <h2 style="margin:0;">⭐ Confluence setups</h2>
-      <div style="font-size:12px;color:var(--text3);margin-top:2px;">Both 1H + 4H gold star simultaneously · auto-refreshes every 5 min</div>
-    </div>
-    <div style="display:flex;align-items:center;gap:10px;">
-      <span id="confLastScan" style="font-size:11px;color:var(--text3);"></span>
-    </div>
-  </div>
-  <div id="confStatus" style="font-size:13px;color:var(--text3);margin-bottom:12px;"></div>
-  <div id="confCards" class="trade-cards-grid"></div>
-</div>
+<!-- TDAS V5.1.1C — Confluence tab retired from navigation. The underlying
+     evaluation/persistence engine (_evalConfluenceFromCache(),
+     runConfluenceScan(), loadConfluenceState()/persistConfluenceState(),
+     confScanData, _onConfluenceSaveDone(), _updateConfluenceBadge())
+     remains completely unmodified and keeps running in the background —
+     every one of those handlers already defensively no-ops once its DOM
+     target (this panel, the #confCount badge) no longer exists, so no
+     downstream code required any change. Reversion: restore the tab
+     button (its data-tab-key was confluence) and this panel; nothing else to
+     restore, since nothing else was touched. -->
 
 <!-- Watch tab — relocated Watch list (V5.0.0C Phase 1: simple list, no lanes yet) -->
 <div id="tab-watch" class="tab-panel">
@@ -1844,6 +1848,35 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
     <div class="trade-col" id="watch4hCol">
       <div class="trade-col-header">4H Watches <span id="watch4hColCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
       <div id="watch4hCards" class="trade-cards-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- TDAS V5.1.1C — Setups page shadow foundation. View-only mirror of
+     current V1 TRADE_READY shadow candidates; Premium lane visible but
+     empty. Cards remain fully owned by Scanner — this page never removes,
+     mutates, or transfers ownership of anything it displays. Populated by
+     renderSetupsPage(), a pure render from the same currentScanData
+     already used by Scanner — no fetch, no new scan. -->
+<div id="tab-setups" class="tab-panel">
+  <div class="trade-desk-header">
+    <div>
+      <h2 style="margin:0;font-size:17px;font-weight:500;">📊 Setups</h2>
+      <div style="font-size:12px;color:var(--text3);margin-top:2px;">Shadow preview — Trade Ready V1 test output, not yet production-authoritative</div>
+    </div>
+  </div>
+  <div class="summary-status-row">
+    <div id="setups-page-stats" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:0;"></div>
+  </div>
+  <div class="setups-lanes" id="setupsLanes">
+    <div class="setups-lane" id="setupsTradeReadyLane">
+      <div class="trade-col-header">Trade Ready <span id="setupsTradeReadyCount" style="color:var(--text3);font-size:12px;font-weight:400;"></span></div>
+      <div id="setupsTradeReadyCards" class="trade-cards-grid"></div>
+    </div>
+    <div class="setups-lane" id="setupsPremiumLane">
+      <div class="trade-col-header">Premium Setups</div>
+      <div id="setupsPremiumEmpty" class="trade-col-empty">No Premium setups<div style="font-size:11px;color:var(--text3);margin-top:4px;">Premium evaluation is not active</div></div>
+      <div id="setupsPremiumCards" class="trade-cards-grid"></div>
     </div>
   </div>
 </div>
@@ -2088,7 +2121,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1B';
+const APP_BUILD = 'V5.1.1C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -20612,6 +20645,84 @@ function renderWatchPage(){
   updateWatchCount();
 }
 
+// ── TDAS V5.1.1C — Setups page (shadow foundation) ──────────────────────────
+// Pure render from the SAME currentScanData Scanner already populates — no
+// fetch, no new scan, no second result store. A symbol appears here only
+// while its currentScanData entry is a 4H-tf result carrying
+// tradeReadyV1.status==='TRADE_READY'; a 1H scan overwrites that same
+// symbol's entry with a 1H-tf result (which never carries tradeReadyV1,
+// since V1 is 4H-led only), so the symbol simply disappears from Setups
+// until the next 4H scan repopulates it — deterministic, no mixing, no
+// separate "last 4H generation" cache needed. Cards remain fully
+// Scanner-owned: this function never writes to journal, never calls
+// reconcileScannerOwnership(), never mutates currentScanData.
+function _setupsTradeReadyCandidates(){
+  return Object.keys(currentScanData)
+    .map(sym=>({sym, d:currentScanData[sym]}))
+    .filter(({d})=>d && d.tf==='4h' && d.tradeReadyV1 && d.tradeReadyV1.status==='TRADE_READY');
+}
+
+// Card body reuses V5.1.1B's buildTradeReadyV1TestRearHtml() directly (the
+// five rows + Entry/Stop/Target/R + View Full Analysis + no forbidden
+// actions) rather than rebuilding the same output differently — a thin
+// header (symbol, direction, technical summary) is added above it for the
+// "normal useful setup context" this page is required to show.
+function buildSetupsCardHtml(sym, d){
+  const dirWord = d.signal==='long' ? 'LONG' : (d.signal==='short' ? 'SHORT' : 'NEUTRAL');
+  const dirClass = d.signal==='long' ? 'long' : (d.signal==='short' ? 'short' : '');
+  const priceStr = d.price!=null ? fmt(d.price) : '\u2014';
+  let techSummary = '';
+  try { techSummary = (typeof buildTechnicalSummaryHtml==='function') ? buildTechnicalSummaryHtml(d) : ''; } catch(e) { techSummary = ''; }
+  const rearHtml = (typeof buildTradeReadyV1TestRearHtml==='function') ? buildTradeReadyV1TestRearHtml(sym, d) : '';
+  return `<div class="card setups-card">
+    <div class="trade-ready-symbol-row" style="margin-bottom:6px;">
+      <span class="trade-ready-symbol">${(typeof LABELS!=='undefined'&&LABELS[sym])?LABELS[sym]:sym}</span>
+      <span class="trade-ready-direction-pill ${dirClass}">${dirWord}</span>
+    </div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">4H \u00b7 ${priceStr}</div>
+    ${techSummary}
+    ${rearHtml}
+  </div>`;
+}
+
+function renderSetupsPage(){
+  const candidates = _setupsTradeReadyCandidates();
+
+  const countEl = document.getElementById('setupsTradeReadyCount');
+  if(countEl) countEl.textContent = candidates.length ? `(${candidates.length})` : '';
+
+  const cardsEl = document.getElementById('setupsTradeReadyCards');
+  if(cardsEl){
+    if(!candidates.length){
+      cardsEl.innerHTML = '<div class="trade-col-empty">No Trade Ready setups</div>';
+    } else {
+      cardsEl.innerHTML = candidates.map(({sym,d})=>buildSetupsCardHtml(sym,d)).join('');
+    }
+  }
+
+  // Premium lane: always empty in this build — no classifier, no score,
+  // no legacy High Conviction content, no placeholder data.
+  const premiumCardsEl = document.getElementById('setupsPremiumCards');
+  if(premiumCardsEl) premiumCardsEl.innerHTML = '';
+
+  const statsEl = document.getElementById('setups-page-stats');
+  if(statsEl) statsEl.innerHTML = [
+    `<div class="log-stat">Trade Ready<span>${candidates.length}</span></div>`,
+    `<div class="log-stat">Premium<span>0</span></div>`,
+    `<div class="log-stat">Total<span>${candidates.length}</span></div>`,
+  ].join('');
+
+  updateSetupsCount();
+}
+
+// Nav badge — same pattern as updateWatchCount()/updateTradeCount().
+function updateSetupsCount(){
+  const el = document.getElementById('setupsCount');
+  if(!el) return;
+  const n = _setupsTradeReadyCandidates().length;
+  el.textContent = n ? `(${n})` : '';
+}
+
 function renderTradeDesk(){
   const activeAll=journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome);
   const oneH = activeAll.filter(j=>String(j.tf||'').toLowerCase()==='1h');
@@ -23969,14 +24080,25 @@ function renderSummary(results, tf){
   const sigPairs=valid.filter(v=>v.signal!=='neutral');
   const avgScore=sigPairs.length?Math.round(sigPairs.reduce((a,v)=>a+v.score,0)/sigPairs.length):0;
   // TDAS V4.10.2D — Authoritative Presentation Language and Visual
-  // Semantics. The "⭐ High conviction" summary tile explicitly means
-  // authoritative Stage 10 High Conviction — counts only
+  // Semantics (historical — this comment describes what the tile THIS
+  // computation used to feed meant, before TDAS V5.1.1C replaced that
+  // tile with Setups; see the comment just below). highConv itself still
+  // means authoritative Stage 10 High Conviction — counts only
   // authoritativeClassification.highConvictionKnown===true &&
   // .highConviction===true. Unknown Evaluation (Stage 0) is never
   // counted — no legacy fallback. v.highConviction (legacy) remains
   // untouched for its own unrelated uses (sorting, persistence,
   // Confluence population).
   const highConv=valid.filter(v=>v.authoritativeClassification && v.authoritativeClassification.highConvictionKnown===true && v.authoritativeClassification.highConviction===true).length;
+  // TDAS V5.1.1C — Setups summary tile replaces the former High Conviction
+  // tile. Deliberately reuses the SAME suppression-filtered `valid` array
+  // highConv itself is derived from — this is what guarantees the Scanner
+  // Setups count and the Setups-page Trade Ready lane count agree for the
+  // same result generation (both must read the identical source).
+  // highConv (legacy High Conviction) itself is left completely
+  // unchanged above — still computed, just no longer surfaced in this
+  // tile; nothing else reads this local var's absence from the template.
+  const setupsCount=valid.filter(v=>v.tradeReadyV1 && v.tradeReadyV1.status==='TRADE_READY').length;
   // TDAS V5.0.0H6 — Pairs tile deliberately left reading PAIRS.length
   // unchanged: it represents the configured scan universe, not a count
   // derived from the currently visible Scanner result set, and the task
@@ -23986,7 +24108,7 @@ function renderSummary(results, tf){
     <div class="sum-card">Shorts<span class="${shorts?'r':''}">${shorts}</span></div>
     <div class="sum-card">HTF aligned<span>${aligned}</span></div>
     ${avgScore?`<div class="sum-card">Avg strength<span>${avgScore}%</span></div>`:''}
-    <div class="sum-card">⭐ High conviction<span style="color:gold;">${highConv||'—'}</span></div>
+    <div class="sum-card">📊 Setups<span>${setupsCount}</span></div>
     <div class="sum-card">Pairs<span>${PAIRS.length}</span></div>`;
 }
 
@@ -24069,6 +24191,7 @@ function reconcileScannerOwnership(){
     ? {status:'fulfilled', value: currentScanData[sym]}
     : {status:'rejected', reason:{message:'no data'}});
   renderSummary(results, tf);
+  updateSetupsCount();
   const sigs = results.filter((r,i)=>{
     if(r.status!=='fulfilled'||r.value.signal==='neutral') return false;
     return !isScannerSymbolSuppressed(PAIRS[i], tf);
@@ -24284,6 +24407,15 @@ async function masterRefresh(){
       updateTradeCount();
       updateJournalCount();
     }
+    // TDAS V5.1.1C — masterRefresh() is the manual Re-scan button's own
+    // orchestrator; Setups must repaint from the SAME just-completed scan
+    // generation as Scanner/Watch/Trade above, not a separate refresh.
+    const setupsTab = document.getElementById('tab-setups');
+    if(setupsTab && setupsTab.classList.contains('active')){
+      renderSetupsPage();
+    } else {
+      updateSetupsCount();
+    }
     const journalTab = document.getElementById('tab-journal');
     if(journalTab && journalTab.classList.contains('active')){
       renderJournal();
@@ -24370,6 +24502,15 @@ function showTab(name){
   // continuously, tab-independent (_ensureActiveTradeLivePricing()), so
   // no equivalent explicit call is needed here for Trade.
   if(name==='watch'){loadFromSheets().then(()=>{reconcileScannerOwnership();renderWatchPage();updateWatchCount();_tdLightweightRefresh();});}
+  // TDAS V5.1.1C — Setups page-open hook. Deliberately NOT
+  // loadFromSheets()/reconcileScannerOwnership()-gated like Watch/Trade
+  // above: this page owns nothing and mutates nothing, so there is no
+  // ownership state to reconcile before rendering — a pure render from
+  // the already-current currentScanData, matching "opening Setups must
+  // not trigger another market-data request" exactly. No lightweight
+  // refresh call either (that's Watch-specific ticker pricing, not
+  // required here).
+  if(name==='setups'){ renderSetupsPage(); }
   if(name==='trade'){loadFromSheets().then(()=>{reconcileScannerOwnership();renderTradeDesk();updateTradeDeskPnL();updateTradeCount();});}
   // TDAS V5.0.0C — Dedicated Watch Page. This timer bundle
   // (_tdLightweightRefresh/_timingRefresh/_tdSignalRefresh, all with their
@@ -24773,6 +24914,15 @@ async function runScan(auto){
   if(_watchTabForRepaint && _watchTabForRepaint.classList.contains('active')) renderWatchPage();
   const _tradeTabForRepaint = document.getElementById('tab-trade');
   if(_tradeTabForRepaint && _tradeTabForRepaint.classList.contains('active')) renderTradeDesk();
+  // TDAS V5.1.1C — same tab-active repaint pattern as Watch/Trade above:
+  // if Setups happens to be the active tab when a scan completes, its
+  // membership is repainted from the SAME just-updated currentScanData —
+  // no separate refresh path, no new orchestrator. Nav badge updates
+  // unconditionally either way, matching updateWatchCount()'s own
+  // always-run pattern elsewhere.
+  const _setupsTabForRepaint = document.getElementById('tab-setups');
+  if(_setupsTabForRepaint && _setupsTabForRepaint.classList.contains('active')) renderSetupsPage();
+  else updateSetupsCount();
   _updateActiveTfIndicator();
   // Update confluence badge from scanner data (no extra fetches needed)
   // Scanner builds currentScanData for 4H; confluence also needs 1H.
