@@ -596,6 +596,41 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   outline-offset:1px;
 }
 
+/* ── TDAS V5.1.1B — Trade Ready V1 TEST button/rear (temporary, shadow) ───
+   Deliberately NOT gold, NOT Premium-adjacent, no pulse animation — a flat
+   neutral/slate treatment that reads as "review tool", not a production
+   action. Same geometry (width/padding/radius) as .trade-ready-front-btn
+   so card height and footer alignment are unaffected. Entirely separate
+   classes from the legacy ones above — nothing here overrides them; this
+   block can be deleted in full to revert to legacy-only behaviour with no
+   further change needed elsewhere. */
+.trade-ready-v1test-front-btn{
+  width:100%;
+  padding:9px 12px;
+  margin-bottom:6px;
+  font-size:13px;font-weight:700;letter-spacing:0.3px;
+  border-radius:var(--radius-sm);
+  cursor:pointer;
+  color:var(--text2);
+  background:var(--bg4);
+  border:1px dashed var(--border3);
+}
+.trade-ready-v1test-front-btn:hover{
+  background:var(--bg3);
+  border-color:var(--border2);
+}
+.trade-ready-v1test-front-btn:focus-visible{
+  outline:2px solid var(--border3);
+  outline-offset:1px;
+}
+.trade-ready-v1test-title{
+  font-size:15px;font-weight:700;letter-spacing:0.4px;color:var(--text2);
+}
+.trade-ready-v1test-checklist{
+  border:1px dashed var(--border3);
+  background:var(--bg4);
+}
+
 /* ── TDAS TRADE READY card flip (Phase 5) ────────────────────────────────
    V1: simple show/hide toggle, not a 3D flip. Soft opacity transition only
    — no @keyframes, no pulse, no whole-card glow.
@@ -2053,7 +2088,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1A';
+const APP_BUILD = 'V5.1.1B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -12477,6 +12512,368 @@ DIAG.v51SharedCoreLive = true; // TDAS V5.1.0F — Shared-Core Activation and 1H
 
 DIAG.v511StagedOneHEvidence = true; // TDAS V5.1.1A — gates staged 1H evidence acquisition for prefiltered ordinary 4H Scanner symbols. Computes _result.v511OneHEvidence only; never read by any classification, advisory, sorting, or persistence path in this build. Rollback: set to false to stop the staged fetch entirely — Watch/Trade's existing _calc1HTiming() path is completely independent of this flag and is unaffected either way.
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.1.1B — Trade Ready V1 Shadow Test                              ║
+// ║                                                                            ║
+// ║  Five-check Trade Ready V1 classifier, SHADOW ONLY — DIAG.tradeReadyV1Live║
+// ║  stays false in this build. Attaches _result.tradeReadyV1 and            ║
+// ║  _result.tradeReadyV1Comparison inside calcPair(), after the shared-core ║
+// ║  confirmed result is selected and V5.1.1A staged 1H evidence has         ║
+// ║  completed or degraded. Reads only already-computed confirmed evidence — ║
+// ║  no new fetch, no new indicator implementation. Legacy advisory,         ║
+// ║  authoritative classification, sorting, lifecycle and ownership are      ║
+// ║  completely untouched; V1 is comparison-only in this build.              ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+DIAG.tradeReadyV1Shadow = true; // TDAS V5.1.1B — computes _result.tradeReadyV1/.tradeReadyV1Comparison; enables the Full Analysis shadow section. Never read by any classification, advisory, sorting, or persistence path. Rollback: set false to stop computing it entirely.
+DIAG.tradeReadyV1Live = false; // TDAS V5.1.1B — MUST stay false in this build. No lifecycle, sorting, ownership, or advisory decision may read tradeReadyV1 as authority. Reserved for a future build's explicit activation.
+DIAG.tradeReadyV1TestUi = true; // TDAS V5.1.1B — gates the temporary Scanner "Trade Ready Test" button and test rear card. Independently reversible from the shadow flag above; set false to fall back to legacy Trade Ready button/rear behaviour unconditionally, with zero change to the legacy builders themselves.
+
+const TRADE_READY_V1_RULESET_VERSION = 'TRADE_READY_V1_2026_08';
+const TRADE_READY_V1_CONFIG = Object.freeze({
+  fourHAdxFloor: 23,
+  fourHTemaSeparationAtrFloor: 0.5,
+  oneHSma200SlopeLookback: 10,
+  oneHSma200AlignedSlopeAtrFloor: 0.20,
+  oneHUtFreshMaxBars: 3,
+  oneHUtRecentMaxBars: 6,
+  oneHSevereExtensionAtr: 4.0,
+});
+
+// ── Check 1 — 4H direction coherent ─────────────────────────────────────────
+function tradeReadyV1Check1DirectionCoherent(direction, v51Evidence, utBot) {
+  const raw = v51Evidence && v51Evidence.evidence && v51Evidence.evidence.raw;
+  const regime = v51Evidence && v51Evidence.evidence && v51Evidence.evidence.regime;
+  const barId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.setup && v51Evidence.confirmedBars.setup.barId;
+  const base = { timeframe: '4h', confirmedBarId: barId || null, threshold: null };
+
+  if (direction !== 'long' && direction !== 'short') {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR1_DIRECTION_UNKNOWN'] });
+  }
+  if (!raw || !raw.complete || !regime) {
+    return Object.assign({}, base, { status: 'unknown', raw: { t17: raw && raw.t17, t92: raw && raw.t92, regime }, reasonCodes: ['TR1_EVIDENCE_UNAVAILABLE'] });
+  }
+  const rawValues = { t17: raw.t17, t92: raw.t92, sma80: raw.sma80, lastClosedPrice: raw.lastClosedPrice, utDirection: utBot ? utBot.direction : null, regime };
+  const reasons = [];
+
+  const temaOk = direction === 'long' ? raw.t17 > raw.t92 : raw.t17 < raw.t92;
+  if (!temaOk) reasons.push('TR1_TEMA_DIRECTION_OPPOSED');
+
+  const utDirNum = utBot ? utBot.direction : 0;
+  const utOk = direction === 'long' ? utDirNum === 1 : utDirNum === -1;
+  if (!utOk) reasons.push('TR1_UT_DIRECTION_OPPOSED');
+
+  const sma80Ok = raw.sma80 != null && raw.lastClosedPrice != null
+    ? (direction === 'long' ? raw.lastClosedPrice > raw.sma80 : raw.lastClosedPrice < raw.sma80)
+    : null;
+  if (sma80Ok === false) reasons.push('TR1_SMA80_POSITION_FAILED');
+  if (sma80Ok === null) reasons.push('TR1_EVIDENCE_UNAVAILABLE');
+
+  const regimeOpposing = direction === 'long'
+    ? (regime === 'confirmed_bearish' || regime === 'bearish_transitional')
+    : (regime === 'confirmed_bullish' || regime === 'bullish_transitional');
+  if (regimeOpposing) reasons.push('TR1_200MA_REGIME_OPPOSED');
+  const regimeUnknown = regime === 'unknown' || regime === 'unresolved_chop';
+  if (regimeUnknown) reasons.push('TR1_EVIDENCE_UNAVAILABLE');
+
+  if (sma80Ok === null || regimeUnknown) {
+    return Object.assign({}, base, { status: 'unknown', raw: rawValues, reasonCodes: Array.from(new Set(reasons)) });
+  }
+  const pass = temaOk && utOk && sma80Ok === true && !regimeOpposing;
+  return Object.assign({}, base, { status: pass ? 'pass' : 'fail', raw: rawValues, reasonCodes: pass ? [] : Array.from(new Set(reasons)) });
+}
+
+// ── Check 2 — 4H trend quality sufficient ───────────────────────────────────
+function tradeReadyV1Check2TrendQuality(v51Evidence) {
+  const adx = v51Evidence && v51Evidence.evidence && v51Evidence.evidence.adx;
+  const sep = v51Evidence && v51Evidence.evidence && v51Evidence.evidence.tema && v51Evidence.evidence.tema.separation;
+  const barId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.setup && v51Evidence.confirmedBars.setup.barId;
+  const base = { timeframe: '4h', confirmedBarId: barId || null, threshold: { adx: TRADE_READY_V1_CONFIG.fourHAdxFloor, separationAtr: TRADE_READY_V1_CONFIG.fourHTemaSeparationAtrFloor } };
+
+  if (!adx || !adx.complete || !sep || sep.separationAtr == null) {
+    return Object.assign({}, base, { status: 'unknown', raw: { adx: adx && adx.value, separationAtr: sep && sep.separationAtr }, reasonCodes: ['TR2_TREND_QUALITY_UNKNOWN'] });
+  }
+  const rawValues = { adx: adx.value, separationAtr: sep.separationAtr };
+  const reasons = [];
+  const adxOk = adx.value >= TRADE_READY_V1_CONFIG.fourHAdxFloor;
+  if (!adxOk) reasons.push('TR2_ADX_BELOW_FLOOR');
+  const sepOk = sep.separationAtr >= TRADE_READY_V1_CONFIG.fourHTemaSeparationAtrFloor;
+  if (!sepOk) reasons.push('TR2_TEMA_SEPARATION_BELOW_FLOOR');
+  const pass = adxOk && sepOk;
+  return Object.assign({}, base, { status: pass ? 'pass' : 'fail', raw: rawValues, reasonCodes: pass ? [] : reasons });
+}
+
+// ── Check 3 — 1H execution regime acceptable ────────────────────────────────
+function tradeReadyV1Check3ExecutionRegime(direction, oneHEvidence) {
+  const ev = oneHEvidence && oneHEvidence.evidence;
+  const base = { timeframe: '1h', confirmedBarId: (oneHEvidence && oneHEvidence.confirmedBarId) || null, threshold: { slopeAtr: TRADE_READY_V1_CONFIG.oneHSma200AlignedSlopeAtrFloor } };
+
+  if (!oneHEvidence || oneHEvidence.status !== 'complete' || !ev || ev.status !== 'complete') {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR3_1H_EVIDENCE_UNAVAILABLE'] });
+  }
+  const rawValues = { priceAboveSma200: ev.priceAboveSma200, sma200SlopeAtr: ev.sma200SlopeAtr, sma200SlopeState: ev.sma200SlopeState };
+  const reasons = [];
+  const sideOk = direction === 'long' ? ev.priceAboveSma200 === true : ev.priceAboveSma200 === false;
+  if (!sideOk) reasons.push('TR3_PRICE_WRONG_SIDE_OF_1H_200MA');
+
+  const floor = TRADE_READY_V1_CONFIG.oneHSma200AlignedSlopeAtrFloor;
+  const slopeAligned = direction === 'long' ? ev.sma200SlopeAtr >= floor : ev.sma200SlopeAtr <= -floor;
+  if (!slopeAligned) {
+    if (ev.sma200SlopeState === 'flat') reasons.push('TR3_1H_200MA_SLOPE_FLAT');
+    else reasons.push('TR3_1H_200MA_SLOPE_OPPOSED');
+  }
+  const pass = sideOk && slopeAligned;
+  return Object.assign({}, base, { status: pass ? 'pass' : 'fail', raw: rawValues, reasonCodes: pass ? [] : reasons });
+}
+
+// ── Check 4 — fresh aligned 1H UT trigger ───────────────────────────────────
+function tradeReadyV1Check4FreshTrigger(direction, oneHEvidence) {
+  const ev = oneHEvidence && oneHEvidence.evidence;
+  const base = { timeframe: '1h', confirmedBarId: (oneHEvidence && oneHEvidence.confirmedBarId) || null, threshold: { freshMaxBars: TRADE_READY_V1_CONFIG.oneHUtFreshMaxBars, recentMaxBars: TRADE_READY_V1_CONFIG.oneHUtRecentMaxBars } };
+
+  if (!oneHEvidence || oneHEvidence.status !== 'complete' || !ev || ev.status !== 'complete' || ev.utBarsSinceFlip == null) {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR4_1H_EVIDENCE_UNAVAILABLE'] });
+  }
+  const rawValues = { utDirection: ev.utDirection, utBarsSinceFlip: ev.utBarsSinceFlip };
+  const dirWord = direction === 'long' ? 'bullish' : 'bearish';
+  if (ev.utDirection !== dirWord) {
+    return Object.assign({}, base, { status: 'fail', raw: rawValues, reasonCodes: ['TR4_1H_UT_OPPOSED'] });
+  }
+  const bars = ev.utBarsSinceFlip;
+  if (bars <= TRADE_READY_V1_CONFIG.oneHUtFreshMaxBars) {
+    return Object.assign({}, base, { status: 'pass', raw: rawValues, reasonCodes: [] });
+  }
+  if (bars <= TRADE_READY_V1_CONFIG.oneHUtRecentMaxBars) {
+    return Object.assign({}, base, { status: 'fail', raw: rawValues, reasonCodes: ['TR4_1H_UT_RECENT_NOT_FRESH'] });
+  }
+  return Object.assign({}, base, { status: 'fail', raw: rawValues, reasonCodes: ['TR4_1H_UT_STALE'] });
+}
+
+// ── Check 5 — entry not severely extended ───────────────────────────────────
+function tradeReadyV1Check5Extension(oneHEvidence) {
+  const ev = oneHEvidence && oneHEvidence.evidence;
+  const base = { timeframe: '1h', confirmedBarId: (oneHEvidence && oneHEvidence.confirmedBarId) || null, threshold: { severeAtr: TRADE_READY_V1_CONFIG.oneHSevereExtensionAtr } };
+
+  if (!oneHEvidence || oneHEvidence.status !== 'complete' || !ev || ev.status !== 'complete' || ev.extensionAbsoluteAtr == null) {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR5_EXTENSION_UNKNOWN'] });
+  }
+  const rawValues = { extensionAbsoluteAtr: ev.extensionAbsoluteAtr, extensionSignedAtr: ev.extensionSignedAtr };
+  const pass = ev.extensionAbsoluteAtr < TRADE_READY_V1_CONFIG.oneHSevereExtensionAtr;
+  return Object.assign({}, base, { status: pass ? 'pass' : 'fail', raw: rawValues, reasonCodes: pass ? [] : ['TR5_SEVERELY_EXTENDED'] });
+}
+
+// ── Full classifier ──────────────────────────────────────────────────────────
+// Pure with respect to its inputs. Never reads/writes _result.signal or any
+// live field. `direction` must already be the confirmed strategic direction
+// (the atomic-select result), not the live/forming-candle one.
+function buildTradeReadyV1(symbol, direction, v51Evidence, utBot, oneHEvidence) {
+  const evaluatedAt = Date.now();
+  const fourHBarId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.setup && v51Evidence.confirmedBars.setup.barId;
+  const oneDBarId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.adjacent && v51Evidence.confirmedBars.adjacent.barId;
+  const oneHBarId = (oneHEvidence && oneHEvidence.confirmedBarId) || null;
+
+  const checks = {
+    directionCoherent: tradeReadyV1Check1DirectionCoherent(direction, v51Evidence, utBot),
+    trendQuality: tradeReadyV1Check2TrendQuality(v51Evidence),
+    executionRegime: tradeReadyV1Check3ExecutionRegime(direction, oneHEvidence),
+    freshTrigger: tradeReadyV1Check4FreshTrigger(direction, oneHEvidence),
+    extension: tradeReadyV1Check5Extension(oneHEvidence),
+  };
+
+  const checkList = [checks.directionCoherent, checks.trendQuality, checks.executionRegime, checks.freshTrigger, checks.extension];
+  const anyUnknown = checkList.some((c) => c.status === 'unknown');
+  const allPass = checkList.every((c) => c.status === 'pass');
+  const missingEvidence = [];
+  checkList.forEach((c) => { if (c.status === 'unknown') missingEvidence.push.apply(missingEvidence, c.reasonCodes); });
+  const failedReasonCodes = [];
+  checkList.forEach((c) => { if (c.status === 'fail') failedReasonCodes.push.apply(failedReasonCodes, c.reasonCodes); });
+
+  // Final rule, exactly as specified: a known failed check plus a separate
+  // unknown required check is LIMITED_EVALUATION, not WATCH — the unknown
+  // check is checked FIRST, unconditionally.
+  let status;
+  if (anyUnknown) status = 'LIMITED_EVALUATION';
+  else if (allPass) status = 'TRADE_READY';
+  else status = 'WATCH';
+
+  return {
+    rulesetVersion: TRADE_READY_V1_RULESET_VERSION,
+    evaluatedAt, symbol, direction,
+    setupTimeframe: '4h', executionTimeframe: '1h',
+    confirmedBarIds: { oneH: oneHBarId, fourH: fourHBarId || null, oneD: oneDBarId || null },
+    status, ready: status === 'TRADE_READY',
+    checks,
+    failedReasonCodes: Array.from(new Set(failedReasonCodes)),
+    missingEvidence: Array.from(new Set(missingEvidence)),
+    context: {},
+  };
+}
+
+// ── Legacy/V1 comparison ─────────────────────────────────────────────────────
+function buildTradeReadyV1Comparison(advisory, tradeReadyV1) {
+  const legacyReady = !!(advisory && advisory.tradeReady);
+  const legacyAction = (advisory && advisory.action) || null;
+  const v1Ready = !!(tradeReadyV1 && tradeReadyV1.ready);
+  const v1Status = (tradeReadyV1 && tradeReadyV1.status) || 'LIMITED_EVALUATION';
+
+  let differenceType;
+  if (legacyReady && v1Ready) {
+    differenceType = 'AGREE_READY';
+  } else if (!legacyReady && !v1Ready) {
+    differenceType = 'AGREE_NOT_READY';
+  } else if (legacyReady && !v1Ready) {
+    differenceType = v1Status === 'WATCH' ? 'LEGACY_READY_V1_WATCH' : 'LEGACY_READY_V1_LIMITED';
+  } else {
+    differenceType = 'LEGACY_NOT_READY_V1_READY';
+  }
+
+  return {
+    legacyReady, tradeReadyV1Ready: v1Ready, legacyAction, tradeReadyV1Status: v1Status,
+    agreement: legacyReady === v1Ready, differenceType,
+    failedReasonCodes: (tradeReadyV1 && tradeReadyV1.failedReasonCodes) || [],
+    missingEvidence: (tradeReadyV1 && tradeReadyV1.missingEvidence) || [],
+    confirmedBarIds: (tradeReadyV1 && tradeReadyV1.confirmedBarIds) || null,
+    rulesetVersion: TRADE_READY_V1_RULESET_VERSION,
+  };
+}
+// ── Temporary Trade Ready V1 test button ────────────────────────────────────
+// Deliberately NOT reusing .trade-ready-front-btn's gold pulse class — a new,
+// clearly non-authoritative class. Same geometry/placement as the legacy
+// button (same onclick target, flipTradeReadyCard, unchanged).
+function buildTradeReadyV1TestButtonHtml(symbol) {
+  return '<button class="trade-ready-v1test-front-btn" onclick="event.stopPropagation();flipTradeReadyCard(\'' + symbol + '\')" '
+    + 'title="Check Full Analysis for results" '
+    + 'aria-label="Trade Ready Test — reveal shadow checklist">'
+    + 'Trade Ready Test'
+    + '</button>';
+}
+
+// ── Temporary Trade Ready V1 test rear ──────────────────────────────────────
+// Reuses existing CSS classes (.trade-ready-checklist/.trade-ready-row/
+// .trade-ready-plan/.trade-ready-back-link) for geometry/footer consistency,
+// but with a new header class (no gold .trade-ready-title reuse) and exactly
+// the five required rows. No Paper Trade, no Live Bitunix, no Log Decision,
+// no Skip/Missed/Watch — the only action is View Full Analysis.
+function buildTradeReadyV1TestRearHtml(symbol, d) {
+  const v1 = d && d.tradeReadyV1;
+  if (!v1) return '';
+  const symbolLabel = (typeof LABELS !== 'undefined' && LABELS[symbol]) ? LABELS[symbol] : symbol;
+  const rowLabels = [
+    ['directionCoherent', '4H direction aligned'],
+    ['trendQuality', '4H trend quality confirmed'],
+    ['executionRegime', '1H execution regime aligned'],
+    ['freshTrigger', 'Fresh 1H UT trigger'],
+    ['extension', 'Entry not severely extended'],
+  ];
+  const rowsHtml = rowLabels.map(([key, label]) => {
+    const c = v1.checks && v1.checks[key];
+    const icon = !c ? '?' : (c.status === 'pass' ? '\u2713' : (c.status === 'fail' ? '\u2715' : '?'));
+    return '<div class="trade-ready-row">' + icon + ' ' + label + '</div>';
+  }).join('');
+
+  const entryVal = d.price != null ? fmt(d.price) : '\u2014';
+  const stopVal = d.stop15 != null ? fmt(d.stop15) : '\u2014';
+  const targetVal = d.target2 != null ? fmt(d.target2) : '\u2014';
+  const rVal = d.displayR != null ? d.displayR + 'R' : null;
+
+  return '<div class="trade-ready-checklist trade-ready-v1test-checklist">'
+    + '<div class="trade-ready-exec-header">'
+      + '<div class="trade-ready-symbol-row">'
+        + '<span class="trade-ready-symbol">' + symbolLabel + '</span>'
+      + '</div>'
+      + '<div class="trade-ready-state-row">'
+        + '<span class="trade-ready-v1test-title">TRADE READY TEST</span>'
+      + '</div>'
+    + '</div>'
+    + '<div class="trade-ready-scroll">'
+      + rowsHtml
+      + '<div class="trade-ready-plan">'
+        + '<div class="ap-row"><span>Entry</span><span>' + entryVal + '</span></div>'
+        + '<div class="ap-row"><span>Stop</span><span style="color:var(--red-text);">' + stopVal + '</span></div>'
+        + '<div class="ap-row"><span>Target</span><span style="color:var(--green-text);">' + targetVal + '</span></div>'
+        + (rVal ? '<div class="ap-row"><span>R multiple</span><span>' + rVal + '</span></div>' : '')
+      + '</div>'
+    + '</div>'
+    + '<div class="trade-ready-future-actions">'
+      + '<button class="card-btn secondary" onclick="event.stopPropagation();openAnalysisPanel({symbol:\'' + symbol + '\',tf:\'' + (d.tf || '4h') + '\',consumer:\'scanner\',snapshotRole:\'primary\'})">View Full Analysis</button>'
+    + '</div>'
+    + '<button type="button" class="trade-ready-back-link" onclick="flipTradeReadyCard(\'' + symbol + '\')">\u25c2 Back</button>'
+    + '</div>';
+}
+
+// ── Full Analysis shadow section ────────────────────────────────────────────
+function buildTradeReadyV1ShadowHtml(d, advisory) {
+  const v1 = d && d.tradeReadyV1;
+  if (!v1) return '';
+  const cmp = d.tradeReadyV1Comparison || buildTradeReadyV1Comparison(advisory, v1);
+  const rowLabels = [
+    ['directionCoherent', '4H direction aligned'],
+    ['trendQuality', '4H trend quality confirmed'],
+    ['executionRegime', '1H execution regime aligned'],
+    ['freshTrigger', 'Fresh 1H UT trigger'],
+    ['extension', 'Entry not severely extended'],
+  ];
+  const rows = rowLabels.map(([key, label]) => {
+    const c = v1.checks && v1.checks[key];
+    if (!c) return '? ' + label;
+    const icon = c.status === 'pass' ? '\u2713' : (c.status === 'fail' ? '\u2715' : '?');
+    const detail = c.reasonCodes && c.reasonCodes.length ? ' \u2014 ' + c.reasonCodes.join(', ') : '';
+    return icon + ' ' + label + detail;
+  }).join('\n');
+
+  const missing = v1.missingEvidence && v1.missingEvidence.length ? '\nMissing evidence: ' + v1.missingEvidence.join(', ') : '';
+
+  return '\n\n=== TRADE READY V1 \u2014 SHADOW ===\n'
+    + 'Status: ' + v1.status + '\n'
+    + 'Direction: ' + (v1.direction ? v1.direction.toUpperCase() : 'UNKNOWN') + '\n'
+    + 'Ruleset: ' + v1.rulesetVersion + '\n'
+    + 'Confirmed 4H bar: ' + (v1.confirmedBarIds && v1.confirmedBarIds.fourH || 'n/a') + '\n'
+    + 'Confirmed 1H bar: ' + (v1.confirmedBarIds && v1.confirmedBarIds.oneH || 'n/a') + '\n\n'
+    + rows + missing + '\n\n'
+    + 'Legacy Trade Ready: ' + (cmp.legacyReady ? 'Yes' : 'No') + '\n'
+    + 'Current advisory action: ' + (cmp.legacyAction || 'n/a') + '\n'
+    + 'Difference: ' + cmp.differenceType;
+}
+
+// ── Local shadow logging ─────────────────────────────────────────────────────
+// localStorage only, capped, deduplicated. No candle arrays, no raw payloads.
+const TRADE_READY_V1_LOG_KEY = 'tdas_trade_ready_v1_shadow_log';
+const TRADE_READY_V1_LOG_CAP = 500;
+function tradeReadyV1LogDedupKey(v1) {
+  return [v1.symbol, v1.direction, (v1.confirmedBarIds && v1.confirmedBarIds.fourH) || '', (v1.confirmedBarIds && v1.confirmedBarIds.oneH) || '', v1.rulesetVersion].join('|');
+}
+function logTradeReadyV1Shadow(v1, comparison, oneHEvidence) {
+  try {
+    if (!v1) return;
+    const dedupKey = tradeReadyV1LogDedupKey(v1);
+    const raw = safeParse(TRADE_READY_V1_LOG_KEY, null);
+    const list = Array.isArray(raw) ? raw : [];
+    if (list.length && list[list.length - 1] && list[list.length - 1]._dedupKey === dedupKey) {
+      return; // repeated scan within the same confirmed bars — no duplicate append
+    }
+    const record = {
+      _dedupKey: dedupKey,
+      symbol: v1.symbol, direction: v1.direction, evaluatedAt: v1.evaluatedAt,
+      rulesetVersion: v1.rulesetVersion, confirmedBarIds: v1.confirmedBarIds,
+      status: v1.status,
+      checks: Object.keys(v1.checks || {}).reduce((acc, k) => {
+        const c = v1.checks[k];
+        acc[k] = { status: c.status, raw: c.raw, threshold: c.threshold, reasonCodes: c.reasonCodes };
+        return acc;
+      }, {}),
+      failedReasonCodes: v1.failedReasonCodes, missingEvidence: v1.missingEvidence,
+      legacyComparison: comparison,
+      oneHEvidenceSource: oneHEvidence ? { status: oneHEvidence.status, source: oneHEvidence.source, cacheHit: oneHEvidence.cacheHit } : null,
+    };
+    list.push(record);
+    while (list.length > TRADE_READY_V1_LOG_CAP) list.shift();
+    safeStore(TRADE_READY_V1_LOG_KEY, list);
+  } catch (_v1LogErr) {
+    // Logging failure must never affect the Scanner — swallow silently.
+  }
+}
+
+
 // ── V1 versioned constants — explicit starting calibration, not proven optimums ──
 const V511_ONE_H_EVIDENCE_RULESET_VERSION = 'V5.1.1A_1H_EVIDENCE_1';
 const V511_SMA200_SLOPE_LOOKBACK_BARS = 10;
@@ -15021,6 +15418,34 @@ async function calcPair(symbol,tf){
     }
   }
 
+  // TDAS V5.1.1B — Trade Ready V1 Shadow Test. Attached after the shared-core
+  // confirmed result is selected and V5.1.1A staged 1H evidence has
+  // completed or degraded — exactly the required ordering. SHADOW ONLY:
+  // DIAG.tradeReadyV1Live stays false; nothing here can become production
+  // authority. Wrapped so a classifier failure can never blank or suppress
+  // a normal Scanner card — degrades to an honest LIMITED_EVALUATION
+  // diagnostic instead.
+  if (_result.tf === '4h' && DIAG.tradeReadyV1Shadow) {
+    try {
+      const _v1Direction = (_result.signal === 'long' || _result.signal === 'short') ? _result.signal : 'unknown';
+      _result.tradeReadyV1 = buildTradeReadyV1(symbol, _v1Direction, _result.v51Evidence, utBot, _result.v511OneHEvidence);
+      let _v1LegacyAdvisory = null;
+      try { _v1LegacyAdvisory = buildAdvisory(_result, { openTrade: null }); } catch (_v1AdvErr) { _v1LegacyAdvisory = null; }
+      _result.tradeReadyV1Comparison = buildTradeReadyV1Comparison(_v1LegacyAdvisory, _result.tradeReadyV1);
+      logTradeReadyV1Shadow(_result.tradeReadyV1, _result.tradeReadyV1Comparison, _result.v511OneHEvidence);
+    } catch (_v1Err) {
+      _result.tradeReadyV1 = {
+        rulesetVersion: TRADE_READY_V1_RULESET_VERSION, evaluatedAt: Date.now(), symbol,
+        direction: null, setupTimeframe: '4h', executionTimeframe: '1h',
+        confirmedBarIds: { oneH: null, fourH: null, oneD: null },
+        status: 'LIMITED_EVALUATION', ready: false,
+        checks: {}, failedReasonCodes: ['TRV1_CLASSIFIER_ERROR'], missingEvidence: [],
+        context: { errorCode: (_v1Err && _v1Err.message) ? _v1Err.message : String(_v1Err) },
+      };
+      _result.tradeReadyV1Comparison = null;
+    }
+  }
+
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
   // resolveJournalEntry is the single impure lookup; symbol is the calcPair parameter
   _result.lifecycle = classifyLifecycle(_result, resolveJournalEntry(symbol));
@@ -16700,17 +17125,33 @@ function renderCard(symbol,d){
   const analysisBtn = '<button class="analysis-btn" onclick="openAnalysisPanel({symbol:\''+symbol+'\',tf:\''+d.tf+'\',consumer:\'scanner\',snapshotRole:\'primary\'})" style="margin-top:6px;">\u25b6 Show full analysis</button>';
   // TDAS TRADE READY Phase 4 — static front button, scanner (non-active)
   // cards only. Returns '' when not tradeReady, per buildTradeReadyFrontButtonHtml.
-  const tradeReadyBtnHtml = (typeof buildTradeReadyFrontButtonHtml==='function')
-    ? buildTradeReadyFrontButtonHtml(symbol, _advisory, d.authoritativeClassification)
-    : '';
-
-  // TDAS TRADE READY Phase 5: back-card content — reuses buildTradeReadyChecklistHtml
-  // unchanged logic; only the Back button becomes functional here (flips to
-  // front) via the opts param, vs. the disabled placeholder used in the
-  // detail-view preview (openAnalysisPanel calls it without opts).
-  const tradeReadyBackHtml = (_advisory && _advisory.tradeReady && typeof buildTradeReadyChecklistHtml==='function')
-    ? buildTradeReadyChecklistHtml(symbol, d, _advisory, { onBackClick: "flipTradeReadyCard('"+symbol+"')", onPaperTradeClick: "createTradeReadyPaperTrade('"+symbol+"')" })
-    : '';
+  //
+  // TDAS V5.1.1B — Trade Ready V1 Shadow Test. When V1 is ready (and the
+  // test-UI flag is on), the temporary test button/rear TAKE PRIORITY over
+  // the legacy button/rear — including when legacy is NOT ready, per the
+  // required precedence ("V1 ready -> show Trade Ready Test" regardless of
+  // legacy state). When V1 is not ready, this falls through to the
+  // ORIGINAL, completely unmodified legacy calls below — neither
+  // buildTradeReadyFrontButtonHtml() nor buildTradeReadyChecklistHtml() is
+  // touched by this branch. Reversion: delete this if-block and the two
+  // consts revert to their prior unconditional legacy calls.
+  const _v1Ready = DIAG.tradeReadyV1TestUi && d.tradeReadyV1 && d.tradeReadyV1.status === 'TRADE_READY';
+  let tradeReadyBtnHtml, tradeReadyBackHtml;
+  if (_v1Ready) {
+    tradeReadyBtnHtml = buildTradeReadyV1TestButtonHtml(symbol);
+    tradeReadyBackHtml = buildTradeReadyV1TestRearHtml(symbol, d);
+  } else {
+    tradeReadyBtnHtml = (typeof buildTradeReadyFrontButtonHtml==='function')
+      ? buildTradeReadyFrontButtonHtml(symbol, _advisory, d.authoritativeClassification)
+      : '';
+    // TDAS TRADE READY Phase 5: back-card content — reuses buildTradeReadyChecklistHtml
+    // unchanged logic; only the Back button becomes functional here (flips to
+    // front) via the opts param, vs. the disabled placeholder used in the
+    // detail-view preview (openAnalysisPanel calls it without opts).
+    tradeReadyBackHtml = (_advisory && _advisory.tradeReady && typeof buildTradeReadyChecklistHtml==='function')
+      ? buildTradeReadyChecklistHtml(symbol, d, _advisory, { onBackClick: "flipTradeReadyCard('"+symbol+"')", onPaperTradeClick: "createTradeReadyPaperTrade('"+symbol+"')" })
+      : '';
+  }
 
   el.innerHTML=`
     <div class="tdas-card-front">
@@ -18542,6 +18983,15 @@ function openAnalysisPanel(request){
     _logMarketEvidenceShadowDisagreement(symbol, d, _beOpenTrade);
   }
 
+  // TDAS V5.1.1B — Trade Ready V1 shadow diagnostic. Follows the exact same
+  // gated, additive, non-mutating pattern as _marketEvidenceHtml just
+  // above. Shown for every evaluated 4H setup (TRADE_READY, WATCH, AND
+  // LIMITED_EVALUATION), not only passing ones. Does not alter any other
+  // Full Analysis section's output.
+  const _tradeReadyV1Html = (DIAG.tradeReadyV1Shadow === true && d.tradeReadyV1)
+    ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildTradeReadyV1ShadowHtml(d, _advisory) + '</pre>'
+    : '';
+
   // TDAS V4.9.10 — remaining sections precomputed as standalone template
   // literals (same pattern as _tcHtml/_evalHtml/_lifecycleHtml/_advisoryHtml
   // above), each passed through the shared _apSectionWrap() helper. Same
@@ -18623,6 +19073,7 @@ function openAnalysisPanel(request){
     ${_tradeReadyHtml}
     ${_beStatusHtml}
     ${_marketEvidenceHtml}
+    ${_tradeReadyV1Html}
     ${_signalSummaryHtml}
     ${_lifecycleHtml}
     ${_evalHtml}
