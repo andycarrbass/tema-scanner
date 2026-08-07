@@ -2121,7 +2121,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1C';
+const APP_BUILD = 'V5.1.1D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -21246,6 +21246,52 @@ function _repaintWatchCard(e){
 // confirmStopPlacement() below). Advisory computation, BE eligibility
 // conditions, breach handling, and Close/Log logic are all unchanged —
 // only presentation and the stop-confirmation persistence shape changed.
+// TDAS V5.1.1D — Active Trade Stop-State Labels. Pure helper: derives
+// whether the CONFIRMED actual stop (never the merely-recommended one —
+// see the doctrine comment at its call site) still represents remaining
+// downside risk, break-even protection, or locked-in profit, for a given
+// direction/entry/actual-stop triple. Reuses the exact existing risk-point
+// formula (points = |entry - basis|, direction-aware subtraction order)
+// rather than inventing a second risk model — this function only adds the
+// SIGN/label/state interpretation on top of it.
+//
+// Tolerance: derived directly from fmt()'s own display-precision buckets
+// (half the smallest increment fmt() would actually show at this price
+// magnitude), so the state can never flicker between RISK and BREAK EVEN
+// from floating-point noise smaller than what's visibly displayed.
+function _tdasPriceDisplayTolerance(price){
+  const p = Math.abs(price);
+  if(p>=10000) return 0.5;
+  if(p>=1000) return 0.005;
+  if(p>=1) return 0.0005;
+  return 0.000005;
+}
+function deriveTradeStopProtectionState(isLong, entryPx, actualStopLevel){
+  if(entryPx==null || actualStopLevel==null){
+    return { state:'unknown', percentLabel:'Risk %', pointsLabel:'Risk points', percentValue:null, pointsValue:null, valueClass:'' };
+  }
+  const tol = _tdasPriceDisplayTolerance(entryPx);
+  const delta = actualStopLevel - entryPx; // signed, entry-relative
+  const atBreakEven = Math.abs(delta) <= tol;
+  const isProfitLocked = atBreakEven ? false : (isLong ? delta > 0 : delta < 0);
+
+  if(atBreakEven){
+    return { state:'break_even', percentLabel:'Break even', pointsLabel:'Break even', percentValue:0, pointsValue:0, valueClass:'be' };
+  }
+  if(isProfitLocked){
+    // Long: profitPoints = actualStop - entry. Short: profitPoints = entry - actualStop.
+    const profitPoints = isLong ? (actualStopLevel-entryPx) : (entryPx-actualStopLevel);
+    const profitPct = entryPx ? (profitPoints/entryPx*100) : null;
+    return { state:'profit', percentLabel:'Profit %', pointsLabel:'Profit points', percentValue:profitPct, pointsValue:profitPoints, valueClass:'profit' };
+  }
+  // Risk — same magnitude the existing _riskPts/_riskPct formulas already
+  // compute (points = |entry-basis|, direction-aware order), reproduced
+  // here so the helper is the single source of truth for all three states.
+  const riskPoints = Math.abs(isLong ? (entryPx-actualStopLevel) : (actualStopLevel-entryPx));
+  const riskPct = entryPx ? Math.abs(riskPoints/entryPx*100) : null;
+  return { state:'risk', percentLabel:'Risk %', pointsLabel:'Risk points', percentValue:riskPct, pointsValue:riskPoints, valueClass:'risk' };
+}
+
 function renderOrderTicketCard(e){
   // TDAS V4.10.4G — Timeframe-Isolated Active Trade Data Migration.
   // liveData now comes from the exact symbol+trade.tf (setup timeframe)
@@ -21419,6 +21465,24 @@ function renderOrderTicketCard(e){
     : '—';
   const _actualStopDisplay = _hasActualStop ? fmt(_mgmt.confirmedLevel) : 'Not confirmed';
 
+  // TDAS V5.1.1D — Active Trade Stop-State Labels. Once a genuine
+  // CONFIRMED actual stop exists, the Risk %/points boxes dynamically
+  // relabel to reflect whether that stop still represents downside risk,
+  // break-even protection, or locked-in profit — using the SAME
+  // _riskPts/_riskPct magnitude above as their single source of risk-point
+  // truth when in risk state (deriveTradeStopProtectionState() does not
+  // recompute a second model). Without a confirmed actual stop, this
+  // deliberately stays on the existing recommended-stop-based Risk
+  // display — per doctrine, a merely-recommended stop can never represent
+  // "locked-in profit".
+  const _stopState = _hasActualStop
+    ? deriveTradeStopProtectionState(isLong, entryPx, _mgmt.confirmedLevel)
+    : { state:'risk', percentLabel:'Risk %', pointsLabel:'Risk points', percentValue:_riskPct, pointsValue:_riskPts, valueClass:'risk' };
+  const _stopStateColor = _stopState.state==='profit' ? 'var(--green-text)' : (_stopState.state==='break_even' ? 'var(--text2)' : '#a78bfa');
+  const _stopStateSign = _stopState.state==='profit' ? '+' : '';
+  const _stopStatePercentHtml = _stopState.percentValue!=null ? (_stopStateSign+_stopState.percentValue.toFixed(2)+'%') : '—';
+  const _stopStatePointsHtml = _stopState.pointsValue!=null ? (_stopStateSign+fmtPts(_stopState.pointsValue)+'pts') : '—';
+
   // Front face fields — same HTF badge / session-candle source fields as
   // the Scanner active-trade placeholder (buildActiveScannerPlaceholderHtml).
   const _htfState = (typeof buildHtfBadgeState==='function' && liveData) ? buildHtfBadgeState(liveData, e.signal) : 'unknown';
@@ -21488,8 +21552,8 @@ function renderOrderTicketCard(e){
         <div class="tl-item tl-primary"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
         <div class="tl-item tl-secondary"><div class="tl-label">Recommended stop</div><div class="tl-val" style="color:var(--text2);">${_recommendedStop!=null?fmt(_recommendedStop):'—'}</div></div>
         <div class="tl-item tl-primary"><div class="tl-label">Actual stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--green-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
-        <div class="tl-item tl-secondary"><div class="tl-label">Risk %</div><div class="tl-val" style="color:#a78bfa;">${_riskPct!=null?_riskPct.toFixed(2)+'%':'—'}</div></div>
-        <div class="tl-item tl-secondary"><div class="tl-label">Risk points</div><div class="tl-val" style="color:#a78bfa;">${_riskPts!=null?fmtPts(_riskPts)+'pts':'—'}</div></div>
+        <div class="tl-item tl-secondary"><div class="tl-label">${_stopState.percentLabel}</div><div class="tl-val" style="color:${_stopStateColor};">${_stopStatePercentHtml}</div></div>
+        <div class="tl-item tl-secondary"><div class="tl-label">${_stopState.pointsLabel}</div><div class="tl-val" style="color:${_stopStateColor};">${_stopStatePointsHtml}</div></div>
       </div>
       <div class="otc-stop-pill-row">
         ${manualPillHtml}
