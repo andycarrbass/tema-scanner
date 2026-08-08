@@ -2121,7 +2121,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1D';
+const APP_BUILD = 'V5.1.1E1a';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9616,7 +9616,24 @@ function buildHtfSupportPhrase(d, openTrade, direction) {
 function getStopBreachState(openTrade, currentPrice) {
   if (!openTrade) return { breached: false, direction: null, stop: null, currentPrice: null, breachPct: null };
   const direction = openTrade.signal === 'long' ? 'long' : openTrade.signal === 'short' ? 'short' : null;
-  const stop = openTrade.stop != null ? openTrade.stop : (openTrade.stopPrice != null ? openTrade.stopPrice : null);
+  // TDAS V5.1.1E — the confirmed ACTUAL stop (however it was set — original
+  // risk, break-even, or a manually moved profit-locking level) is now
+  // authoritative for breach detection, using the SAME single reconciling
+  // function (_computeStopManagementState) the Risk/BE/Profit label logic
+  // (V5.1.1D) and the Trade-card pills already use — not a second,
+  // independent notion of "the stop". Only when no confirmed actual stop
+  // exists does the merely-recommended stop (openTrade.stop/.stopPrice)
+  // remain the fallback, exactly per the required precedence. This does
+  // not special-case break-even in any way: a manually-confirmed stop at
+  // entry, above entry, or below entry are all just "the confirmed actual
+  // stop" to this function — the SAME comparison applies regardless of
+  // where it sits, matching the doctrine that BE is not a separate source
+  // of truth.
+  const _mgmtForBreach = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(openTrade) : null;
+  const _confirmedStopForBreach = (_mgmtForBreach && _mgmtForBreach.confirmed && _mgmtForBreach.confirmedLevel != null) ? _mgmtForBreach.confirmedLevel : null;
+  const stop = _confirmedStopForBreach != null
+    ? _confirmedStopForBreach
+    : (openTrade.stop != null ? openTrade.stop : (openTrade.stopPrice != null ? openTrade.stopPrice : null));
   if (direction == null || stop == null || !isFinite(stop) || currentPrice == null || !isFinite(currentPrice)) {
     return { breached: false, direction, stop, currentPrice, breachPct: null };
   }
@@ -12961,6 +12978,21 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
   const tema17 = t17a[t17a.length - 1];
   const tema92 = t92a[t92a.length - 1];
   const temaDirection = tema17 > tema92 ? 'bullish' : (tema17 < tema92 ? 'bearish' : 'neutral');
+  // TDAS V5.1.1E — TEMA92 slope, additive. t92a already holds the full
+  // confirmed TEMA92 series (needed above just for its last value) — the
+  // previous confirmed value was already computed and discarded; this
+  // exposes it, using the exact same negligible-threshold measured-slope
+  // pattern already established for sma135Slope a few lines below and for
+  // the setup-timeframe tema92Slope in computeStates() — reused, not
+  // reinvented. Measured only; does not alter TEMA/UT/classification in
+  // any way.
+  const tema92Prev = t92a.length >= 2 ? t92a[t92a.length - 2] : null;
+  let tema92Slope = 'unknown';
+  if (tema92 != null && tema92Prev != null) {
+    const _tema92Delta = tema92 - tema92Prev;
+    const _tema92Negligible = Math.abs(_tema92Delta) < Math.abs(tema92Prev) * 0.0001;
+    tema92Slope = _tema92Negligible ? 'flat' : (_tema92Delta > 0 ? 'rising' : 'falling');
+  }
 
   const lastClosedPrice = closedC[closedC.length - 1];
   const sma200 = sma(closedC, 200);
@@ -13009,7 +13041,7 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
     symbol, timeframe, confirmedBarId, lastClosedPrice,
     utDirection: utBotRaw.direction === 1 ? 'bullish' : (utBotRaw.direction === -1 ? 'bearish' : 'unknown'),
     utBarsSinceFlip: utBotRaw.barsAgoFlip != null ? utBotRaw.barsAgoFlip : null,
-    tema17, tema92, temaDirection,
+    tema17, tema92, temaDirection, tema92Slope,
     sma200, sma200Previous, sma200SlopeDelta, sma200SlopeAtr, sma200SlopeState, priceAboveSma200,
     sma135, sma135Slope, sma135Previous: sma135Prev,
     atr, extensionAnchor: 'TEMA92', extensionSignedAtr, extensionAbsoluteAtr,
@@ -20042,7 +20074,16 @@ function openOutcomeModal(id,presetOutcome){
   const label=LABELS[entry.symbol]||entry.symbol;
   document.getElementById('outModalTitle').textContent=`Close trade — ${label} ${entry.tf.toUpperCase()}`;
   const displayEntry=entry.actualEntry||entry.price;
-  document.getElementById('outModalSub').textContent=`${entry.signal==='long'?'▲ Long':'▼ Short'} · Entry ${fmt(displayEntry)}${entry.stop!=null?' · Stop '+fmt(entry.stop):''}${entry.target!=null?' · Target '+fmt(entry.target):''}`;
+  // TDAS V5.1.1E — subheader now shows the confirmed ACTUAL stop when one
+  // exists (same _computeStopManagementState reconciliation as the breach
+  // detector and the card's own Risk/BE/Profit labels), falling back to
+  // the recommended stop only when no actual stop has ever been
+  // confirmed — so the dialog's own summary line never contradicts the
+  // pre-filled Exit Price below it.
+  const _outcomeMgmt = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
+  const _outcomeActualStop = (_outcomeMgmt && _outcomeMgmt.confirmed && _outcomeMgmt.confirmedLevel != null) ? _outcomeMgmt.confirmedLevel : null;
+  const _outcomeStopForDisplay = _outcomeActualStop != null ? _outcomeActualStop : entry.stop;
+  document.getElementById('outModalSub').textContent=`${entry.signal==='long'?'▲ Long':'▼ Short'} · Entry ${fmt(displayEntry)}${_outcomeStopForDisplay!=null?' · Stop '+fmt(_outcomeStopForDisplay):''}${entry.target!=null?' · Target '+fmt(entry.target):''}`;
   document.getElementById('outExitPrice').value='';
   document.getElementById('outRMultiple').value='';
   document.getElementById('outNote').value='';
@@ -20063,7 +20104,14 @@ function autoCalcR(){
   const exitPx=parseFloat(document.getElementById('outExitPrice').value);
   if(isNaN(exitPx))return;
   const entryPx=entry.actualEntry||entry.price;
-  const riskPx=entry.stop!=null?Math.abs(entryPx-entry.stop):null;
+  // TDAS V5.1.1E — R-multiple auto-calc now reflects the REAL risk taken
+  // (confirmed actual stop) rather than the original recommended risk,
+  // when an actual stop has been confirmed — consistent with the same
+  // confirmed-actual-stop precedence used everywhere else in this dialog.
+  const _autoCalcMgmt = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
+  const _autoCalcActualStop = (_autoCalcMgmt && _autoCalcMgmt.confirmed && _autoCalcMgmt.confirmedLevel != null) ? _autoCalcMgmt.confirmedLevel : null;
+  const _riskBasisStop = _autoCalcActualStop != null ? _autoCalcActualStop : entry.stop;
+  const riskPx=_riskBasisStop!=null?Math.abs(entryPx-_riskBasisStop):null;
   if(!riskPx)return;
   const pnl=entry.signal==='long'?(exitPx-entryPx):(entryPx-exitPx);
   const r=(pnl/riskPx).toFixed(2);
@@ -20089,8 +20137,20 @@ function selectOut(o){
     document.getElementById('outRMultiple').value=rr;
     document.getElementById('outExitPrice').value=entry.target!=null?safeFixed(entry.target,entry.target>=1000?2:4):'';
   } else if(o==='loss'){
+    // TDAS V5.1.1E — pre-fills the CONFIRMED ACTUAL stop that was actually
+    // breached (via the same _computeStopManagementState reconciliation
+    // used by the breach detector above), never the merely-recommended
+    // stop, when an actual stop has been confirmed. Required precedence:
+    // confirmed actual stop exists -> use it; no confirmed actual stop ->
+    // the recommended stop remains the fallback exactly as before. This
+    // is the exact dialog pre-fill this build's SUI/USDT SHORT fixture
+    // (entry 0.69460, recommended 0.71151, confirmed actual 0.68000)
+    // requires: 0.68000, never 0.71151.
+    const _lossMgmt = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
+    const _lossActualStop = (_lossMgmt && _lossMgmt.confirmed && _lossMgmt.confirmedLevel != null) ? _lossMgmt.confirmedLevel : null;
+    const _lossStopForPrefill = _lossActualStop != null ? _lossActualStop : entry.stop;
     document.getElementById('outRMultiple').value='-1';
-    document.getElementById('outExitPrice').value=entry.stop!=null?safeFixed(entry.stop,entry.stop>=1000?2:4):'';
+    document.getElementById('outExitPrice').value=_lossStopForPrefill!=null?safeFixed(_lossStopForPrefill,_lossStopForPrefill>=1000?2:4):'';
   } else if(o==='be'){
     document.getElementById('outRMultiple').value='0';
     document.getElementById('outExitPrice').value=entryPx.toFixed(entryPx>=1000?2:4);
@@ -21109,7 +21169,13 @@ function renderWatchCard(e){
   // TDAS V5.0.0G2 §9 / V5.0.0H — same approved custom inline SVG flip-card
   // icon as Trade's Manage Trade/Trade Overview (rounded-rectangle card
   // outline + wrapping arrow, currentColor). Not a new icon.
-  const flipIconSvg = '<svg class="otc-flip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M12 5.5C13.2 6.3 14 7.6 14 9C14 11.2 12.2 13 10 13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M10 11.3L10 13L11.7 13.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+  // TDAS V5.1.1E1a — unified with Trade's own flipIconSvg (see the other
+  // declaration below, near renderOrderTicketCard) so Watch and Trade use
+  // the exact same approved refresh/double-circular-arrows glyph. Kept as
+  // its own separate declaration (not a shared helper) — this is a tiny,
+  // self-contained visual patch, not a refactor; the two functions remain
+  // otherwise fully independent.
+  const flipIconSvg = '<svg class="otc-flip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M13.5 8A5.5 5.5 0 0 1 3.5 11.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M3.5 8.5L3.5 11.5L6.5 11.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M2.5 8A5.5 5.5 0 0 1 12.5 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M12.5 7.5L12.5 4.5L9.5 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
 
   // Stage — TDAS V4.10.3R Watch-Card Truthfulness, completely unchanged
   // logic (live stage when timeframe-matched, else the frozen at-watch
@@ -21495,13 +21561,24 @@ function renderOrderTicketCard(e){
   const dirArrow = isLong ? '\u25b2' : '\u25bc';
 
   const copyBtnHtml = `<button class="snap-btn" type="button" title="Copy snapshot" data-tid="${e.id}" onclick="event.stopPropagation();event.preventDefault();copySnapshotFromTrade(+this.dataset.tid,this);"><span class="snap-icon"></span></button>`;
-  // TDAS V5.0.0G2 §9 — custom inline SVG flip-card icon (rounded-rectangle
-  // card outline + a wrapping arrow), replacing V5.0.0G's ⇄ Unicode
-  // glyph. currentColor inherits the button's own text colour
-  // automatically, so button colour is unaffected. Same icon on both
-  // Manage Trade and Trade Overview (icon-only change — button size,
-  // colour, placement and flip behaviour are unchanged).
-  const flipIconSvg = '<svg class="otc-flip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="2" y="4" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.3"/><path d="M12 5.5C13.2 6.3 14 7.6 14 9C14 11.2 12.2 13 10 13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M10 11.3L10 13L11.7 13.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
+  // TDAS V5.1.1E1 — Trade-card flip icon replaced with the standard
+  // refresh/double-circular-arrows symbol, per settled product decision:
+  // the card flips both directions (front->back and back->front), so a
+  // symmetric refresh glyph reads more clearly than the prior rounded-
+  // rectangle-card-with-wrapping-arrow icon (which read as a single-
+  // direction "view" affordance, not a two-way flip). Same viewBox/width/
+  // height/class ("otc-flip-icon") and the same currentColor/stroke-width/
+  // linecap construction technique as the icon it replaces (an arc `path`
+  // plus a short two-segment L-shaped arrowhead at its open end) — button
+  // dimensions, spacing, and colour are completely unaffected; only the
+  // glyph itself changed. Two opposing 5.5-radius arcs, each ending in its
+  // own arrowhead, rotationally symmetric — the standard "⟳" refresh
+  // shape, clean line-style, no fill. This is the Trade card's OWN,
+  // separate copy of this variable (Watch's own flipIconSvg, used for
+  // "Manage Watch"/"Watch Overview", is a different local variable inside
+  // renderWatchCard and is deliberately left untouched — the audit
+  // confirmed these two are not shared).
+  const flipIconSvg = '<svg class="otc-flip-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M13.5 8A5.5 5.5 0 0 1 3.5 11.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M3.5 8.5L3.5 11.5L6.5 11.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/><path d="M2.5 8A5.5 5.5 0 0 1 12.5 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/><path d="M12.5 7.5L12.5 4.5L9.5 4.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>';
 
   return `<div class="${cardClass}" id="otcard-${e.id}">
     <div class="otc-face otc-face-front">
