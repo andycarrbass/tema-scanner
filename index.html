@@ -1392,6 +1392,25 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .watch-card.twin-sided .otc-face-back{display:none;}
 .watch-card.twin-sided.is-flipped .otc-face-front{display:none;}
 .watch-card.twin-sided.is-flipped .otc-face-back{display:flex;}
+/* TDAS V5.1.1E1b — Watch rear-face content (watch-cond-block, the
+   Better Entry banner when present, Price Tracking, Stage/At-watch,
+   Notes, and the action-zone footer) can together exceed the card's
+   fixed 500px height once the Better Entry banner renders — previously
+   silently clipped by the shared .otc-face{overflow:hidden} rule
+   (V5.0.0H doctrine), which pushed Notes/the footer down until they
+   were obscured or overlapped, with no way to reach them. Scoped
+   exclusively to Watch's rear face (never Trade's rear, never Watch's
+   own front, never the shared .otc-face base rule) so the "no routine
+   scrolling, line-clamp instead" doctrine remains intact everywhere it
+   was originally intended — this is the one place a fixed-height,
+   variable-content-length card genuinely needs it, per the task's own
+   explicitly-acceptable "allow the inner content area to scroll"
+   correction. Nothing is ever hidden or overlapped now, even in the
+   worst case (Better Entry banner + long note + narrow card): the user
+   can always scroll to reach every row, including the footer buttons.
+   Stage/At-watch merging onto one row (above) already reclaims real
+   space for the common case; this is the guarantee for the rest. */
+.watch-card.twin-sided .otc-face-back{overflow-y:auto;overflow-x:hidden;}
 
 /* Watch rear — conditions + progress share one container. Two columns in
    the settled logical order (TEMA/UT, HTF/ADX, SMA alone on its own row);
@@ -1415,6 +1434,15 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .watch-progress-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;font-weight:700;letter-spacing:0.4px;color:var(--text3);}
 .watch-progress-row .count{font-family:var(--mono);color:var(--text2);}
 .watch-progress-row.complete .count{color:var(--green-text);}
+
+/* TDAS V5.1.1E1b — Stage/At-watch on one row. Both labels+pills stay
+   visible at normal card width; wraps to two lines only on genuinely
+   narrow widths (matches the existing .watch-cond-grid narrow-width
+   pattern above). Font size unchanged (11px, same as before); only the
+   layout (row vs. stacked) and the reclaimed margin changed. */
+.watch-stage-row{display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px;font-size:11px;margin-bottom:8px;color:var(--text3);}
+.watch-stage-row span{display:inline-flex;align-items:center;gap:4px;}
+@media(max-width:220px){.watch-stage-row{gap:4px 0;}}
 
 /* Better Entry — neutral management-info container, rear only, shown only
    at/above the existing >=1.0% threshold (_computeWatchEntryImprovementPct,
@@ -2121,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1E1a';
+const APP_BUILD = 'V5.1.1E1b';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -20096,6 +20124,27 @@ function closeOutcomeModal(){
   outcomeEditId=null; selectedOutcomeModal=null;
 }
 
+// TDAS V5.1.1E1b — realised-R helper, single source of truth for both the
+// 'loss' preset and the 'manual' auto-calc path below. R is intentionally
+// anchored to the trade's ORIGINAL initial risk (entry.stop — the
+// ATR-based recommended stop set once at entry creation, see
+// `entry.stop = entry.stopPrice` in saveEntry(), never mutated afterward
+// by the later actual-stop-confirmation flow) — never the confirmed
+// actual stop, which remains authoritative only for breach detection,
+// breached-stop display, and exit-price pre-fill (E1/E1a, unchanged).
+// A later manually moved stop must never redefine what 1R means for this
+// trade. Returns null when the original stop is unavailable — callers
+// must not fabricate a fallback denominator.
+function _calcRealisedR(entry, exitPx) {
+  if (!entry || exitPx == null || !isFinite(exitPx)) return null;
+  const entryPx = entry.actualEntry || entry.price;
+  if (entryPx == null || entry.stop == null) return null;
+  const initialRisk = Math.abs(entryPx - entry.stop);
+  if (!initialRisk) return null;
+  const pnl = entry.signal === 'long' ? (exitPx - entryPx) : (entryPx - exitPx);
+  return pnl / initialRisk;
+}
+
 function autoCalcR(){
   if(selectedOutcomeModal!=='manual')return;
   // Find by id — journalId == id for self-referencing entries
@@ -20103,19 +20152,17 @@ function autoCalcR(){
   if(!entry)return;
   const exitPx=parseFloat(document.getElementById('outExitPrice').value);
   if(isNaN(exitPx))return;
-  const entryPx=entry.actualEntry||entry.price;
-  // TDAS V5.1.1E — R-multiple auto-calc now reflects the REAL risk taken
-  // (confirmed actual stop) rather than the original recommended risk,
-  // when an actual stop has been confirmed — consistent with the same
-  // confirmed-actual-stop precedence used everywhere else in this dialog.
-  const _autoCalcMgmt = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
-  const _autoCalcActualStop = (_autoCalcMgmt && _autoCalcMgmt.confirmed && _autoCalcMgmt.confirmedLevel != null) ? _autoCalcMgmt.confirmedLevel : null;
-  const _riskBasisStop = _autoCalcActualStop != null ? _autoCalcActualStop : entry.stop;
-  const riskPx=_riskBasisStop!=null?Math.abs(entryPx-_riskBasisStop):null;
-  if(!riskPx)return;
-  const pnl=entry.signal==='long'?(exitPx-entryPx):(entryPx-exitPx);
-  const r=(pnl/riskPx).toFixed(2);
-  document.getElementById('outRMultiple').value=r;
+  // TDAS V5.1.1E1b — R is now anchored to the trade's ORIGINAL initial
+  // risk (entry.stop) unconditionally, via the shared _calcRealisedR()
+  // helper — NOT the confirmed actual stop. The V5.1.1E version of this
+  // function used the confirmed actual stop as the risk denominator,
+  // which is exactly the bug this build fixes: a later manually moved
+  // stop must never redefine 1R. The confirmed actual stop remains
+  // authoritative elsewhere (breach detection, exit-price pre-fill,
+  // subheader) — untouched by this change.
+  const r = _calcRealisedR(entry, exitPx);
+  if (r == null) return;
+  document.getElementById('outRMultiple').value=r.toFixed(2);
 }
 function selectOut(o){
   selectedOutcomeModal=o;
@@ -20149,7 +20196,20 @@ function selectOut(o){
     const _lossMgmt = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
     const _lossActualStop = (_lossMgmt && _lossMgmt.confirmed && _lossMgmt.confirmedLevel != null) ? _lossMgmt.confirmedLevel : null;
     const _lossStopForPrefill = _lossActualStop != null ? _lossActualStop : entry.stop;
-    document.getElementById('outRMultiple').value='-1';
+    // TDAS V5.1.1E1b — the "Loss" preset no longer hardcodes -1. A stop
+    // breach is not always a loss in R terms: if the confirmed actual
+    // stop that was hit is itself a profit-locking level (moved past
+    // entry), the realised R for THIS trade is genuinely positive, even
+    // though the exit mechanism was a stop breach. _calcRealisedR() uses
+    // the SAME original-initial-risk denominator as every other outcome
+    // path (win/manual) — only the exit price differs per branch. A
+    // genuine loss at the original stop level still correctly resolves
+    // to approximately -1 through this same calculation, unchanged in
+    // substance from before; only the case where the actual stop
+    // genuinely differs from the original is now correct instead of
+    // silently wrong.
+    const _lossR = _lossStopForPrefill != null ? _calcRealisedR(entry, _lossStopForPrefill) : null;
+    document.getElementById('outRMultiple').value = _lossR != null ? _lossR.toFixed(2) : '-1';
     document.getElementById('outExitPrice').value=_lossStopForPrefill!=null?safeFixed(_lossStopForPrefill,_lossStopForPrefill>=1000?2:4):'';
   } else if(o==='be'){
     document.getElementById('outRMultiple').value='0';
@@ -21181,16 +21241,22 @@ function renderWatchCard(e){
   // logic (live stage when timeframe-matched, else the frozen at-watch
   // stage, never silently presenting a mismatched-lens value as current);
   // only relocated to the rear face.
+  // TDAS V5.1.1E1b — Stage/At-watch now render on ONE row when both are
+  // present, reclaiming one vertical row of the fixed-height rear face
+  // (see .watch-stage-row below). Labels, pill text, pill colours, and
+  // the underlying live/stored values are completely unchanged — layout
+  // only.
   const _stageBadgeClass = {'Fresh':'stage-fresh','Developing':'stage-developing','Mature':'stage-mature','Late Stage':'stage-exit'};
   const _badge = (label) => `<span class="stage-badge ${_stageBadgeClass[label]||'stage-fresh'}">${label}</span>`;
   const _liveStage = (evidence.valid && liveData && liveData.tradeStage) ? liveData.tradeStage : null;
   const _storedStage = e.tradeStage || null;
   let stageHtml = '';
-  if (_liveStage) {
-    const _atWatchHtml = _storedStage ? `<div style="font-size:11px;margin-bottom:8px;color:var(--text3);">At watch: ${_badge(_storedStage)}</div>` : '';
-    stageHtml = `<div style="font-size:11px;margin-bottom:8px;">Stage: ${_badge(_liveStage)}</div>${_atWatchHtml}`;
+  if (_liveStage && _storedStage) {
+    stageHtml = `<div class="watch-stage-row"><span>Stage: ${_badge(_liveStage)}</span><span>At watch: ${_badge(_storedStage)}</span></div>`;
+  } else if (_liveStage) {
+    stageHtml = `<div class="watch-stage-row"><span>Stage: ${_badge(_liveStage)}</span></div>`;
   } else if (_storedStage) {
-    stageHtml = `<div style="font-size:11px;margin-bottom:8px;">At watch: ${_badge(_storedStage)}</div>`;
+    stageHtml = `<div class="watch-stage-row"><span>At watch: ${_badge(_storedStage)}</span></div>`;
   }
 
   return `<div class="watch-card twin-sided${fullConf?' full-conf':''}" id="wcard-${e.id}">
