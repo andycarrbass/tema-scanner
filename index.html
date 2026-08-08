@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1E2a';
+const APP_BUILD = 'V5.1.1E2b';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -23945,12 +23945,16 @@ function confCountdown(tf){
 // function only changes how they are DISPLAYED, never their value.
 // Preserves the existing "--:--" no-timer fallback exactly.
 function _formatCandleCountdown(minsRemaining, secsRemaining){
+  // TDAS V5.1.1E2b — compact unit letters (M/S/H), no space between the
+  // numeric value and its unit letter, single space between components.
+  // Text-only change; the branching structure, thresholds, and the
+  // minsRemaining/secsRemaining inputs themselves are untouched.
   if (minsRemaining == null || secsRemaining == null) return '--:--';
-  if (minsRemaining < 60) return minsRemaining + ' MIN ' + secsRemaining + ' SEC';
+  if (minsRemaining < 60) return minsRemaining + 'M ' + secsRemaining + 'S';
   const hrs = Math.floor(minsRemaining / 60);
   const mins = minsRemaining % 60;
-  if (mins === 0) return hrs + (hrs === 1 ? ' HR' : ' HRS');
-  return hrs + (hrs === 1 ? ' HR ' : ' HRS ') + mins + ' MIN';
+  if (mins === 0) return hrs + 'H';
+  return hrs + 'H ' + mins + 'M';
 }
 
 // ── TDAS V4.10.2C — Confluence Action Activation: render helpers ─────────
