@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1E2b';
+const APP_BUILD = 'V5.1.1F1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -20902,21 +20902,33 @@ function renderWatchPage(){
   updateWatchCount();
 }
 
-// ── TDAS V5.1.1C — Setups page (shadow foundation) ──────────────────────────
-// Pure render from the SAME currentScanData Scanner already populates — no
-// fetch, no new scan, no second result store. A symbol appears here only
-// while its currentScanData entry is a 4H-tf result carrying
-// tradeReadyV1.status==='TRADE_READY'; a 1H scan overwrites that same
-// symbol's entry with a 1H-tf result (which never carries tradeReadyV1,
-// since V1 is 4H-led only), so the symbol simply disappears from Setups
-// until the next 4H scan repopulates it — deterministic, no mixing, no
-// separate "last 4H generation" cache needed. Cards remain fully
-// Scanner-owned: this function never writes to journal, never calls
-// reconcileScannerOwnership(), never mutates currentScanData.
+// ── TDAS V5.1.1F1 — Setups page (retained 4H snapshot) ──────────────────────
+// Reads the retained snapshot committed by runScan() (see its own commit-
+// site comment) instead of live-scanning currentScanData directly — this
+// is the exact fix for the defect where a subsequent 1H scan emptied
+// Setups (currentScanData is symbol-keyed only, so a 1H scan's writes
+// used to silently overwrite the same slot a 4H candidate had occupied).
+// A 1H scan can never reach the commit site above, so it can never
+// affect this state at all. Active-trade suppression is applied HERE, at
+// read time — using the same isScannerSymbolSuppressed() authority
+// Scanner's own summary tile already uses — rather than baked into the
+// retained record itself, so a candidate that becomes temporarily
+// suppressed by an active trade is hidden from the rendered list without
+// being deleted from retained state; removing the trade later makes it
+// visible again without waiting for another 4H scan. Symbol-only
+// identity remains correct for this bounded shadow fix because current
+// invariants (calcPair() produces exactly one result per symbol per
+// scan) prevent simultaneous competing 4H candidate identities for the
+// same symbol — this is a CURRENT INVARIANT of the existing architecture,
+// not an eternal rule, and may need revisiting once genuine Setups
+// ownership/lifecycle work begins. Cards remain fully Scanner-owned:
+// this function never writes to journal, never calls
+// reconcileScannerOwnership(), never mutates currentScanData, and never
+// triggers a fetch or classifier execution — a pure read of already-
+// retained state.
 function _setupsTradeReadyCandidates(){
-  return Object.keys(currentScanData)
-    .map(sym=>({sym, d:currentScanData[sym]}))
-    .filter(({d})=>d && d.tf==='4h' && d.tradeReadyV1 && d.tradeReadyV1.status==='TRADE_READY');
+  if (!_latestFourHSetupsSnapshot) return [];
+  return _latestFourHSetupsSnapshot.filter(({sym}) => !isScannerSymbolSuppressed(sym, '4h'));
 }
 
 // Card body reuses V5.1.1B's buildTradeReadyV1TestRearHtml() directly (the
@@ -24469,15 +24481,18 @@ function renderSummary(results, tf){
   // untouched for its own unrelated uses (sorting, persistence,
   // Confluence population).
   const highConv=valid.filter(v=>v.authoritativeClassification && v.authoritativeClassification.highConvictionKnown===true && v.authoritativeClassification.highConviction===true).length;
-  // TDAS V5.1.1C — Setups summary tile replaces the former High Conviction
-  // tile. Deliberately reuses the SAME suppression-filtered `valid` array
-  // highConv itself is derived from — this is what guarantees the Scanner
-  // Setups count and the Setups-page Trade Ready lane count agree for the
-  // same result generation (both must read the identical source).
-  // highConv (legacy High Conviction) itself is left completely
-  // unchanged above — still computed, just no longer surfaced in this
-  // tile; nothing else reads this local var's absence from the template.
-  const setupsCount=valid.filter(v=>v.tradeReadyV1 && v.tradeReadyV1.status==='TRADE_READY').length;
+  // TDAS V5.1.1F1 — now reads the SAME retained-4H-snapshot source
+  // Setups itself reads (_setupsTradeReadyCandidates()), rather than this
+  // scan's own `valid` array — required so the two stay consistent
+  // regardless of the CURRENT scan's own timeframe: before this fix, a
+  // 1H scan made this tile correctly show 0 (since 1H results never
+  // carry tradeReadyV1) while the OLD Setups page ALSO happened to show
+  // 0 for the same underlying reason — a coincidental agreement that
+  // would have become a genuine mismatch once Setups started retaining
+  // its 4H membership across 1H scans (this same build). Reading the
+  // identical source here is what keeps them agreeing on purpose, not by
+  // accident, for every scan generation from now on.
+  const setupsCount=_setupsTradeReadyCandidates().length;
   // TDAS V5.0.0H6 — Pairs tile deliberately left reading PAIRS.length
   // unchanged: it represents the configured scan universe, not a count
   // derived from the currently visible Scanner result set, and the task
@@ -24917,6 +24932,32 @@ function showTab(name){
 // ── Main scan ────────────────────────────────────────────────────────────
 let _scanRunning   = false;
 let _scanGeneration = 0;  // incremented on every runScan() call; used to discard stale renders
+// TDAS V5.1.1F1 — Retained 4H Setups Snapshot. Separate, minimal, in-memory
+// state (Option A from the approved retained-4H-Setups-state audit) —
+// deliberately NOT a currentScanDataByTf refactor. `null` means no
+// successful 4H scan has completed yet this session (Setups shows its
+// existing "No Trade Ready setups" empty state, exactly as before any
+// scan); `[]` means the most recent successful 4H scan genuinely found
+// zero candidates (also correctly empty, but distinct in cause). Each
+// record is `{sym, d}` where `d` is the SAME object reference that
+// becomes `currentScanData[sym]` for this scan (see the commit site in
+// runScan() below) — not a copy, and never a hand-picked field subset:
+// the existing card renderer (buildSetupsCardHtml/buildTechnicalSummaryHtml/
+// buildTradeReadyV1TestRearHtml) already depends on a broad set of `d`'s
+// fields, and inventing a smaller shape would require rewriting those
+// renderers — a genuinely broader refactor than this bounded fix calls
+// for. `d` itself never contains raw kline arrays (those are local
+// variables inside calcPair() that go out of scope once it returns), so
+// this satisfies "no full kline arrays retained" without requiring a new
+// persistence model. Because it is a shared reference (not a copy), a
+// live-price tick (_scannerTickerRefresh()'s in-place `.price` patch)
+// automatically flows through to the retained record too, for as long as
+// currentScanData[sym] still points to this same 4H-scan object — i.e.
+// until a later 1H scan replaces that symbol's currentScanData entry
+// with a new object, at which point the retained record's own displayed
+// price simply stops updating until the next successful 4H scan
+// refreshes it. Membership itself is never affected by this either way.
+let _latestFourHSetupsSnapshot = null;
 // TDAS V5.0.0H8C — true once the Scanner has successfully rendered a real
 // (non-skeleton) result at least once this session. Gates the first-load
 // compact loading message vs. preserving existing cards on every
@@ -25055,6 +25096,35 @@ async function runScan(auto){
     _shadowCensus = null;
   }
   const indexed = results.map((r,i) => ({r, sym: PAIRS[i]}));
+
+  // TDAS V5.1.1F1 — Retained 4H Setups Snapshot commit. Sits in the SAME
+  // already-guarded region as the rest of this scan's own commit (after
+  // the stale-generation check above, with no intervening `await` since
+  // that check ran) — a stale/superseded scan can never reach this line,
+  // exactly as required. Gated explicitly on tf==='4h' so a 1H scan can
+  // never touch this state at all — the exact defect this build fixes.
+  // Built from `indexed` (fulfilled results only) rather than re-reading
+  // currentScanData, so a symbol whose fetch failed this cycle correctly
+  // does not requalify or persist stale membership. A valid 4H scan that
+  // finds zero candidates still replaces the snapshot with an empty
+  // array — this is retention ACROSS other-timeframe scans, not
+  // indefinite stale membership across a genuinely new 4H generation.
+  //
+  // The `.some(fulfilled)` guard distinguishes a GENUINELY valid scan
+  // (at least one symbol's fetch/classification succeeded this cycle,
+  // even if zero of them happen to qualify as TRADE_READY) from a TOTAL
+  // scan failure (every symbol rejected — network down, upstream error,
+  // etc.), which must never be allowed to silently clear a previously
+  // valid retained snapshot. Without this guard, a total failure and a
+  // genuine zero-candidate scan were indistinguishable (both produce an
+  // empty filtered list), incorrectly wiping good retained state on a
+  // transient network error.
+  if (tf === '4h' && results.some((r) => r.status === 'fulfilled')) {
+    _latestFourHSetupsSnapshot = indexed
+      .filter(({r}) => r.status === 'fulfilled' && r.value && r.value.tradeReadyV1 && r.value.tradeReadyV1.status === 'TRADE_READY')
+      .map(({r, sym}) => ({ sym, d: r.value }));
+  }
+
 
   // TDAS V4.10.3C — Shadow Scanner Order Census. Diagnostic-only: runs
   // AFTER the stale-generation guard above has already passed (so this
