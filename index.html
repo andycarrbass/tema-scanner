@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1E1b';
+const APP_BUILD = 'V5.1.1E2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -10006,6 +10006,63 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     if (!supports) return null;
     return 'price holds ' + (tradeDir === 'long' ? 'above' : 'below') + ' the 1H 200MA';
   }
+  // TDAS V5.1.1E2 — setup-timeframe-ONLY regime-intact phrase, for the
+  // "4H remains below the 200MA; bearish regime intact" REVIEW structure
+  // (Advisory Integration audit §1/§4). Deliberately distinct from
+  // _formatMa200ContextPhrase above: that function combines the setup tf
+  // with its adjacent/management tf (1D for a 4H trade) — genuinely the
+  // wrong pairing for "4H regime, then separately 1H execution context",
+  // which is what this build's REVIEW structure requires. Reuses the
+  // SAME already-computed, already-truthfully-gated ma200Context.setup
+  // slot _buildActiveTradeMa200Context() produces — existing
+  // infrastructure, just consumed differently. Requires only price
+  // position (never slope) — SMA200 slope remains unused, per doctrine.
+  // Returns null (omit, never fabricate) when the setup-tf relation is
+  // unknown or genuinely opposes tradeDir.
+  function _formatSetupRegimeIntactPhrase(tradeDir, ma200Context){
+    const s = ma200Context.setup;
+    if (!s.tf || s.relation !== (tradeDir === 'long' ? 'above' : 'below')) return null;
+    const tfLabel = s.tf.toUpperCase();
+    const bullBear = tradeDir === 'long' ? 'bullish' : 'bearish';
+    return tfLabel + ' remains ' + (tradeDir === 'long' ? 'above' : 'below') + ' the 200MA; ' + bullBear + ' regime intact';
+  }
+  // TDAS V5.1.1E2 — genuinely 1H execution-context 200MA phrase (distinct
+  // from _formatOneH1hMa200Phrase above, which only ever states "holds
+  // above/below", never "testing"). Reuses _relationFromMaState — the
+  // SAME helper _buildActiveTradeMa200Context() itself uses internally,
+  // and the SAME REGIME_MA_PRESSURE_PCT tolerance already approved
+  // elsewhere — applied to oneH's own aboveMA1h/maDist1h fields instead
+  // of the setup/management pairing. "Testing" is only ever stated when
+  // this existing proximity tolerance genuinely fires — never inferred
+  // from visual closeness the code doesn't itself classify as a test.
+  // Adverse/unknown 1H relation is omitted, never asserted as fact.
+  function _formatOneHExecutionMa200Phrase(tradeDir){
+    if (!oneH || oneH.aboveMA1h == null) return null;
+    const rel = _relationFromMaState(oneH.aboveMA1h, oneH.maDist1h);
+    const wantRel = tradeDir === 'long' ? 'above' : 'below';
+    if (rel === 'at') return '1H is testing its 200MA';
+    if (rel === wantRel) return '1H holds ' + wantRel + ' its 200MA';
+    return null; // opposing or unknown — omit rather than assert
+  }
+  // TDAS V5.1.1E2 — composable: appends a genuine 1H execution-context
+  // sentence onto an already-built REVIEW detail (reusing the SAME shared
+  // helper the base sentence came from — _buildTemaCrossAgainstReviewDetail
+  // etc.), but ONLY when 1H is genuinely a THIRD, distinct timeframe from
+  // that base sentence's own setup/management pairing (i.e. the trade's
+  // own setup tf is not itself 1H — the exact same "1H is neither setup
+  // nor management, so use the narrower 1H-only phrase" reasoning already
+  // established in the existing oneHTurnedAgainst branch, applied
+  // consistently here). Never mechanically appended — only when the 1H
+  // fact is genuinely available and supportive/testing; silently omitted
+  // otherwise, exactly matching every other phrase-builder in this file.
+  function _appendOneHExecutionContext(tradeDir, baseDetail){
+    const setupTfLc = ((openTrade && openTrade.tf) || '').toLowerCase();
+    if (setupTfLc === '1h') return baseDetail; // 1H IS the setup here — already covered by the base sentence
+    const phrase = _formatOneHExecutionMa200Phrase(tradeDir);
+    if (!phrase) return baseDetail;
+    const capped = phrase.charAt(0).toUpperCase() + phrase.slice(1);
+    return baseDetail.replace(/\.\s*$/, '') + '. ' + capped + '.';
+  }
   // Surviving setup-timeframe TEMA support phrase — only when TEMA
   // genuinely still confirms tradeDir (never claimed alongside a branch
   // whose own trigger is that TEMA has turned against).
@@ -10071,8 +10128,18 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   // d.evidence at all — setup/management timeframe labels alone produce
   // the exact required sentence for both the 1H-setup/4H-management and
   // 4H-setup/1D-management pairs.
-  function _buildAdjacentDeteriorationReviewDetail(tradeDir, managementTfLabel, setupTfLabel){
-    return managementTfLabel + ' structure is deteriorating against the ' + setupTfLabel + ' ' + tradeDir + ', but no primary exit trigger has fired.';
+  // TDAS V5.1.1E2 — audit-classified PARTIAL (lacked regime context).
+  // ma200Context is now optional; when supplied, the setup-TF
+  // regime-intact phrase is appended only when genuinely supported —
+  // never fabricated, never required (existing callers without it are
+  // unaffected). Trigger condition itself is completely unchanged.
+  function _buildAdjacentDeteriorationReviewDetail(tradeDir, managementTfLabel, setupTfLabel, ma200Context){
+    let out = managementTfLabel + ' structure is deteriorating against the ' + setupTfLabel + ' ' + tradeDir + ', but no primary exit trigger has fired.';
+    if (ma200Context) {
+      const regime = _formatSetupRegimeIntactPhrase(tradeDir, ma200Context);
+      if (regime) out += ' ' + regime.charAt(0).toUpperCase() + regime.slice(1) + '.';
+    }
+    return out;
   }
 
   let action, headline, detail;
@@ -10116,19 +10183,34 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       action = 'CLOSE'; headline = 'CLOSE';
       detail = _stateTfTag + ' UT bullish and ' + _stateTfTag + ' closed above the 200MA.';
     } else if (inProfit && temaCrossAgainst && tema92Rising) {
-      // TEMA-based TP50 path — unchanged by V4.6.0, does not require SMA
-      // confirmation (the task's "too sensitive" concern was specifically
-      // about a bare UT flip alone, not this TEMA-cross-based trigger).
-      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
-      detail = _stateTfTag + ' TEMA crossed against short and TEMA 92 is rising.';
+      // TDAS V5.1.1E2 — converted from TAKE_PROFIT_50 to REVIEW per the
+      // Advisory Integration audit (obsolete percentage-TP doctrine).
+      // Trigger condition is completely unchanged — still requires
+      // inProfit + temaCrossAgainst + tema92Rising, exactly as before, so
+      // no lower-priority branch can supersede it. Reuses the SAME shared
+      // TEMA-cross REVIEW helper branch 9 below already uses (not a
+      // bespoke sentence), then appends genuine 1H execution context only
+      // when 1H is a genuinely distinct layer from this branch's own
+      // setup/management pairing and the fact is actually available.
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = _appendOneHExecutionContext('short', _buildTemaCrossAgainstReviewDetail('short', _stateTfTag, _ma200Context));
     } else if (inProfit && utDir === 1 && _tp50Sma.aboveSma === true) {
-      // TDAS V4.6.0 — bare UT-flip TP50 path, now gated on SMA confirmation.
-      // Unchanged by V4.7.2 — this trigger already requires a genuine price
-      // break (SMA confirmation) alongside profit, which is stronger,
-      // fresher evidence than a raw UT flip alone; out of this version's
-      // scope (see delivery note).
-      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
-      detail = _stateTfTag + ' UT flipped bullish and price reclaimed ' + _tp50Sma.label + '.';
+      // TDAS V5.1.1E2 — converted from TAKE_PROFIT_50 to REVIEW per the
+      // Advisory Integration audit. Trigger unchanged — still requires
+      // inProfit + adverse UT + the SAME SMA reclaim confirmation
+      // (_tp50Sma) that caused the old TP50 trigger. Wording identifies
+      // the adverse UT change, the SMA/structure confirmation itself
+      // (never invents a TP instruction), and setup-TF 200MA context via
+      // the new regime-intact phrase where genuinely supported (never
+      // fabricated when it isn't) — no existing shared helper matches
+      // this UT+SMA trigger shape, so this stays a small, self-contained
+      // construction using the same building blocks as the shared
+      // helpers rather than a second divergent implementation.
+      action = 'REVIEW'; headline = 'REVIEW';
+      let _b50 = _stateTfTag + ' UT flipped bullish and price reclaimed ' + _tp50Sma.label;
+      const _b50Regime = _formatSetupRegimeIntactPhrase('short', _ma200Context);
+      detail = _b50 + (_b50Regime ? '; ' + _b50Regime : '') + '.';
+      detail = _appendOneHExecutionContext('short', detail);
     } else if (_adverseUtShort.isAdverse && _adverseUtShort.isFresh) {
       // TDAS V4.7.2 — Advisory Hierarchy Refinement. Replaces the old
       // freshness-unaware "utDir===1" REVIEW branches (V4.6.0): those
@@ -10142,14 +10224,30 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _buildFreshAdverseUtReviewDetail('short', _adverseUtShort, _adverseUtShort.tfLabel, _ma200Context);
     } else if (inProfit && oneHStructureReclaimed === true) {
-      action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
-      detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
+      // TDAS V5.1.1E2 — converted from TAKE_PROFIT_25 to REVIEW per the
+      // Advisory Integration audit. Trigger (inProfit + oneHStructureReclaimed)
+      // unchanged — profit state alone no longer determines a different
+      // structural interpretation from the existing (non-profit) 1H-reclaim
+      // REVIEW branch just below; both now converge on the same wording
+      // shape, per the audit's own "do not merge branches, minimal
+      // conversion preferred" guidance — trigger conditions stay separate,
+      // wording shape is now consistent.
+      action = 'REVIEW'; headline = 'REVIEW';
+      const _survivingUt1hC = (oneH && oneH.utDirection1h === -1) ? '1H UT remains bearish' : null;
+      const _regimeC = _formatSetupRegimeIntactPhrase('short', _ma200Context);
+      const _tailC = _joinSurvivingClauses([_regimeC, _survivingUt1hC]);
+      detail = '1H structure reclaimed against short.' + (_tailC ? ' ' + _tailC.charAt(0).toUpperCase() + _tailC.slice(1) + '.' : '');
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      // TDAS V4.8 Phase D Follow-Up — names the surviving 1H UT reading
-      // where genuinely available, rather than a bare fact with no context.
-      const _survivingUt1h = (oneH && oneH.utDirection1h === -1) ? '1H UT remains bearish.' : null;
-      detail = '1H structure reclaimed against short.' + (_survivingUt1h ? ' ' + _survivingUt1h : '');
+      // TDAS V5.1.1E2 — audit-classified PARTIAL (1H trigger given, but
+      // setup-TF regime context omitted). Trigger unchanged. Now adds the
+      // same setup-TF regime-intact phrase Branch C above uses, so the
+      // in-profit and not-in-profit variants of this identical structural
+      // fact read consistently.
+      const _survivingUt1h = (oneH && oneH.utDirection1h === -1) ? '1H UT remains bearish' : null;
+      const _regimeD = _formatSetupRegimeIntactPhrase('short', _ma200Context);
+      const _tailD = _joinSurvivingClauses([_regimeD, _survivingUt1h]);
+      detail = '1H structure reclaimed against short.' + (_tailD ? ' ' + _tailD.charAt(0).toUpperCase() + _tailD.slice(1) + '.' : '');
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       // TDAS V4.7.2 (Task Case C) — this branch now also fires on a genuine
@@ -10178,23 +10276,44 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // using 1H timing as lower-tier corroboration, "1H" here is neither
       // the setup nor the management slot, so the narrower 1H-only phrase
       // remains the honest choice.
+      // TDAS V5.1.1E2 — audit-classified: only the TEMA-alone sub-case
+      // consistently used the shared 200MA helper; the other three were
+      // inline with no regime context. All four now follow the same
+      // "1H trigger -> setup-TF regime context -> surviving 1H evidence"
+      // shape, without a broad helper refactor (per the audit's own
+      // "bring into consistent structure where practical, no broad
+      // refactor unless genuinely necessary" guidance) — each sub-case's
+      // own trigger condition is completely unchanged.
       const _1hTemaAgainstShort = oneH && oneH.crossLong1h === true;
       const _oneHUtSupportsShort = oneH && oneH.utDirection1h === -1;
+      // For a genuinely 1H-setup trade, "1H" IS the setup tf itself —
+      // _ma200Context's setup/management pairing (1H/4H) already
+      // correctly describes it via the existing combined helper. For a
+      // 4H-setup trade, 1H is a distinct execution layer — use the
+      // setup-TF-only regime phrase instead (never the combined
+      // setup+1D pairing, which would be the wrong context here).
+      const _isOneHSetupShort = _ma200Context.setup.tf === '1h';
+      const _regimeOrOneHMaShort = _isOneHSetupShort
+        ? _formatMa200ContextPhrase('short', _ma200Context)
+        : _formatSetupRegimeIntactPhrase('short', _ma200Context);
       if (oneH1hUtAgainst && _1hTemaAgainstShort) {
-        detail = '1H UT flipped bullish and 1H TEMA turned against short.';
+        const _tailE1 = _isOneHSetupShort ? _regimeOrOneHMaShort : _joinSurvivingClauses([_regimeOrOneHMaShort]);
+        detail = '1H UT flipped bullish and 1H TEMA turned against short.' + (_tailE1 ? ' ' + _tailE1.charAt(0).toUpperCase() + _tailE1.slice(1) + '.' : '');
       } else if (oneH1hUtAgainst) {
-        detail = '1H UT flipped bullish against short.';
+        const _tailE2 = _regimeOrOneHMaShort;
+        detail = '1H UT flipped bullish against short.' + (_tailE2 ? ' ' + _tailE2.charAt(0).toUpperCase() + _tailE2.slice(1) + '.' : '');
       } else if (_1hTemaAgainstShort) {
-        const _maPhrase = (_ma200Context.setup.tf === '1h')
+        const _maPhrase = _isOneHSetupShort
           ? _formatMa200ContextPhrase('short', _ma200Context)
           : _formatOneH1hMa200Phrase('short');
         const _tail = _joinSurvivingClauses([
-          _oneHUtSupportsShort ? '1H UT remains bearish' : null,
-          _maPhrase,
+          _isOneHSetupShort ? (_oneHUtSupportsShort ? '1H UT remains bearish' : null) : _regimeOrOneHMaShort,
+          _isOneHSetupShort ? _maPhrase : (_oneHUtSupportsShort ? '1H UT remains bearish' : null),
         ]);
         detail = '1H TEMA is turning against the short' + (_tail ? '; ' + _tail : '') + '.';
       } else {
-        detail = '1H reversal developing. ' + _stateTfTag + ' UT still bearish.';
+        const _tailE4 = _regimeOrOneHMaShort;
+        detail = '1H reversal developing. ' + _stateTfTag + ' UT still bearish.' + (_tailE4 && !_isOneHSetupShort ? ' ' + _tailE4.charAt(0).toUpperCase() + _tailE4.slice(1) + '.' : '');
       }
     } else if (temaCrossAgainst && utDir === -1) {
       action = 'REVIEW'; headline = 'REVIEW';
@@ -10234,7 +10353,7 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // Replaces the earlier evidence-driven-phrase-or-"regime weakening"
       // construction; the trigger condition above is completely unchanged.
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _buildAdjacentDeteriorationReviewDetail('short', _htfTag, _setupTf);
+      detail = _buildAdjacentDeteriorationReviewDetail('short', _htfTag, _setupTf, _ma200Context);
     } else {
       // TDAS V4.7.2 — concise HOLD wording (Task §2/§6). Replaces the old
       // buildHtfSupportPhrase-based verbose message ("4H TEMA and UT still
@@ -10263,29 +10382,35 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       action = 'CLOSE'; headline = 'CLOSE';
       detail = _stateTfTag + ' UT bearish and ' + _stateTfTag + ' closed below the 200MA.';
     } else if (inProfit && temaCrossAgainst && tema92Falling) {
-      // TEMA-based TP50 path — unchanged by V4.6.0, see mirrored comment
-      // in the short branch above.
-      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
-      detail = _stateTfTag + ' TEMA crossed against long and TEMA 92 is falling.';
+      // TDAS V5.1.1E2 — mirrors the short branch's Branch A conversion above.
+      action = 'REVIEW'; headline = 'REVIEW';
+      detail = _appendOneHExecutionContext('long', _buildTemaCrossAgainstReviewDetail('long', _stateTfTag, _ma200Context));
     } else if (inProfit && utDir === -1 && _tp50Sma.aboveSma === false) {
-      // TDAS V4.6.0 — bare UT-flip TP50 path, now gated on SMA confirmation.
-      // Unchanged by V4.7.2 — see mirrored comment in the short branch above.
-      action = 'TAKE_PROFIT_50'; headline = 'TAKE PROFIT 50%';
-      detail = _stateTfTag + ' UT flipped bearish and price lost ' + _tp50Sma.label + '.';
+      // TDAS V5.1.1E2 — mirrors the short branch's Branch B conversion above.
+      action = 'REVIEW'; headline = 'REVIEW';
+      let _b50L = _stateTfTag + ' UT flipped bearish and price lost ' + _tp50Sma.label;
+      const _b50RegimeL = _formatSetupRegimeIntactPhrase('long', _ma200Context);
+      detail = _b50L + (_b50RegimeL ? '; ' + _b50RegimeL : '') + '.';
+      detail = _appendOneHExecutionContext('long', detail);
     } else if (_adverseUtLong.isAdverse && _adverseUtLong.isFresh) {
       // TDAS V4.7.2 — Advisory Hierarchy Refinement. See mirrored comment in
       // the short branch above for the full root-cause explanation.
       action = 'REVIEW'; headline = 'REVIEW';
       detail = _buildFreshAdverseUtReviewDetail('long', _adverseUtLong, _adverseUtLong.tfLabel, _ma200Context);
     } else if (inProfit && oneHStructureReclaimed === true) {
-      action = 'TAKE_PROFIT_25'; headline = 'TAKE PROFIT 25%';
-      detail = '1H reversal active. ' + _stateTfTag + ' structure still holds.';
+      // TDAS V5.1.1E2 — mirrors the short branch's Branch C conversion above.
+      action = 'REVIEW'; headline = 'REVIEW';
+      const _survivingUt1hC = (oneH && oneH.utDirection1h === 1) ? '1H UT remains bullish' : null;
+      const _regimeC = _formatSetupRegimeIntactPhrase('long', _ma200Context);
+      const _tailC = _joinSurvivingClauses([_regimeC, _survivingUt1hC]);
+      detail = '1H structure reclaimed against long.' + (_tailC ? ' ' + _tailC.charAt(0).toUpperCase() + _tailC.slice(1) + '.' : '');
     } else if (oneHStructureReclaimed === true) {
       action = 'REVIEW'; headline = 'REVIEW';
-      // TDAS V4.8 Phase D Follow-Up — mirrors the short branch's surviving-
-      // UT-context enrichment above.
-      const _survivingUt1h = (oneH && oneH.utDirection1h === 1) ? '1H UT remains bullish.' : null;
-      detail = '1H structure lost against long.' + (_survivingUt1h ? ' ' + _survivingUt1h : '');
+      // TDAS V5.1.1E2 — mirrors the short branch's Branch D conversion above.
+      const _survivingUt1h = (oneH && oneH.utDirection1h === 1) ? '1H UT remains bullish' : null;
+      const _regimeD = _formatSetupRegimeIntactPhrase('long', _ma200Context);
+      const _tailD = _joinSurvivingClauses([_regimeD, _survivingUt1h]);
+      detail = '1H structure reclaimed against long.' + (_tailD ? ' ' + _tailD.charAt(0).toUpperCase() + _tailD.slice(1) + '.' : '');
     } else if (oneHTurnedAgainst === true) {
       action = 'REVIEW'; headline = 'REVIEW';
       // TDAS V4.7.2 (Task Case C) — mirrors the short branch fix above.
@@ -10296,23 +10421,34 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // explanation.
       // TDAS V4.8 — Adjacent Management 200MA Context: mirrors the short
       // branch's setup-tf-aware MA selection above.
+      // TDAS V5.1.1E2 — mirrors the short branch's Branch E conversion above:
+      // all four sub-cases now consistently add setup-TF regime context
+      // (4H-setup trades) or the existing combined 1H/4H phrase (genuinely
+      // 1H-setup trades), each sub-case's own trigger unchanged.
       const _1hTemaAgainstLong = oneH && oneH.crossLong1h === false;
       const _oneHUtSupportsLong = oneH && oneH.utDirection1h === 1;
+      const _isOneHSetupLong = _ma200Context.setup.tf === '1h';
+      const _regimeOrOneHMaLong = _isOneHSetupLong
+        ? _formatMa200ContextPhrase('long', _ma200Context)
+        : _formatSetupRegimeIntactPhrase('long', _ma200Context);
       if (oneH1hUtAgainst && _1hTemaAgainstLong) {
-        detail = '1H UT flipped bearish and 1H TEMA turned against long.';
+        const _tailE1 = _isOneHSetupLong ? _regimeOrOneHMaLong : _joinSurvivingClauses([_regimeOrOneHMaLong]);
+        detail = '1H UT flipped bearish and 1H TEMA turned against long.' + (_tailE1 ? ' ' + _tailE1.charAt(0).toUpperCase() + _tailE1.slice(1) + '.' : '');
       } else if (oneH1hUtAgainst) {
-        detail = '1H UT flipped bearish against long.';
+        const _tailE2 = _regimeOrOneHMaLong;
+        detail = '1H UT flipped bearish against long.' + (_tailE2 ? ' ' + _tailE2.charAt(0).toUpperCase() + _tailE2.slice(1) + '.' : '');
       } else if (_1hTemaAgainstLong) {
-        const _maPhrase = (_ma200Context.setup.tf === '1h')
+        const _maPhrase = _isOneHSetupLong
           ? _formatMa200ContextPhrase('long', _ma200Context)
           : _formatOneH1hMa200Phrase('long');
         const _tail = _joinSurvivingClauses([
-          _oneHUtSupportsLong ? '1H UT remains bullish' : null,
-          _maPhrase,
+          _isOneHSetupLong ? (_oneHUtSupportsLong ? '1H UT remains bullish' : null) : _regimeOrOneHMaLong,
+          _isOneHSetupLong ? _maPhrase : (_oneHUtSupportsLong ? '1H UT remains bullish' : null),
         ]);
         detail = '1H TEMA is turning against the long' + (_tail ? '; ' + _tail : '') + '.';
       } else {
-        detail = '1H reversal developing. ' + _stateTfTag + ' UT still bullish.';
+        const _tailE4 = _regimeOrOneHMaLong;
+        detail = '1H reversal developing. ' + _stateTfTag + ' UT still bullish.' + (_tailE4 && !_isOneHSetupLong ? ' ' + _tailE4.charAt(0).toUpperCase() + _tailE4.slice(1) + '.' : '');
       }
     } else if (temaCrossAgainst && utDir === 1) {
       action = 'REVIEW'; headline = 'REVIEW';
@@ -10330,8 +10466,9 @@ function _buildActiveTradeAdvisory(d, openTrade) {
       // deterioration gate above.
       // TDAS V4.8 Phase D Follow-Up — mirrors the short branch's exact
       // adjacent-timeframe deterioration wording above.
+      // TDAS V5.1.1E2 — mirrors the short branch's Branch F conversion above.
       action = 'REVIEW'; headline = 'REVIEW';
-      detail = _buildAdjacentDeteriorationReviewDetail('long', _htfTag, _setupTf);
+      detail = _buildAdjacentDeteriorationReviewDetail('long', _htfTag, _setupTf, _ma200Context);
     } else {
       // TDAS V4.7.2 — concise HOLD wording, mirrors the short branch above.
       // TDAS V4.8 Phase D — mirrors the short branch's evidence-driven
@@ -22291,6 +22428,18 @@ async function _calc1HTiming(symbol) {
     const sma135Slope_1h = shared.sma135Slope;
     const sma135SlopeDelta_1h = (sma135_1h != null && shared.sma135Previous != null) ? sma135_1h - shared.sma135Previous : null;
 
+    // TDAS V5.1.1E2 — completes the tema92Slope1h plumbing left inert by
+    // the interrupted V5.1.1E session and confirmed safe by the Active
+    // Trade Advisory Evidence Integration Audit: closed-candle evidence,
+    // based on the same TEMA92 series already calculated for tema92
+    // above, not a new indicator. Renamed here (from the shared
+    // calculator's bare tema92Slope) specifically to avoid colliding in
+    // NAME with the setup-timeframe's own st.tema92Slope field on a
+    // different object — same value set (rising/falling/flat/unknown),
+    // same threshold formula. Advisory context only — never read by
+    // classification, Trade Ready V1, Premium, or setup qualification.
+    const tema92Slope1h = shared.tema92Slope;
+
     const rsi1h = shared.rsi;
     const adx1h = shared.adx;
     const adxPrev3_1h = shared.adxPrevious;
@@ -22319,7 +22468,7 @@ async function _calc1HTiming(symbol) {
       crossLong1h,
       aboveMA1h,
       maDist1h,
-      sma135_1h, aboveSma135_1h, sma135Slope_1h, sma135SlopeDelta_1h,
+      sma135_1h, aboveSma135_1h, sma135Slope_1h, sma135SlopeDelta_1h, tema92Slope1h,
       utDirection1h: utBot1h.direction,
       // TDAS V4.9.4 T5 — additive. utBot1h.recentSignal is already computed
       // by calcUTBot() above (same call already used for utDirection1h) —
