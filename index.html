@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.2';
+const APP_BUILD = 'V5.2.4';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5135,7 +5135,41 @@ function _tema92VsMa200FromValues(tema92, ma200Val) {
 const ADX_SLOPE_FLAT_TOLERANCE = 1.0;
 const ADX_HIGH_ROLLOVER_ADX_MIN = 40;
 
-// TDAS V4.9.1 T2 — measured ADX slope from a current/prior (3-bars-ago)
+// TDAS V5.2.4 — Intermediate Trend Support (TR4 migration). ATR-normalised
+// moving-average slope helper, reusable for SMA80 (4H) and the new Trade-
+// Ready-grade SMA135 slope (1H). Architecturally mirrors the EXISTING
+// SMA200 slope pattern exactly — same lookback constant
+// (V511_SMA200_SLOPE_LOOKBACK_BARS, an existing mechanical window size,
+// reused rather than a new number invented) and the same
+// (current-SMA - prior-SMA)/ATR formula. Per the owner's explicit
+// instruction, this function does NOT apply the SMA200 slope's own
+// ±0.20 ATR magnitude floor to a different average — that threshold was
+// never validated for SMA80/SMA135 and copying it would be exactly the
+// silent-invention this build must avoid. Instead it classifies only the
+// SIGN of the ATR-normalised slope, using FP_EPSILON (0.001 ATR) purely
+// as a floating-point noise floor to distinguish a genuinely near-zero
+// slope from meaningful positive/negative — three orders of magnitude
+// below SMA200's own ±0.20 ATR strategy threshold, so this cannot be
+// mistaken for a smuggled-in magnitude judgment. Confirmed-closed-candle
+// input only (closedCloses is always the caller's already-sliced closed
+// array) — no live/intrabar data can enter this calculation.
+const TR4_SLOPE_FP_EPSILON_ATR = 0.001;
+function _maSlopeAtrFromCloses(closedCloses, period, atr) {
+  if (!Array.isArray(closedCloses) || closedCloses.length <= V511_SMA200_SLOPE_LOOKBACK_BARS) {
+    return { value: null, previous: null, slopeDelta: null, slopeAtr: null, slopeState: 'unknown' };
+  }
+  const current = sma(closedCloses, period);
+  const previous = sma(closedCloses.slice(0, closedCloses.length - V511_SMA200_SLOPE_LOOKBACK_BARS), period);
+  if (current == null || previous == null || atr == null || atr <= 0) {
+    return { value: current, previous, slopeDelta: null, slopeAtr: null, slopeState: 'unknown' };
+  }
+  const slopeDelta = current - previous;
+  const slopeAtr = Math.round((slopeDelta / atr) * 1000) / 1000;
+  const slopeState = Math.abs(slopeAtr) < TR4_SLOPE_FP_EPSILON_ATR ? 'approximately_flat' : (slopeAtr > 0 ? 'positive' : 'negative');
+  return { value: current, previous, slopeDelta, slopeAtr, slopeState };
+}
+
+
 // value pair. Mirrors the T1 ma200Slope pattern: current vs an already-
 // computed prior value, no new indicator maths. Insufficient/malformed
 // data returns 'unknown' with highRollingOver explicitly false — never
@@ -11920,11 +11954,15 @@ function v51ConfirmedIndicators(closedHighs, closedLows, closedCloses) {
   const rsi = calcRSI(closedCloses);
   const atr = calcATR(closedHighs, closedLows, closedCloses, 14);
   const chop = _ma200ChopFromCloses(closedCloses);
+  // TDAS V5.2.4 — 4H SMA80 ATR-normalised slope (Intermediate Trend
+  // Support / TR4). New field, additive — `sma80` itself is unchanged.
+  const sma80SlopeInfo = _maSlopeAtrFromCloses(closedCloses, 80, atr);
   return {
     complete: true,
     t17a, t92a,
     t17: t17a[t17a.length - 1], t92: t92a[t92a.length - 1],
     ma200, prevMa200, sma80, sma135, rsi, atr, chop,
+    sma80SlopeAtr: sma80SlopeInfo.slopeAtr, sma80SlopeState: sma80SlopeInfo.slopeState,
     lastClosedPrice: closedCloses[closedCloses.length - 1],
   };
 }
@@ -12722,6 +12760,8 @@ function buildV51Evidence(ctx) {
         prevT92: confirmedIndicators.t92a[confirmedIndicators.t92a.length - 2],
         ma200: confirmedIndicators.ma200, prevMa200: confirmedIndicators.prevMa200,
         sma80: confirmedIndicators.sma80, sma135: confirmedIndicators.sma135,
+        sma80SlopeAtr: confirmedIndicators.sma80SlopeAtr, sma80SlopeState: confirmedIndicators.sma80SlopeState,
+        priceAboveSma80: confirmedIndicators.sma80 != null ? confirmedIndicators.lastClosedPrice > confirmedIndicators.sma80 : null,
         rsi: confirmedIndicators.rsi, atr: confirmedIndicators.atr,
         adx: adxState.complete ? adxState.value : null,
         adxPrev: adxState.complete ? adxState.prevValue : null,
@@ -13097,6 +13137,81 @@ function tradeReadyV1Check1TseShadow(trendState) {
   return { status: 'fail', reasonCodes: ['TR_TSE_DIRECTION_UNRESOLVED'], direction: src.direction, phase: src.phase };
 }
 
+// ── TDAS V5.2.4 — TR4: Intermediate Trend Support ───────────────────────────
+// Replaces the fresh-1H-UT hard gate (legacy tradeReadyV1Check4FreshTrigger,
+// left completely unmodified below and still used by legacy
+// buildTradeReadyV1()). UT freshness is no longer consulted for pass/fail
+// here — persistent UT direction is already TSE's job (DETERIORATING
+// already blocks upstream at Check 1). This check answers only: is
+// intermediate trend structure (4H SMA80 context + 1H SMA135 execution
+// support) sufficiently supportive of executing in the TSE direction?
+//
+// 4H SMA80 — graded strategic context, not a symmetric hard gate with
+// SMA135: wrong price side or a materially opposing situation fails it,
+// but a flat/approximately-flat slope is explicitly ACCEPTABLE (the ETH
+// regression case), never required to be strongly positive. Per the
+// owner's own fallback instruction, this implementation cannot
+// distinguish "materially opposing" from "any negative slope" without
+// inventing a magnitude threshold that was never validated for SMA80 —
+// so it uses directional (sign-only) slope classification and reports
+// that as an explicit limitation (see the build report), exactly as
+// instructed rather than silently picking a number.
+//
+// 1H SMA135 — execution-side support: price must be on the correct side,
+// slope must not be opposing (negative fails; approximately_flat and
+// positive both pass — same sign-only reasoning as SMA80).
+//
+// Unknown/missing evidence never silently passes — returns 'unknown',
+// preserving existing LIMITED_EVALUATION semantics exactly like every
+// other Trade Ready check.
+function tradeReadyV1Check4TseShadow(direction, v51Evidence, oneHEvidence) {
+  const barId4h = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.setup && v51Evidence.confirmedBars.setup.barId;
+  const barId1h = (oneHEvidence && oneHEvidence.confirmedBarId) || null;
+  const base = {
+    timeframe: '4h+1h', confirmedBarId: barId1h, confirmedBarId4h: barId4h,
+    threshold: { fpEpsilonAtr: TR4_SLOPE_FP_EPSILON_ATR },
+  };
+
+  if (direction !== 'long' && direction !== 'short') {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR4_DIRECTION_UNAVAILABLE'] });
+  }
+
+  const raw4h = v51Evidence && v51Evidence.evidence && v51Evidence.evidence.raw;
+  const ev1h = oneHEvidence && oneHEvidence.evidence;
+
+  if (!raw4h || !raw4h.complete || raw4h.priceAboveSma80 == null || raw4h.sma80SlopeState == null || raw4h.sma80SlopeState === 'unknown') {
+    return Object.assign({}, base, { status: 'unknown', raw: { sma80: raw4h && raw4h.sma80 }, reasonCodes: ['TR4_SMA80_UNKNOWN'] });
+  }
+  if (!oneHEvidence || oneHEvidence.status !== 'complete' || !ev1h || ev1h.priceAboveSma135 == null || ev1h.sma135SlopeState == null || ev1h.sma135SlopeState === 'unknown') {
+    return Object.assign({}, base, { status: 'unknown', raw: { sma135: ev1h && ev1h.sma135 }, reasonCodes: ['TR4_SMA135_UNKNOWN'] });
+  }
+
+  const rawValues = {
+    sma80PriceSide: raw4h.priceAboveSma80 ? 'above' : 'below', sma80SlopeAtr: raw4h.sma80SlopeAtr, sma80SlopeState: raw4h.sma80SlopeState,
+    sma135PriceSide: ev1h.priceAboveSma135 ? 'above' : 'below', sma135SlopeAtr: ev1h.sma135SlopeAtr, sma135SlopeState: ev1h.sma135SlopeState,
+  };
+  const reasons = [];
+
+  const sma80PriceOk = direction === 'long' ? raw4h.priceAboveSma80 === true : raw4h.priceAboveSma80 === false;
+  if (!sma80PriceOk) reasons.push('TR4_SMA80_PRICE_OPPOSING');
+  // Flat is explicitly acceptable (ETH case) — only the directly-opposing
+  // sign fails this component.
+  const sma80SlopeOk = raw4h.sma80SlopeState === 'approximately_flat'
+    || (direction === 'long' && raw4h.sma80SlopeState === 'positive')
+    || (direction === 'short' && raw4h.sma80SlopeState === 'negative');
+  if (!sma80SlopeOk) reasons.push('TR4_SMA80_SLOPE_OPPOSING');
+
+  const sma135PriceOk = direction === 'long' ? ev1h.priceAboveSma135 === true : ev1h.priceAboveSma135 === false;
+  if (!sma135PriceOk) reasons.push('TR4_SMA135_PRICE_OPPOSING');
+  const sma135SlopeOk = ev1h.sma135SlopeState === 'approximately_flat'
+    || (direction === 'long' && ev1h.sma135SlopeState === 'positive')
+    || (direction === 'short' && ev1h.sma135SlopeState === 'negative');
+  if (!sma135SlopeOk) reasons.push('TR4_SMA135_SLOPE_OPPOSING');
+
+  const pass = sma80PriceOk && sma80SlopeOk && sma135PriceOk && sma135SlopeOk;
+  return Object.assign({}, base, { status: pass ? 'pass' : 'fail', raw: rawValues, reasonCodes: pass ? [] : reasons });
+}
+
 // TSE-backed staged-1H prefilter — same {passed, reason} shape as the
 // legacy v511PrefilterPassesForOneHAcquisition(), same conservative
 // discipline (no fetch for unresolved structure, no fetch for a clearly
@@ -13202,11 +13317,11 @@ function buildTradeReadyV1TseShadow(symbol, trendState, v51Evidence, utBot, tseO
     directionCoherent: tradeReadyV1Check1TseShadow(trendState),
     trendQuality: tradeReadyV1Check2TrendQuality(v51Evidence),
     executionRegime: tradeReadyV1Check3ExecutionRegime(direction, tseOneHEvidence),
-    freshTrigger: tradeReadyV1Check4FreshTrigger(direction, tseOneHEvidence),
+    intermediateTrendSupport: tradeReadyV1Check4TseShadow(direction, v51Evidence, tseOneHEvidence),
     extension: tradeReadyV1Check5Extension(tseOneHEvidence),
   };
 
-  const checkList = [checks.directionCoherent, checks.trendQuality, checks.executionRegime, checks.freshTrigger, checks.extension];
+  const checkList = [checks.directionCoherent, checks.trendQuality, checks.executionRegime, checks.intermediateTrendSupport, checks.extension];
   const anyUnknown = checkList.some((c) => c.status === 'unknown');
   const allPass = checkList.every((c) => c.status === 'pass');
   const missingEvidence = [];
@@ -13226,6 +13341,11 @@ function buildTradeReadyV1TseShadow(symbol, trendState, v51Evidence, utBot, tseO
     sourceTrendState: trendState ? trendState.direction : 'unknown',
     sourcePhase: trendState ? trendState.state : 'unknown',
     tseRulesetVersion: (trendState && trendState.rulesetVersion) || null,
+    // TDAS V5.2.4 — informational only, per owner doctrine: retained and
+    // visible for context, never consulted for TR4 pass/fail (proven by
+    // tests — tradeReadyV1Check4TseShadow() never reads this field at all).
+    utBarsSinceFlipContext: (tseOneHEvidence && tseOneHEvidence.evidence && tseOneHEvidence.evidence.utBarsSinceFlip != null)
+      ? tseOneHEvidence.evidence.utBarsSinceFlip : null,
     setupTimeframe: '4h', executionTimeframe: '1h',
     confirmedBarIds: { oneH: oneHBarId, fourH: fourHBarId || null, oneD: oneDBarId || null },
     status, ready: status === 'TRADE_READY',
@@ -13849,7 +13969,7 @@ function buildTradeReadyV1TseShadowHtml(d) {
     ['directionCoherent', 'TR1 Direction coherent (TSE)'],
     ['trendQuality', 'TR2 4H trend quality'],
     ['executionRegime', 'TR3 1H execution regime'],
-    ['freshTrigger', 'TR4 Fresh 1H UT trigger'],
+    ['intermediateTrendSupport', 'TR4 Intermediate trend support'],
     ['extension', 'TR5 Entry not severely extended'],
   ];
   const rows = rowLabels.map(([key, label]) => {
@@ -13857,7 +13977,12 @@ function buildTradeReadyV1TseShadowHtml(d) {
     if (!c) return '? ' + label;
     const icon = c.status === 'pass' ? '\u2713' : (c.status === 'fail' ? '\u2715' : '?');
     const codes = (c.reasonCodes && c.reasonCodes.length) ? ' (' + c.reasonCodes.join(', ') + ')' : '';
-    return icon + ' ' + label + codes;
+    let detail = '';
+    if (key === 'intermediateTrendSupport' && c.raw && c.raw.sma80SlopeState) {
+      detail = '\n    4H SMA80: price ' + c.raw.sma80PriceSide + ' \u00b7 slope ' + c.raw.sma80SlopeAtr + ' ATR (' + c.raw.sma80SlopeState + ')'
+        + '\n    1H SMA135: price ' + c.raw.sma135PriceSide + ' \u00b7 slope ' + c.raw.sma135SlopeAtr + ' ATR (' + c.raw.sma135SlopeState + ')';
+    }
+    return icon + ' ' + label + codes + detail;
   }).join('\n');
 
   const legacyLine = legacy
@@ -13867,10 +13992,15 @@ function buildTradeReadyV1TseShadowHtml(d) {
     ? 'Prefilter: ' + (tse.prefilter.passed ? 'passed' : 'not acquired') + ' (' + tse.prefilter.reason + (tse.prefilter.sharedWithLegacy ? ', shared with legacy' : '') + ')'
     : 'Prefilter: n/a';
 
+  const utContextLine = tse.utBarsSinceFlipContext != null
+    ? 'UT freshness (informational only, does not affect TR4): ' + tse.utBarsSinceFlipContext + ' bars since flip\n'
+    : '';
+
   return '\n\n=== TRADE READY V1 \u2014 TSE SHADOW ===\n'
     + 'Status: ' + tse.status + '\n'
     + 'Direction: ' + (tse.direction ? tse.direction.toUpperCase() : 'UNKNOWN') + '\n'
     + 'Trend State source: ' + tse.sourceTrendState + ' / ' + tse.sourcePhase + '\n'
+    + utContextLine
     + prefilterLine + '\n'
     + rows + '\n\n'
     + legacyLine + '\n'
@@ -14028,6 +14158,18 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
     const negligible = Math.abs(delta) < Math.abs(sma135Prev) * 0.0001;
     sma135Slope = negligible ? 'flat' : (delta > 0 ? 'rising' : 'falling');
   }
+  // TDAS V5.2.4 — Trade-Ready-grade SMA135 slope (Intermediate Trend
+  // Support / TR4), NEW and ADDITIVE. Deliberately a SEPARATE field from
+  // the existing `sma135Slope` above — that field is Active Trade
+  // Advisory display-only (single-bar delta, 0.01%-of-value negligible
+  // threshold) and is left byte-unchanged so Advisory semantics cannot
+  // silently shift. `sma135SlopeAtr`/`sma135SlopeState` use the same
+  // ATR-normalised, 10-bar-lookback, sign-only-classification helper as
+  // 4H SMA80 above — see _maSlopeAtrFromCloses()'s own header comment for
+  // the full rationale.
+  const sma135SlopeInfo = _maSlopeAtrFromCloses(closedC, 135, atr);
+  const priceAboveSma135 = sma135 != null ? lastClosedPrice > sma135 : null;
+
   // TDAS V5.1.1A — TEMA92 extension, owner-confirmed anchor. Values only —
   // no classification, no threshold gate in this build.
   let extensionSignedAtr = null, extensionAbsoluteAtr = null;
@@ -14054,7 +14196,8 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
     utBarsSinceFlip: utBotRaw.barsAgoFlip != null ? utBotRaw.barsAgoFlip : null,
     tema17, tema92, temaDirection, tema92Slope,
     sma200, sma200Previous, sma200SlopeDelta, sma200SlopeAtr, sma200SlopeState, priceAboveSma200,
-    sma135, sma135Slope, sma135Previous: sma135Prev,
+    sma135, sma135Slope, sma135Previous: sma135Prev, priceAboveSma135,
+    sma135SlopeAtr: sma135SlopeInfo.slopeAtr, sma135SlopeState: sma135SlopeInfo.slopeState,
     atr, extensionAnchor: 'TEMA92', extensionSignedAtr, extensionAbsoluteAtr,
     rsi, adx, adxSlope, adxPrevious: adxCalc.prevValue,
     source: 'confirmed_closed_candles', fetchedAt,
