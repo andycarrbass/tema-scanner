@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1F2';
+const APP_BUILD = 'V5.1.1F3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -13159,7 +13159,7 @@ function logTradeReadyV1Shadow(v1, comparison, oneHEvidence) {
 
 
 // ── V1 versioned constants — explicit starting calibration, not proven optimums ──
-const V511_ONE_H_EVIDENCE_RULESET_VERSION = 'V5.1.1A_1H_EVIDENCE_1';
+const V511_ONE_H_EVIDENCE_RULESET_VERSION = 'V5.1.1F3_1H_EVIDENCE_2'; // TDAS V5.1.1F3 — bumped from 'V5.1.1A_1H_EVIDENCE_1'. The 1H UT Bot candle source changed (STANDARD -> Heikin Ashi, see the UT Bot block below), which changes the MEANING of every cached/reused 1H evidence record's UT fields. This version bump is what invalidates: (a) the in-memory V511_ONE_H_EVIDENCE_CACHE (new cacheKey, old entries orphaned), and (b) v511AcquireStagedOneHEvidence()'s Watch/Trade _1hTiming reuse check (exact-match ruleset comparison — an old-version record is never silently reused as if current). No STANDARD-derived evidence can be mistaken for current post-F3.
 const V511_SMA200_SLOPE_LOOKBACK_BARS = 10;
 const V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR = 0.20;
 const V511_ONE_H_KLINE_REQUEST_COUNT = 300; // TDAS V5.1.1A — widened from _calc1HTiming()'s prior 200. That 200 was based on a stale "Bitunix hard limit" comment; signal candles route through SplitSourceAdapter -> Binance, whose own adapter comment confirms up to 1000 candles per request. 300 raw - 1 forming = 299 confirmed, comfortably above the 210 confirmed closes SMA200-now + SMA200-10-bars-ago requires.
@@ -13202,10 +13202,27 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
     };
   }
 
-  // UT Bot — deliberately STANDARD (non-Heikin-Ashi) candles, matching
-  // _calc1HTiming()'s existing pre-V5.1.1A behaviour exactly. See this
-  // block's own header comment for why this is preserved, not corrected.
-  const utBotRaw = calcUTBot(closedH, closedL, closedC, UT_BOT_KEY_VALUE, UT_BOT_ATR_PERIOD);
+  // UT Bot — TDAS V5.1.1F3: now Heikin Ashi-sourced, matching the SAME
+  // UT_BOT_SOURCE_MODE global doctrine already authoritative for the
+  // setup-timeframe (calcPair() L~12505-12513) and adjacent-HTF
+  // (calcPair() L~12328-12336) UT Bot calculations. Prior to F3 this was
+  // deliberately left on STANDARD candles — a known, explicitly flagged
+  // inconsistency (see the V5.1.1A "AUDIT FINDING preserved deliberately"
+  // banner comment above DIAG.v511StagedOneHEvidence) — preserved at the
+  // time to avoid an unauthorised change to existing Watch/Trade advisory
+  // behaviour. F3 corrects it: this is the one and only remaining
+  // authoritative UT Bot call site that did not already honour
+  // UT_BOT_SOURCE_MODE. No new flag: the existing global constant is
+  // authoritative, exactly as directed.
+  const utSourceCandles = UT_BOT_SOURCE_MODE === 'heikin_ashi'
+    ? buildHeikinAshiCandles(closedCandles)
+    : closedCandles;
+  const utBotRaw = calcUTBot(
+    utSourceCandles.map((c) => c.high),
+    utSourceCandles.map((c) => c.low),
+    utSourceCandles.map((c) => c.close),
+    UT_BOT_KEY_VALUE, UT_BOT_ATR_PERIOD
+  );
 
   const t17a = tema(closedC, 17);
   const t92a = tema(closedC, 92);
