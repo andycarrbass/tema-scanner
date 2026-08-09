@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.0';
+const APP_BUILD = 'V5.2.1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2471,6 +2471,41 @@ function resolveOwnership(symbol, tf){
   }
 
   return { owner: 'none', ownerTf: null, entryId: null, suppressFromScanner: false, presentationHint: 'none', legacyBlankTf: false };
+}
+
+// TDAS V5.2.1 — Market Evidence TSE shadow census. Read-only, same bounded/
+// versioned/console-only doctrine as _runTrendStateShadowCensus() just
+// below. No fetch, no persistence, no Sheets, no TDAS LAB infrastructure.
+function _runMarketEvidenceTseShadowCensus(pairs, tf){
+  const classCounts = {
+    AGREEMENT: 0, PHASE_REFINEMENT: 0, DIRECTION_CORRECTION: 0,
+    CHOP_SUPPRESSION: 0, DETERIORATION_RECLASSIFICATION: 0,
+    OTHER_DISAGREEMENT: 0, TSE_UNAVAILABLE: 0,
+  };
+  let legacyDirectionalTseUnresolved = 0, legacyNeutralTseDirectional = 0, sameDirectionDifferentPhase = 0;
+  let compared = 0;
+  pairs.forEach(sym => {
+    const shadow = currentScanData[sym] && currentScanData[sym].marketEvidenceTseShadow;
+    if (!shadow) return;
+    compared++;
+    if (Object.prototype.hasOwnProperty.call(classCounts, shadow.disagreementClass)) classCounts[shadow.disagreementClass]++;
+    if (shadow.disagreementClass === 'CHOP_SUPPRESSION') legacyDirectionalTseUnresolved++;
+    if (shadow.disagreementClass === 'DIRECTION_CORRECTION') legacyNeutralTseDirectional++;
+    if (shadow.disagreementClass === 'PHASE_REFINEMENT') sameDirectionDifferentPhase++;
+  });
+  console.log(
+    '[V5.2.1 market evidence tse shadow] compared=' + compared,
+    'agreement=' + classCounts.AGREEMENT,
+    'phaseRefinement=' + classCounts.PHASE_REFINEMENT,
+    'directionCorrection=' + classCounts.DIRECTION_CORRECTION,
+    'chopSuppression=' + classCounts.CHOP_SUPPRESSION,
+    'deteriorationReclass=' + classCounts.DETERIORATION_RECLASSIFICATION,
+    'otherDisagreement=' + classCounts.OTHER_DISAGREEMENT,
+    'tseUnavailable=' + classCounts.TSE_UNAVAILABLE,
+    '| legacyDirectional\u2192tseUnresolved=' + legacyDirectionalTseUnresolved,
+    'legacyNeutral\u2192tseDirectional=' + legacyNeutralTseDirectional,
+    'sameDirectionDifferentPhase=' + sameDirectionDifferentPhase
+  );
 }
 
 // TDAS V5.2.0 — Trend State Engine shadow census. Read-only: reads
@@ -12865,6 +12900,97 @@ function buildTrendState(ctx) {
   return base;
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.2.1 — Market Evidence TSE Shadow Migration                       ║
+// ║                                                                          ║
+// ║  A bounded translation layer only. Does NOT independently recalculate    ║
+// ║  200MA regime, chop, slope, UT, or TEMA — it consumes d.trendState (the  ║
+// ║  V5.2.0 Trend State Engine result) exclusively, as required. Does not    ║
+// ║  read or write d.evidence.direction/.alignment (legacy Market Evidence,  ║
+// ║  untouched) — writes only a new, separate shadow field.                  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Bounded semantic vocabulary — exactly the labels the owner specified, no
+// additional phase labels invented beyond what TSE itself already returns.
+function _marketEvidenceTseDirectionLabel(tseDirection) {
+  if (tseDirection === 'LONG') return 'Bullish';
+  if (tseDirection === 'SHORT') return 'Bearish';
+  return 'Neutral';
+}
+function _marketEvidenceTsePhaseLabel(tseState) {
+  const map = {
+    ESTABLISHED: 'Established', PULLBACK: 'Pullback', DETERIORATING: 'Deteriorating',
+    EMERGING: 'Emerging', UNRESOLVED: 'Unresolved',
+  };
+  return map[tseState] || 'Unresolved';
+}
+
+// Pure translation: TSE result -> Market-Evidence-shaped shadow vocabulary.
+// Never infers a direction when trendState is absent/malformed/disabled —
+// returns an explicit unavailable result instead (owner doctrine §18).
+function _marketEvidenceDirectionAlignmentFromTrendState(trendState) {
+  if (!trendState || typeof trendState.direction !== 'string' || typeof trendState.state !== 'string'
+    || typeof trendState.rulesetVersion !== 'string') {
+    return {
+      available: false, reason: 'TSE_UNAVAILABLE',
+      directionLabel: null, phaseLabel: null, compactLabel: null,
+      trendQuality: null, sourceDirection: null, sourceState: null, rulesetVersion: null,
+    };
+  }
+  const directionLabel = _marketEvidenceTseDirectionLabel(trendState.direction);
+  const phaseLabel = _marketEvidenceTsePhaseLabel(trendState.state);
+  return {
+    available: true, reason: null,
+    directionLabel, phaseLabel,
+    compactLabel: directionLabel + ' \u00b7 ' + phaseLabel,
+    trendQuality: trendState.trendQuality || 'unknown',
+    sourceDirection: trendState.direction,
+    sourceState: trendState.state,
+    rulesetVersion: trendState.rulesetVersion,
+  };
+}
+
+// Deterministic, diagnostic-only disagreement classifier between legacy
+// Market Evidence and the TSE-derived shadow translation above. Priority-
+// ordered, first-match-wins — DETERIORATING is checked first because that
+// phase concept has no legacy equivalent at all and must never be silently
+// absorbed into a generic direction-match/mismatch bucket.
+function _classifyMarketEvidenceTseDisagreement(legacyEvidence, tseShadow) {
+  if (!tseShadow || tseShadow.available !== true) {
+    return { class: 'TSE_UNAVAILABLE', reason: 'TSE_SHADOW_UNAVAILABLE' };
+  }
+  const legacyDir = (legacyEvidence && typeof legacyEvidence.direction === 'string') ? legacyEvidence.direction : 'neutral';
+  const legacyAlign = (legacyEvidence && typeof legacyEvidence.alignment === 'string') ? legacyEvidence.alignment : 'none';
+  const tseDirLower = tseShadow.directionLabel ? tseShadow.directionLabel.toLowerCase() : 'neutral';
+  const tseState = tseShadow.sourceState;
+
+  if (tseState === 'DETERIORATING') {
+    return { class: 'DETERIORATION_RECLASSIFICATION', reason: 'TSE_STATE_DETERIORATING' };
+  }
+  if (tseDirLower === 'neutral' && legacyDir !== 'neutral') {
+    return { class: 'CHOP_SUPPRESSION', reason: 'TSE_UNRESOLVED_LEGACY_DIRECTIONAL' };
+  }
+  if (legacyDir === 'neutral' && tseDirLower !== 'neutral') {
+    return { class: 'DIRECTION_CORRECTION', reason: 'LEGACY_NEUTRAL_TSE_DIRECTIONAL' };
+  }
+  if (legacyDir === tseDirLower) {
+    if (legacyDir === 'neutral') {
+      return { class: 'AGREEMENT', reason: 'BOTH_NEUTRAL_UNRESOLVED' };
+    }
+    if ((legacyAlign === 'strong' || legacyAlign === 'moderate') && tseState === 'ESTABLISHED') {
+      return { class: 'AGREEMENT', reason: 'DIRECTION_AND_PHASE_CONSISTENT' };
+    }
+    return { class: 'PHASE_REFINEMENT', reason: 'SAME_DIRECTION_DIFFERENT_PHASE' };
+  }
+  return { class: 'OTHER_DISAGREEMENT', reason: 'UNCLASSIFIED_DIRECTION_MISMATCH' };
+}
+
+// V5.2.1 — computes _result.marketEvidenceTseShadow on every calcPair()
+// call. Purely additive, same category as DIAG.trendStateShadow: no
+// existing field is read or written. Nothing in the live system reads
+// d.marketEvidenceTseShadow. Rollback: set to false to stop computation.
+DIAG.marketEvidenceTseShadow = true;
+
 // V5.2.0 — computes _result.trendState on every calcPair() call. Purely
 // additive: no existing field is read or written by this flag. Shadow
 // only — nothing in the live system (Scanner, Watch, Trade, Advisory,
@@ -13394,6 +13520,32 @@ function buildTrendStateShadowHtml(d) {
     + 'Legacy signal: ' + legacySignalLabel + '\n'
     + 'Market Evidence: ' + marketEvidenceLabel + '\n'
     + 'Trend State: ' + tsLabel;
+}
+
+// ── TDAS V5.2.1 — Market Evidence TSE shadow diagnostic ─────────────────────
+// Focuses on the translation/migration comparison only — does not repeat
+// the raw TSE evidence block buildTrendStateShadowHtml() already shows.
+function buildMarketEvidenceTseShadowHtml(d) {
+  const shadow = d && d.marketEvidenceTseShadow;
+  if (!shadow) return '';
+
+  const legacyLabel = (shadow.legacyDirection ? (shadow.legacyDirection.charAt(0).toUpperCase() + shadow.legacyDirection.slice(1)) : 'Neutral')
+    + ' / ' + (shadow.legacyAlignment || 'none');
+
+  if (!shadow.available) {
+    return '\n\n=== MARKET EVIDENCE \u2014 TSE SHADOW ===\n'
+      + 'Legacy Market Evidence: ' + legacyLabel + '\n'
+      + 'TSE Market State: unavailable (' + (shadow.reason || 'TSE_UNAVAILABLE') + ')\n'
+      + 'Difference: ' + shadow.disagreementClass;
+  }
+
+  return '\n\n=== MARKET EVIDENCE \u2014 TSE SHADOW ===\n'
+    + 'Legacy Market Evidence: ' + legacyLabel + '\n'
+    + 'TSE Market State: ' + shadow.compactLabel + '\n'
+    + 'Trend quality: ' + shadow.trendQuality + '\n'
+    + 'Trend State source: ' + shadow.sourceDirection + ' / ' + shadow.sourceState + '\n'
+    + 'Ruleset: ' + shadow.rulesetVersion + '\n'
+    + 'Difference: ' + shadow.disagreementClass;
 }
 
 // ── Local shadow logging ─────────────────────────────────────────────────────
@@ -16010,6 +16162,37 @@ async function calcPair(symbol,tf){
   }
   // else: _result already holds the complete legacy bundle from (3) —
   // nothing further to assign.
+
+  // ── TDAS V5.2.1 — Market Evidence TSE shadow attachment ──────────────────
+  // Runs AFTER the atomic select above so _result.evidence is the final
+  // legacy Market Evidence bundle (whichever the flag chose), and after
+  // _result.trendState was already computed earlier in this same
+  // calcPair() call. Consumes ONLY d.trendState — no independent regime/
+  // chop/slope/UT/TEMA recalculation (owner doctrine §5) — so there is no
+  // circular dependency: confirmed evidence -> TSE -> this shadow, never
+  // the reverse. Never overwrites d.evidence.direction/.alignment.
+  if (DIAG.marketEvidenceTseShadow) {
+    try {
+      const _tseShadow = _marketEvidenceDirectionAlignmentFromTrendState(_result.trendState);
+      const _disagreement = _classifyMarketEvidenceTseDisagreement(_result.evidence, _tseShadow);
+      _result.marketEvidenceTseShadow = Object.assign({}, _tseShadow, {
+        legacyDirection: (_result.evidence && _result.evidence.direction) || 'neutral',
+        legacyAlignment: (_result.evidence && _result.evidence.alignment) || 'none',
+        disagreementClass: _disagreement.class,
+        disagreementReason: _disagreement.reason,
+      });
+    } catch (_meTseErr) {
+      _result.marketEvidenceTseShadow = {
+        available: false, reason: 'TSE_SHADOW_EVALUATION_THREW',
+        directionLabel: null, phaseLabel: null, compactLabel: null,
+        trendQuality: null, sourceDirection: null, sourceState: null, rulesetVersion: null,
+        legacyDirection: (_result.evidence && _result.evidence.direction) || 'neutral',
+        legacyAlignment: (_result.evidence && _result.evidence.alignment) || 'none',
+        disagreementClass: 'TSE_UNAVAILABLE', disagreementReason: 'TSE_SHADOW_EVALUATION_THREW',
+        errorMessage: (_meTseErr && _meTseErr.message) ? _meTseErr.message : String(_meTseErr),
+      };
+    }
+  }
 
   // (6) V5.1.0D shadow comparator — V5.1.0E note: now handed the two
   // EXPLICIT bundles from (3)/(4) directly, never reconstructing "legacy"
@@ -19635,6 +19818,13 @@ function openAnalysisPanel(request){
     ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildTrendStateShadowHtml(d) + '</pre>'
     : '';
 
+  // TDAS V5.2.1 — Market Evidence TSE shadow diagnostic. Same gated,
+  // additive, non-mutating pattern. Focuses on the translation/migration
+  // comparison only — does not repeat the raw TSE evidence block above.
+  const _marketEvidenceTseHtml = (DIAG.marketEvidenceTseShadow === true && d.marketEvidenceTseShadow)
+    ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildMarketEvidenceTseShadowHtml(d) + '</pre>'
+    : '';
+
   // TDAS V4.9.10 — remaining sections precomputed as standalone template
   // literals (same pattern as _tcHtml/_evalHtml/_lifecycleHtml/_advisoryHtml
   // above), each passed through the shared _apSectionWrap() helper. Same
@@ -19718,6 +19908,7 @@ function openAnalysisPanel(request){
     ${_marketEvidenceHtml}
     ${_tradeReadyV1Html}
     ${_trendStateHtml}
+    ${_marketEvidenceTseHtml}
     ${_signalSummaryHtml}
     ${_lifecycleHtml}
     ${_evalHtml}
@@ -25638,6 +25829,9 @@ async function runScan(auto){
     try{ _runOwnershipShadowCensus(PAIRS, tf); }catch(err){ console.warn('[H8A ownership shadow] census failed (non-fatal, diagnostic only):', err); }
     if (DIAG.trendStateShadow) {
       try{ _runTrendStateShadowCensus(PAIRS, tf); }catch(err){ console.warn('[V5.2.0 trend state shadow] census failed (non-fatal, diagnostic only):', err); }
+    }
+    if (DIAG.marketEvidenceTseShadow) {
+      try{ _runMarketEvidenceTseShadowCensus(PAIRS, tf); }catch(err){ console.warn('[V5.2.1 market evidence tse shadow] census failed (non-fatal, diagnostic only):', err); }
     }
 
     // TDAS V5.0.0H7 — two fixed directional lanes (Short left, Long right
