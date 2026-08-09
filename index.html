@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1F3';
+const APP_BUILD = 'V5.2.0';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2471,6 +2471,36 @@ function resolveOwnership(symbol, tf){
   }
 
   return { owner: 'none', ownerTf: null, entryId: null, suppressFromScanner: false, presentationHint: 'none', legacyBlankTf: false };
+}
+
+// TDAS V5.2.0 — Trend State Engine shadow census. Read-only: reads
+// currentScanData[sym].trendState (already attached by calcPair() when
+// DIAG.trendStateShadow is on) for every configured pair and logs a
+// bounded, versioned, one-line direction/state distribution summary.
+// Never mutates anything, never persists (no localStorage, no Sheets, no
+// TDAS LAB infrastructure — owner doctrine §19). Same "full manual/
+// initial scan only, never the price tick or 5-min auto-refresh" cadence
+// as _runOwnershipShadowCensus() just below, for the same console-
+// flooding reason.
+function _runTrendStateShadowCensus(pairs, tf){
+  const stateCounts = { UNRESOLVED: 0, EMERGING: 0, ESTABLISHED: 0, PULLBACK: 0, DETERIORATING: 0 };
+  const dirCounts = { LONG: 0, SHORT: 0, NEUTRAL: 0 };
+  let evaluated = 0, missing = 0;
+  pairs.forEach(sym => {
+    const ts = currentScanData[sym] && currentScanData[sym].trendState;
+    if (!ts) { missing++; return; }
+    evaluated++;
+    if (Object.prototype.hasOwnProperty.call(stateCounts, ts.state)) stateCounts[ts.state]++;
+    if (Object.prototype.hasOwnProperty.call(dirCounts, ts.direction)) dirCounts[ts.direction]++;
+  });
+  console.log(
+    '[V5.2.0 trend state shadow] ruleset=' + TREND_STATE_RULESET_VERSION,
+    'tf=' + tf, 'evaluated=' + evaluated, 'missing=' + missing,
+    'direction{LONG=' + dirCounts.LONG + ',SHORT=' + dirCounts.SHORT + ',NEUTRAL=' + dirCounts.NEUTRAL + '}',
+    'state{UNRESOLVED=' + stateCounts.UNRESOLVED + ',EMERGING=' + stateCounts.EMERGING
+      + ',ESTABLISHED=' + stateCounts.ESTABLISHED + ',PULLBACK=' + stateCounts.PULLBACK
+      + ',DETERIORATING=' + stateCounts.DETERIORATING + '}'
+  );
 }
 
 // Shadow comparison — runs resolveOwnership() alongside the two currently-
@@ -12641,6 +12671,208 @@ function buildV51Evidence(ctx) {
   };
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.2.0 — Trend State Engine (TSE), Shadow Foundation                ║
+// ║                                                                          ║
+// ║  Answers ONE question only: what is the underlying confirmed directional ║
+// ║  trend state, and what phase is that trend in? Does NOT answer entry     ║
+// ║  quality, Trade Ready, risk, or execution — those remain downstream,     ║
+// ║  untouched, elsewhere.                                                   ║
+// ║                                                                          ║
+// ║  Pure function. Takes only already-computed confirmed evidence (the      ║
+// ║  exact fields buildV51Evidence() already produces on every confirmed     ║
+// ║  evaluation, plus the setup-timeframe Heikin-Ashi UT Bot result          ║
+// ║  calcPair() already computes) — no DOM, no localStorage, no              ║
+// ║  currentScanData, no fetch, no live price, no new indicator, no new      ║
+// ║  fetch/timeframe request. See the delivery report for the full           ║
+// ║  input-to-existing-field mapping.                                        ║
+// ║                                                                          ║
+// ║  SHADOW ONLY in this build. Attached as _result.trendState. Does NOT     ║
+// ║  replace, feed, or alter d.signal, d.liveSignal, d.regime,               ║
+// ║  d.evaluation, d.evidence (Market Evidence), d.tradeReadyV1, Scanner     ║
+// ║  routing, Watch/Trade creation, lifecycle, or Journal/dedup in any way.  ║
+// ║                                                                          ║
+// ║  Owner doctrine encoded here (see delivery report for full citation):    ║
+// ║    200MA (rich regime + chop + ATR-normalised slope) = structural        ║
+// ║      regime authority — direction comes from here, not from TEMA/UT.     ║
+// ║    HA UT direction (age-independent) = persistent trend-state authority  ║
+// ║      once regime is established; a persistent opposing UT flip against   ║
+// ║      an otherwise-confirmed regime is DETERIORATING, materially more     ║
+// ║      serious than a TEMA disagreement, but does not by itself flip the   ║
+// ║      reported direction to the opposite regime.                          ║
+// ║    TEMA direction = phase/timing evidence once trend is established —    ║
+// ║      an opposing TEMA reading inside an otherwise-established trend is   ║
+// ║      PULLBACK, never a direction erasure to NEUTRAL.                     ║
+// ║    SMA135(1H)/SMA80(4H) side = supporting context only, never a hard     ║
+// ║      blocker — surfaced via trendSmaSupport, direction unaffected.       ║
+// ║    ADX = trend quality, kept structurally separate from direction —      ║
+// ║      trendQuality can be 'weak' while direction/state remain fully       ║
+// ║      directional/established.                                            ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+const TREND_STATE_RULESET_VERSION = 'TREND_STATE_V1_2026_08';
+
+// ADX quality banding reuses v51AdxRollingPeakDecay()'s own existing band
+// enum (no_trend/transitional/confirmed/strong/extreme) — no new ADX
+// threshold introduced. Collapsed to a 3-value quality scale here because
+// TSE's own doctrine (§14) only needs "is trend quality strong enough to
+// trust," not the full 5-band diagnostic detail v51AdxRollingPeakDecay()
+// already exposes separately on the evidence object.
+function _trendStateAdxQuality(adxBand) {
+  if (adxBand === 'strong' || adxBand === 'extreme') return 'strong';
+  if (adxBand === 'confirmed') return 'moderate';
+  if (adxBand === 'transitional' || adxBand === 'no_trend') return 'weak';
+  return 'unknown';
+}
+
+function buildTrendState(ctx) {
+  const {
+    tf, regime, chopState, sma200SlopeState,
+    utDirection, utBarsSinceFlip,
+    temaDirection,
+    aboveTrendSMA,
+    adxBand,
+  } = ctx || {};
+
+  const base = {
+    rulesetVersion: TREND_STATE_RULESET_VERSION,
+    tf: tf || null,
+    direction: 'NEUTRAL',
+    state: 'UNRESOLVED',
+    regimeState: regime || 'unknown',
+    chopState: chopState || 'unknown',
+    ma200SlopeState: sma200SlopeState || 'unknown',
+    utDirection: utDirection || 'unknown',
+    utBarsSinceFlip: (utBarsSinceFlip != null) ? utBarsSinceFlip : null,
+    temaDirection: temaDirection || 'unknown',
+    temaPhase: 'unknown',
+    trendSmaSupport: 'unknown',
+    trendQuality: 'unknown',
+    reasons: [],
+    cautions: [],
+    blockers: [],
+  };
+
+  // ── Evidence completeness guard — never fabricate a state from partial
+  // data. Every field here is already-computed confirmed evidence; if any
+  // required piece is missing, TSE reports UNRESOLVED/NEUTRAL honestly
+  // with an explicit blocker code rather than guessing.
+  if (!regime || regime === 'unknown' || !chopState || chopState === 'unknown'
+    || !sma200SlopeState || sma200SlopeState === 'unknown'
+    || !utDirection || utDirection === 'unknown') {
+    base.blockers.push('TSE_EVIDENCE_INCOMPLETE');
+    return base;
+  }
+
+  base.trendQuality = _trendStateAdxQuality(adxBand);
+
+  const regimeDir = (regime === 'confirmed_bullish' || regime === 'bullish_transitional') ? 'LONG'
+    : (regime === 'confirmed_bearish' || regime === 'bearish_transitional') ? 'SHORT' : null;
+
+  // ── UNRESOLVED — chop, or a regime that isn't directionally resolvable
+  // at all (unresolved_chop / unknown), blocks trend authority entirely.
+  // A clean UT direction alone must never promote the market to an
+  // established trend inside unresolved structure — owner doctrine §6/§10.
+  if (regime === 'unresolved_chop' || chopState === 'chop' || !regimeDir) {
+    base.direction = 'NEUTRAL';
+    base.state = 'UNRESOLVED';
+    base.reasons.push('TSE_REGIME_OR_CHOP_UNRESOLVED');
+    return base;
+  }
+
+  base.direction = regimeDir;
+
+  const utDirLabel = utDirection === 'bullish' ? 'LONG' : utDirection === 'bearish' ? 'SHORT' : null;
+  const temaDirLabel = temaDirection === 'bullish' ? 'LONG' : temaDirection === 'bearish' ? 'SHORT' : null;
+
+  const regimeConfirmed = (regimeDir === 'LONG' && regime === 'confirmed_bullish')
+    || (regimeDir === 'SHORT' && regime === 'confirmed_bearish');
+  // Note: this is the SEPARATE, ATR-normalised, 10-bar-lookback slope
+  // (evidence.sma200Slope.sma200SlopeState) — not the single-bar-over-bar
+  // slope already baked into _ma200RegimeFromInputs()'s own regime
+  // derivation. The two are genuinely independent calculations; a
+  // 'confirmed_bullish' regime can co-occur with a non-'rising' ATR-slope
+  // reading here, which is exactly the "crossed vs. genuinely rotating"
+  // distinction owner doctrine §9 asks this engine to make.
+  const slopeSupportive = (regimeDir === 'LONG' && sma200SlopeState === 'rising')
+    || (regimeDir === 'SHORT' && sma200SlopeState === 'falling');
+
+  const utAligned = utDirLabel === regimeDir;
+  const utOpposing = utDirLabel !== null && utDirLabel !== regimeDir;
+
+  base.trendSmaSupport = aboveTrendSMA === true ? (regimeDir === 'LONG' ? 'supportive' : 'opposing')
+    : aboveTrendSMA === false ? (regimeDir === 'LONG' ? 'opposing' : 'supportive') : 'unknown';
+  base.temaPhase = temaDirLabel === null ? 'unknown' : (temaDirLabel === regimeDir ? 'aligned' : 'opposing');
+
+  if (base.trendSmaSupport === 'opposing') {
+    base.cautions.push('TSE_TREND_SMA_OPPOSING');
+  }
+
+  // ── DETERIORATING — a persistent HA UT flip against an otherwise-
+  // confirmed, chop-clear regime is materially more serious than a TEMA
+  // disagreement (owner doctrine §7 Case E). Direction stays anchored to
+  // the structural regime — a single UT flip does not itself flip the
+  // regime; the engine flags deterioration instead of silently declaring
+  // the opposite trend established from one indicator alone.
+  if (utOpposing && regimeConfirmed && chopState === 'clear') {
+    base.state = 'DETERIORATING';
+    base.reasons.push('TSE_REGIME_CONFIRMED', 'TSE_CHOP_CLEAR');
+    base.cautions.push('TSE_UT_OPPOSING_REGIME');
+    return base;
+  }
+
+  // ── ESTABLISHED / PULLBACK — regime confirmed, chop clear, ATR-slope
+  // genuinely supportive (not just "crossed"), UT aligned. TEMA is
+  // consulted LAST, as phase/timing evidence only (owner doctrine Case
+  // A/D): an opposing TEMA reading here downgrades to PULLBACK, never to
+  // NEUTRAL or a direction flip — this is the exact ADA-case correction.
+  if (regimeConfirmed && chopState === 'clear' && slopeSupportive && utAligned) {
+    base.reasons.push('TSE_REGIME_CONFIRMED', 'TSE_CHOP_CLEAR', 'TSE_SLOPE_SUPPORTIVE', 'TSE_UT_ALIGNED');
+    if (temaDirLabel !== null && temaDirLabel !== regimeDir) {
+      base.state = 'PULLBACK';
+      base.cautions.push('TSE_TEMA_OPPOSING_PULLBACK');
+    } else {
+      base.state = 'ESTABLISHED';
+    }
+    return base;
+  }
+
+  // ── EMERGING — regime/chop/UT are aligning but the trend is not yet
+  // fully established: either the regime itself is still '..._transitional'
+  // (not yet 'confirmed_...'), or it's confirmed but the ATR-normalised
+  // slope hasn't rotated to genuinely supportive yet (owner doctrine §9 —
+  // slope distinguishes "merely crossed" from "genuinely established").
+  // Chop must be at least 'clear' or 'transitional' (not 'chop') and UT
+  // must already be aligned — a still-choppy transitional reading with no
+  // UT agreement stays UNRESOLVED, not EMERGING.
+  if ((chopState === 'clear' || chopState === 'transitional') && utAligned && (!regimeConfirmed || !slopeSupportive)) {
+    base.state = 'EMERGING';
+    base.reasons.push('TSE_CHOP_NOT_UNRESOLVED', 'TSE_UT_ALIGNED');
+    if (!regimeConfirmed) base.reasons.push('TSE_REGIME_TRANSITIONAL');
+    if (!slopeSupportive) base.reasons.push('TSE_SLOPE_NOT_YET_SUPPORTIVE');
+    return base;
+  }
+
+  // ── Fallback — regime has a resolvable direction but neither the
+  // ESTABLISHED nor EMERGING evidence bar is met (e.g. UT not aligned and
+  // not clearly opposing, or chop not clear despite a resolved regime).
+  // Conservative: direction is still reported (the regime itself is
+  // directional evidence), but phase does not advance past UNRESOLVED
+  // rather than guessing a phase the current evidence doesn't clearly
+  // support. Never silently invents a threshold to force a decision here.
+  base.state = 'UNRESOLVED';
+  base.reasons.push('TSE_INSUFFICIENT_EVIDENCE_FOR_PHASE');
+  return base;
+}
+
+// V5.2.0 — computes _result.trendState on every calcPair() call. Purely
+// additive: no existing field is read or written by this flag. Shadow
+// only — nothing in the live system (Scanner, Watch, Trade, Advisory,
+// Trade Ready, Market Evidence, lifecycle, Journal, sorting, alerts)
+// reads d.trendState. Rollback: set to false to stop all TSE computation;
+// every existing live path is completely unaffected either way.
+DIAG.trendStateShadow = true;
+
 // ── Diagnostics accessor ────────────────────────────────────────────────────
 // Deliberately NOT wired into openAnalysisPanel() or any render path — the
 // ordinary Full Analysis view is byte-unchanged by this build. Pure,
@@ -13117,6 +13349,51 @@ function buildTradeReadyV1ShadowHtml(d, advisory) {
     + 'Legacy Trade Ready: ' + (cmp.legacyReady ? 'Yes' : 'No') + '\n'
     + 'Current advisory action: ' + (cmp.legacyAction || 'n/a') + '\n'
     + 'Difference: ' + cmp.differenceType;
+}
+
+// ── TDAS V5.2.0 — Trend State Engine shadow diagnostic ──────────────────────
+// Same shape/style as buildTradeReadyV1ShadowHtml() just above. Includes an
+// explicit legacy-signal / Market-Evidence / Trend-State side-by-side
+// comparison line (owner doctrine §18) — this is essential for observing
+// ADA/BNB/ETH-style disagreement cases directly in Full Analysis, purely
+// as an observational aid. Disagreement is never flagged as an error; it
+// is exactly the thing this shadow build exists to surface for review.
+function buildTrendStateShadowHtml(d) {
+  const ts = d && d.trendState;
+  if (!ts) return '';
+
+  const legacySignalLabel = d.signal === 'long' ? 'Long' : d.signal === 'short' ? 'Short' : 'Neutral';
+  const ev = d.evidence;
+  const marketEvidenceLabel = (ev && typeof ev.direction === 'string' && typeof ev.alignment === 'string')
+    ? (ev.direction.charAt(0).toUpperCase() + ev.direction.slice(1)) + ' / ' + ev.alignment
+    : 'n/a';
+  const tsLabel = ts.direction + (ts.state ? (' / ' + ts.state) : '');
+
+  const utLabel = ts.utDirection !== 'unknown'
+    ? ts.utDirection + (ts.utBarsSinceFlip != null ? ' \u00b7 ' + ts.utBarsSinceFlip + ' bars since flip' : '')
+    : 'unknown';
+
+  const reasons = (ts.reasons && ts.reasons.length) ? ts.reasons.map((r) => '- ' + r).join('\n') : '(none)';
+  const cautions = (ts.cautions && ts.cautions.length) ? '\nCautions:\n' + ts.cautions.map((c) => '- ' + c).join('\n') : '';
+  const blockers = (ts.blockers && ts.blockers.length) ? '\nBlockers:\n' + ts.blockers.map((b) => '- ' + b).join('\n') : '';
+
+  return '\n\n=== TREND STATE ENGINE \u2014 SHADOW ===\n'
+    + 'Ruleset: ' + ts.rulesetVersion + '\n'
+    + 'Direction: ' + ts.direction + '\n'
+    + 'State: ' + ts.state + '\n'
+    + 'Regime: ' + ts.regimeState + '\n'
+    + '200MA chop: ' + ts.chopState + '\n'
+    + '200MA slope: ' + ts.ma200SlopeState + '\n'
+    + 'HA UT: ' + utLabel + '\n'
+    + 'Trend SMA: ' + ts.trendSmaSupport + '\n'
+    + 'TEMA phase: ' + ts.temaPhase + ' (direction: ' + ts.temaDirection + ')\n'
+    + 'Trend quality: ' + ts.trendQuality + '\n\n'
+    + 'Reasons:\n' + reasons
+    + cautions + blockers + '\n\n'
+    + '--- Legacy comparison (observational only \u2014 disagreement is expected and not an error) ---\n'
+    + 'Legacy signal: ' + legacySignalLabel + '\n'
+    + 'Market Evidence: ' + marketEvidenceLabel + '\n'
+    + 'Trend State: ' + tsLabel;
 }
 
 // ── Local shadow logging ─────────────────────────────────────────────────────
@@ -15593,6 +15870,48 @@ async function calcPair(symbol,tf){
         evaluationStatus: 'failed',
         error: 'V51_EVALUATION_THREW',
         errorMessage: (_v51Err && _v51Err.message) ? _v51Err.message : String(_v51Err),
+      };
+    }
+  }
+
+  // ── TDAS V5.2.0 — Trend State Engine, shadow attachment ─────────────────
+  // Reads ONLY fields _result.v51Evidence.evidence already computed above
+  // (no re-derivation, no new fetch) plus the setup-timeframe Heikin-Ashi
+  // utBot already computed earlier in this same calcPair() call. Wrapped
+  // so a failure here can never affect the live scan result — degrades to
+  // an honest UNRESOLVED/blocked shadow value instead. Does not read or
+  // write signal/states/regime/evaluation/evidence/tradeReadyV1 — a
+  // strictly additive, parallel field.
+  if (DIAG.trendStateShadow) {
+    try {
+      const _tseEv = _result.v51Evidence && _result.v51Evidence.evidence;
+      if (_tseEv && _tseEv.raw && _tseEv.raw.complete) {
+        const _tseTrendSma = (tf === '4h' || tf === '1d') ? _tseEv.raw.sma80 : _tseEv.raw.sma135;
+        const _tseAboveTrendSMA = (_tseTrendSma != null && _tseEv.raw.lastClosedPrice != null)
+          ? (_tseEv.raw.lastClosedPrice > _tseTrendSma) : null;
+        _result.trendState = buildTrendState({
+          tf,
+          regime: _tseEv.regime,
+          chopState: _tseEv.chop && _tseEv.chop.state,
+          sma200SlopeState: _tseEv.sma200Slope && _tseEv.sma200Slope.sma200SlopeState,
+          utDirection: (utBot && utBot.direction === 1) ? 'bullish' : (utBot && utBot.direction === -1) ? 'bearish' : 'unknown',
+          utBarsSinceFlip: utBot ? utBot.barsAgoFlip : null,
+          temaDirection: (_tseEv.tema && _tseEv.tema.maturity) ? _tseEv.tema.maturity.direction : 'unknown',
+          aboveTrendSMA: _tseAboveTrendSMA,
+          adxBand: _tseEv.adx && _tseEv.adx.band,
+        });
+      } else {
+        _result.trendState = buildTrendState({ tf }); // incomplete evidence -> honest blocked result, never fabricated
+      }
+    } catch (_tseErr) {
+      _result.trendState = {
+        rulesetVersion: TREND_STATE_RULESET_VERSION, tf,
+        direction: 'NEUTRAL', state: 'UNRESOLVED',
+        regimeState: 'unknown', chopState: 'unknown', ma200SlopeState: 'unknown',
+        utDirection: 'unknown', utBarsSinceFlip: null, temaDirection: 'unknown',
+        temaPhase: 'unknown', trendSmaSupport: 'unknown', trendQuality: 'unknown',
+        reasons: [], cautions: [], blockers: ['TSE_EVALUATION_THREW'],
+        errorMessage: (_tseErr && _tseErr.message) ? _tseErr.message : String(_tseErr),
       };
     }
   }
@@ -19308,6 +19627,14 @@ function openAnalysisPanel(request){
     ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildTradeReadyV1ShadowHtml(d, _advisory) + '</pre>'
     : '';
 
+  // TDAS V5.2.0 — Trend State Engine shadow diagnostic. Same gated,
+  // additive, non-mutating pattern as the two shadow sections just above.
+  // Full Analysis only — no card-front change, no Scanner-lane change, no
+  // new badge.
+  const _trendStateHtml = (DIAG.trendStateShadow === true && d.trendState)
+    ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildTrendStateShadowHtml(d) + '</pre>'
+    : '';
+
   // TDAS V4.9.10 — remaining sections precomputed as standalone template
   // literals (same pattern as _tcHtml/_evalHtml/_lifecycleHtml/_advisoryHtml
   // above), each passed through the shared _apSectionWrap() helper. Same
@@ -19390,6 +19717,7 @@ function openAnalysisPanel(request){
     ${_beStatusHtml}
     ${_marketEvidenceHtml}
     ${_tradeReadyV1Html}
+    ${_trendStateHtml}
     ${_signalSummaryHtml}
     ${_lifecycleHtml}
     ${_evalHtml}
@@ -25308,6 +25636,9 @@ async function runScan(auto){
     // auto refresh), per the "concise summary, do not flood the console"
     // requirement. DIAG.ownershipResolverLive stays false throughout.
     try{ _runOwnershipShadowCensus(PAIRS, tf); }catch(err){ console.warn('[H8A ownership shadow] census failed (non-fatal, diagnostic only):', err); }
+    if (DIAG.trendStateShadow) {
+      try{ _runTrendStateShadowCensus(PAIRS, tf); }catch(err){ console.warn('[V5.2.0 trend state shadow] census failed (non-fatal, diagnostic only):', err); }
+    }
 
     // TDAS V5.0.0H7 — two fixed directional lanes (Short left, Long right
     // on desktop; Short then Long stacked on mobile via CSS, not DOM
