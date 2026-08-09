@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.1';
+const APP_BUILD = 'V5.2.2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2471,6 +2471,53 @@ function resolveOwnership(symbol, tf){
   }
 
   return { owner: 'none', ownerTf: null, entryId: null, suppressFromScanner: false, presentationHint: 'none', legacyBlankTf: false };
+}
+
+// TDAS V5.2.2 — Trade Ready TSE shadow census. Read-only, same bounded/
+// versioned/console-only doctrine as the V5.2.0/V5.2.1 census functions.
+// No fetch of its own (only reads already-attached calcPair() results).
+function _runTradeReadyV1TseShadowCensus(pairs, tf){
+  const classCounts = {
+    AGREEMENT: 0, DIRECTION_RECOVERY: 0, CHOP_SUPPRESSION: 0,
+    DETERIORATION_BLOCK: 0, PHASE_REFINEMENT: 0, STATUS_DIFFERENCE: 0,
+    OTHER_DISAGREEMENT: 0, TSE_UNAVAILABLE: 0,
+  };
+  let legacyNoDirTseDir = 0, legacyDirTseUnresolved = 0, legacyAcquired1hTseSkipped = 0, legacySkipped1hTseAcquired = 0, sameStatusDifferentDirection = 0;
+  let compared = 0;
+  pairs.forEach(sym => {
+    const d = currentScanData[sym];
+    const tse = d && d.tradeReadyV1TseShadow;
+    const legacy = d && d.tradeReadyV1;
+    const disagreement = d && d.tradeReadyV1TseDisagreement;
+    if (!tse || !disagreement) return;
+    compared++;
+    if (Object.prototype.hasOwnProperty.call(classCounts, disagreement.class)) classCounts[disagreement.class]++;
+    const legacyDir = (legacy && legacy.direction) || 'unknown';
+    const tseDir = tse.direction || 'unknown';
+    if (legacyDir === 'unknown' && tseDir !== 'unknown') legacyNoDirTseDir++;
+    if (legacyDir !== 'unknown' && tse.sourcePhase === 'UNRESOLVED') legacyDirTseUnresolved++;
+    const legacyAcquired = !!(d.v511OneHEvidence && d.v511OneHEvidence.requestMade);
+    const tseAcquired = !!(tse.prefilter && tse.prefilter.passed && d.tradeReadyV1TseOneHEvidence && d.tradeReadyV1TseOneHEvidence.requestMade);
+    if (legacyAcquired && !tseAcquired) legacyAcquired1hTseSkipped++;
+    if (!legacyAcquired && tseAcquired) legacySkipped1hTseAcquired++;
+    if (legacy && legacy.status === tse.status && legacyDir !== tseDir) sameStatusDifferentDirection++;
+  });
+  console.log(
+    '[V5.2.2 trade ready tse shadow] compared=' + compared,
+    'agreement=' + classCounts.AGREEMENT,
+    'directionRecovery=' + classCounts.DIRECTION_RECOVERY,
+    'chopSuppression=' + classCounts.CHOP_SUPPRESSION,
+    'deteriorationBlock=' + classCounts.DETERIORATION_BLOCK,
+    'phaseRefinement=' + classCounts.PHASE_REFINEMENT,
+    'statusDifference=' + classCounts.STATUS_DIFFERENCE,
+    'otherDisagreement=' + classCounts.OTHER_DISAGREEMENT,
+    'tseUnavailable=' + classCounts.TSE_UNAVAILABLE,
+    '| legacyNoDir\u2192tseDir=' + legacyNoDirTseDir,
+    'legacyDir\u2192tseUnresolved=' + legacyDirTseUnresolved,
+    'legacyAcquired1h\u2192tseSkipped=' + legacyAcquired1hTseSkipped,
+    'legacySkipped1h\u2192tseAcquired=' + legacySkipped1hTseAcquired,
+    'sameStatusDifferentDirection=' + sameStatusDifferentDirection
+  );
 }
 
 // TDAS V5.2.1 — Market Evidence TSE shadow census. Read-only, same bounded/
@@ -12991,6 +13038,247 @@ function _classifyMarketEvidenceTseDisagreement(legacyEvidence, tseShadow) {
 // d.marketEvidenceTseShadow. Rollback: set to false to stop computation.
 DIAG.marketEvidenceTseShadow = true;
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.2.2 — Trade Ready TSE Shadow Migration                           ║
+// ║                                                                          ║
+// ║  Migrates the directional-authority PLUMBING of the Trade Ready shadow   ║
+// ║  path onto TSE — direction source, staged-1H prefilter, and Check 1 —    ║
+// ║  while reusing Checks 2-5 completely unmodified (same thresholds, same   ║
+// ║  functions, called verbatim). Consumes ONLY d.trendState — never re-     ║
+// ║  votes TEMA/UT/200MA independently, and never consumes the V5.2.1        ║
+// ║  Market Evidence shadow (which stays interpretive-only, per doctrine     ║
+// ║  §22: confirmed evidence -> TSE -> this shadow, not TSE -> Market        ║
+// ║  Evidence -> this shadow). DIAG.tradeReadyV1Live stays false throughout  ║
+// ║  — this build changes nothing about what becomes production authority.  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Direction/phase source — the one place TSE's direction is translated into
+// the 'long'/'short'/'unknown' vocabulary Checks 2-5 already expect.
+function tradeReadyDirectionFromTrendState(trendState) {
+  if (!trendState || typeof trendState.direction !== 'string' || typeof trendState.state !== 'string') {
+    return { direction: 'unknown', phase: 'unknown', available: false };
+  }
+  const direction = trendState.direction === 'LONG' ? 'long' : (trendState.direction === 'SHORT' ? 'short' : 'unknown');
+  return { direction, phase: trendState.state, available: direction !== 'unknown' };
+}
+
+// TSE-backed Check 1 — direction coherence, reinterpreted through TSE phase
+// eligibility instead of independently re-voting TEMA/UT/200MA. See the
+// build report for the full phase-eligibility rationale:
+//   ESTABLISHED   -> pass (clean structural coherence)
+//   PULLBACK      -> pass (direction preserved; TEMA opposition alone must
+//                     not fail this — that is exactly the ADA correction)
+//   DETERIORATING -> fail (structural direction preserved in the returned
+//                     `direction` field for diagnostics, but does not count
+//                     as coherent for Trade Ready purposes while deteriorating)
+//   EMERGING      -> fail, with its own distinct reason code — existing TSE
+//                     evidence categorically distinguishes EMERGING from
+//                     ESTABLISHED already; this reuses that existing
+//                     categorical distinction rather than inventing a new
+//                     numeric threshold to decide EMERGING pass/fail
+//   UNRESOLVED / unavailable -> fail, no direction
+function tradeReadyV1Check1TseShadow(trendState) {
+  const src = tradeReadyDirectionFromTrendState(trendState);
+  if (!src.available) {
+    return { status: 'fail', reasonCodes: ['TR_TSE_DIRECTION_UNRESOLVED'], direction: null, phase: src.phase };
+  }
+  if (src.phase === 'ESTABLISHED') {
+    return { status: 'pass', reasonCodes: ['TR_TSE_DIRECTION_ESTABLISHED'], direction: src.direction, phase: src.phase };
+  }
+  if (src.phase === 'PULLBACK') {
+    return { status: 'pass', reasonCodes: ['TR_TSE_DIRECTION_PULLBACK'], direction: src.direction, phase: src.phase };
+  }
+  if (src.phase === 'DETERIORATING') {
+    return { status: 'fail', reasonCodes: ['TR_TSE_DIRECTION_DETERIORATING'], direction: src.direction, phase: src.phase };
+  }
+  if (src.phase === 'EMERGING') {
+    return { status: 'fail', reasonCodes: ['TR_TSE_DIRECTION_EMERGING'], direction: src.direction, phase: src.phase };
+  }
+  return { status: 'fail', reasonCodes: ['TR_TSE_DIRECTION_UNRESOLVED'], direction: src.direction, phase: src.phase };
+}
+
+// TSE-backed staged-1H prefilter — same {passed, reason} shape as the
+// legacy v511PrefilterPassesForOneHAcquisition(), same conservative
+// discipline (no fetch for unresolved structure, no fetch for a clearly
+// non-actionable deteriorating regime), using ONLY TSE direction/state and
+// the already-computed 4H raw-evidence-complete flag — no new threshold.
+function tsePrefilterPassesForOneHAcquisition(trendState, fourHRawComplete) {
+  const src = tradeReadyDirectionFromTrendState(trendState);
+  if (!src.available) {
+    return { passed: false, reason: 'TR_TSE_PREFILTER_NOT_ACQUIRED_UNRESOLVED' };
+  }
+  if (src.phase === 'DETERIORATING') {
+    return { passed: false, reason: 'TR_TSE_PREFILTER_NOT_ACQUIRED_DETERIORATING' };
+  }
+  if (!fourHRawComplete) {
+    return { passed: false, reason: 'INSUFFICIENT_4H_EVIDENCE' };
+  }
+  // ESTABLISHED / PULLBACK / EMERGING all justify acquiring staged 1H
+  // evidence — actionability itself is decided downstream by TR2-TR5 and
+  // TSE Check 1's own EMERGING/DETERIORATING handling, not by the
+  // prefilter. This mirrors the legacy prefilter's own division of labour
+  // (it only gates on direction+4H-completeness, never pre-judges quality).
+  return { passed: true, reason: 'TSE_PLAUSIBLE_CANDIDATE' };
+}
+
+// TSE-backed staged 1H acquisition orchestration. Fetch-sharing discipline
+// (owner doctrine §20): if the LEGACY staged acquisition already fetched
+// real evidence for this exact confirmed bar in this same calcPair() call
+// (requestMade / watch_trade_reuse), that evidence is reused verbatim —
+// zero additional network calls. A fresh, separate fetch happens ONLY when
+// legacy did not fetch (its own prefilter failed or the flag was off) but
+// the TSE prefilter above says this candidate justifies acquisition. Reuses
+// the exact same fetchKlines()/_calcConfirmedEvidenceFromKlines()/cache
+// machinery the legacy function itself uses — no second fetch mechanism
+// invented.
+async function tseAcquireStagedOneHEvidence(symbol, trendState, fourHRawComplete, legacyOneHEvidence) {
+  const prefilter = tsePrefilterPassesForOneHAcquisition(trendState, fourHRawComplete);
+  const base = {
+    status: 'not_attempted', acquisitionReason: prefilter.reason, prefilterPassed: prefilter.passed,
+    requestMade: false, cacheHit: false, source: null, confirmedBarId: null,
+    evidence: null, missingFields: [], errorCode: null,
+    rulesetVersion: V511_ONE_H_EVIDENCE_RULESET_VERSION, sharedWithLegacy: false,
+  };
+  if (!prefilter.passed) return base;
+  if (!DIAG.v511StagedOneHEvidence) {
+    return Object.assign({}, base, { status: 'skipped_flag_off' });
+  }
+
+  const legacyHasUsableEvidence = legacyOneHEvidence
+    && legacyOneHEvidence.evidence
+    && (legacyOneHEvidence.requestMade === true || legacyOneHEvidence.source === 'watch_trade_reuse');
+  if (legacyHasUsableEvidence) {
+    return Object.assign({}, base, {
+      status: legacyOneHEvidence.status, requestMade: false, cacheHit: !!legacyOneHEvidence.cacheHit,
+      source: 'shared_with_legacy', confirmedBarId: legacyOneHEvidence.confirmedBarId,
+      evidence: legacyOneHEvidence.evidence, missingFields: legacyOneHEvidence.missingFields || [],
+      sharedWithLegacy: true,
+    });
+  }
+
+  try {
+    const raw1h = await fetchKlines(symbol, '1h', V511_ONE_H_KLINE_REQUEST_COUNT);
+    if (!raw1h || raw1h.length < 20) {
+      return Object.assign({}, base, { status: 'failed', requestMade: true, errorCode: 'INSUFFICIENT_RAW_KLINES' });
+    }
+    const evidence = _calcConfirmedEvidenceFromKlines(symbol, raw1h, '1h');
+    const cached = v511GetCachedOneHEvidence(symbol, evidence);
+    if (cached) {
+      return Object.assign({}, base, {
+        status: 'complete', requestMade: true, cacheHit: true, source: 'cache',
+        confirmedBarId: cached.confirmedBarId, evidence: cached, missingFields: cached.missingFields || [],
+      });
+    }
+    v511SetCachedOneHEvidence(symbol, evidence);
+    return Object.assign({}, base, {
+      status: evidence.status === 'complete' ? 'complete' : 'incomplete',
+      requestMade: true, cacheHit: false, source: 'fresh_fetch',
+      confirmedBarId: evidence.confirmedBarId, evidence,
+      missingFields: evidence.missingFields || [],
+      errorCode: evidence.status === 'complete' ? null : 'INSUFFICIENT_CONFIRMED_HISTORY',
+    });
+  } catch (_tseFetchErr) {
+    return Object.assign({}, base, {
+      status: 'failed', requestMade: true,
+      errorCode: (_tseFetchErr && _tseFetchErr.message) ? _tseFetchErr.message : 'FETCH_THREW',
+    });
+  }
+}
+
+// Full TSE-backed Trade Ready shadow bundle. Checks 2-5 are the EXACT
+// existing functions, called unmodified, with no threshold changes —
+// only the direction source (TSE, not legacy signal) and Check 1 (TSE
+// phase-eligibility, not TEMA/UT/200MA re-voting) differ from legacy.
+function buildTradeReadyV1TseShadow(symbol, trendState, v51Evidence, utBot, tseOneHEvidence) {
+  const evaluatedAt = Date.now();
+  const src = tradeReadyDirectionFromTrendState(trendState);
+  const direction = src.available ? src.direction : 'unknown';
+
+  const fourHBarId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.setup && v51Evidence.confirmedBars.setup.barId;
+  const oneDBarId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.adjacent && v51Evidence.confirmedBars.adjacent.barId;
+  const oneHBarId = (tseOneHEvidence && tseOneHEvidence.confirmedBarId) || null;
+
+  const checks = {
+    directionCoherent: tradeReadyV1Check1TseShadow(trendState),
+    trendQuality: tradeReadyV1Check2TrendQuality(v51Evidence),
+    executionRegime: tradeReadyV1Check3ExecutionRegime(direction, tseOneHEvidence),
+    freshTrigger: tradeReadyV1Check4FreshTrigger(direction, tseOneHEvidence),
+    extension: tradeReadyV1Check5Extension(tseOneHEvidence),
+  };
+
+  const checkList = [checks.directionCoherent, checks.trendQuality, checks.executionRegime, checks.freshTrigger, checks.extension];
+  const anyUnknown = checkList.some((c) => c.status === 'unknown');
+  const allPass = checkList.every((c) => c.status === 'pass');
+  const missingEvidence = [];
+  checkList.forEach((c) => { if (c.status === 'unknown') missingEvidence.push.apply(missingEvidence, c.reasonCodes); });
+  const failedReasonCodes = [];
+  checkList.forEach((c) => { if (c.status === 'fail') failedReasonCodes.push.apply(failedReasonCodes, c.reasonCodes); });
+
+  // Same three-way aggregation as legacy buildTradeReadyV1(), unmodified.
+  let status;
+  if (anyUnknown) status = 'LIMITED_EVALUATION';
+  else if (allPass) status = 'TRADE_READY';
+  else status = 'WATCH';
+
+  return {
+    rulesetVersion: TRADE_READY_V1_RULESET_VERSION,
+    evaluatedAt, symbol, direction,
+    sourceTrendState: trendState ? trendState.direction : 'unknown',
+    sourcePhase: trendState ? trendState.state : 'unknown',
+    tseRulesetVersion: (trendState && trendState.rulesetVersion) || null,
+    setupTimeframe: '4h', executionTimeframe: '1h',
+    confirmedBarIds: { oneH: oneHBarId, fourH: fourHBarId || null, oneD: oneDBarId || null },
+    status, ready: status === 'TRADE_READY',
+    checks,
+    failedReasonCodes: Array.from(new Set(failedReasonCodes)),
+    missingEvidence: Array.from(new Set(missingEvidence)),
+    prefilter: tseOneHEvidence ? {
+      passed: tseOneHEvidence.prefilterPassed, reason: tseOneHEvidence.acquisitionReason,
+      source: tseOneHEvidence.source, sharedWithLegacy: !!tseOneHEvidence.sharedWithLegacy,
+    } : null,
+  };
+}
+
+// Deterministic, diagnostic-only disagreement classifier between legacy
+// Trade Ready V1 and the TSE-backed shadow above. Priority-ordered,
+// first-match-wins, same discipline as the V5.2.1 Market Evidence
+// classifier.
+function _classifyTradeReadyV1TseDisagreement(legacyV1, tseV1) {
+  if (!tseV1) return { class: 'TSE_UNAVAILABLE', reason: 'TSE_SHADOW_UNAVAILABLE' };
+  const legacyDir = (legacyV1 && legacyV1.direction) || 'unknown';
+  const tseDir = tseV1.direction || 'unknown';
+  const legacyStatus = (legacyV1 && legacyV1.status) || 'LIMITED_EVALUATION';
+  const tseStatus = tseV1.status;
+  const tsePhase = tseV1.sourcePhase;
+
+  if (tsePhase === 'DETERIORATING' && legacyDir !== 'unknown') {
+    return { class: 'DETERIORATION_BLOCK', reason: 'TSE_PHASE_DETERIORATING' };
+  }
+  if (tsePhase === 'UNRESOLVED' && legacyDir !== 'unknown') {
+    return { class: 'CHOP_SUPPRESSION', reason: 'TSE_DIRECTION_UNRESOLVED' };
+  }
+  if (legacyDir === 'unknown' && tseDir !== 'unknown') {
+    return { class: 'DIRECTION_RECOVERY', reason: 'LEGACY_NO_DIRECTION_TSE_DIRECTIONAL' };
+  }
+  if (legacyDir === tseDir && legacyStatus === tseStatus) {
+    return { class: 'AGREEMENT', reason: 'DIRECTION_AND_STATUS_CONSISTENT' };
+  }
+  if (legacyDir === tseDir && legacyStatus !== tseStatus) {
+    return { class: 'STATUS_DIFFERENCE', reason: 'SAME_DIRECTION_DIFFERENT_STATUS' };
+  }
+  if (legacyDir !== tseDir && legacyDir !== 'unknown' && tseDir !== 'unknown') {
+    return { class: 'PHASE_REFINEMENT', reason: 'DIFFERENT_DIRECTION_BOTH_KNOWN' };
+  }
+  return { class: 'OTHER_DISAGREEMENT', reason: 'UNCLASSIFIED' };
+}
+
+// V5.2.2 — computes _result.tradeReadyV1TseShadow. Purely additive; never
+// overwrites d.tradeReadyV1 (legacy). Nothing in the live system reads
+// d.tradeReadyV1TseShadow. DIAG.tradeReadyV1Live stays false throughout —
+// this flag controls only whether this SHADOW computation runs, not any
+// production authority.
+DIAG.tradeReadyV1TseShadow = true;
+
 // V5.2.0 — computes _result.trendState on every calcPair() call. Purely
 // additive: no existing field is read or written by this flag. Shadow
 // only — nothing in the live system (Scanner, Watch, Trade, Advisory,
@@ -13546,6 +13834,49 @@ function buildMarketEvidenceTseShadowHtml(d) {
     + 'Trend State source: ' + shadow.sourceDirection + ' / ' + shadow.sourceState + '\n'
     + 'Ruleset: ' + shadow.rulesetVersion + '\n'
     + 'Difference: ' + shadow.disagreementClass;
+}
+
+// ── TDAS V5.2.2 — Trade Ready TSE shadow diagnostic ─────────────────────────
+// Compact, diagnostic — does not repeat the raw TSE evidence block already
+// shown above.
+function buildTradeReadyV1TseShadowHtml(d) {
+  const tse = d && d.tradeReadyV1TseShadow;
+  if (!tse) return '';
+  const legacy = d.tradeReadyV1;
+  const disagreement = d.tradeReadyV1TseDisagreement;
+
+  const rowLabels = [
+    ['directionCoherent', 'TR1 Direction coherent (TSE)'],
+    ['trendQuality', 'TR2 4H trend quality'],
+    ['executionRegime', 'TR3 1H execution regime'],
+    ['freshTrigger', 'TR4 Fresh 1H UT trigger'],
+    ['extension', 'TR5 Entry not severely extended'],
+  ];
+  const rows = rowLabels.map(([key, label]) => {
+    const c = tse.checks && tse.checks[key];
+    if (!c) return '? ' + label;
+    const icon = c.status === 'pass' ? '\u2713' : (c.status === 'fail' ? '\u2715' : '?');
+    const codes = (c.reasonCodes && c.reasonCodes.length) ? ' (' + c.reasonCodes.join(', ') + ')' : '';
+    return icon + ' ' + label + codes;
+  }).join('\n');
+
+  const legacyLine = legacy
+    ? 'Legacy TR V1: ' + legacy.status + ' / ' + (legacy.direction || 'unavailable')
+    : 'Legacy TR V1: not evaluated';
+  const prefilterLine = tse.prefilter
+    ? 'Prefilter: ' + (tse.prefilter.passed ? 'passed' : 'not acquired') + ' (' + tse.prefilter.reason + (tse.prefilter.sharedWithLegacy ? ', shared with legacy' : '') + ')'
+    : 'Prefilter: n/a';
+
+  return '\n\n=== TRADE READY V1 \u2014 TSE SHADOW ===\n'
+    + 'Status: ' + tse.status + '\n'
+    + 'Direction: ' + (tse.direction ? tse.direction.toUpperCase() : 'UNKNOWN') + '\n'
+    + 'Trend State source: ' + tse.sourceTrendState + ' / ' + tse.sourcePhase + '\n'
+    + prefilterLine + '\n'
+    + rows + '\n\n'
+    + legacyLine + '\n'
+    + 'TSE TR V1: ' + tse.status + ' / ' + (tse.direction || 'unavailable') + '\n'
+    + 'Difference: ' + (disagreement ? disagreement.class : 'n/a') + '\n'
+    + 'Ruleset: ' + tse.rulesetVersion + ' (TSE source: ' + (tse.tseRulesetVersion || 'n/a') + ')';
 }
 
 // ── Local shadow logging ─────────────────────────────────────────────────────
@@ -16236,6 +16567,11 @@ async function calcPair(symbol,tf){
     }
   }
 
+  // ── TDAS V5.2.2 — Trade Ready TSE shadow attachment moved below, after
+  // legacy _result.tradeReadyV1 is computed (see just after the V5.1.1B
+  // block), so the disagreement classifier has real legacy data to compare
+  // against rather than an undefined value. ─────────────────────────────
+
   // TDAS V5.1.1B — Trade Ready V1 Shadow Test. Attached after the shared-core
   // confirmed result is selected and V5.1.1A staged 1H evidence has
   // completed or degraded — exactly the required ordering. SHADOW ONLY:
@@ -16261,6 +16597,41 @@ async function calcPair(symbol,tf){
         context: { errorCode: (_v1Err && _v1Err.message) ? _v1Err.message : String(_v1Err) },
       };
       _result.tradeReadyV1Comparison = null;
+    }
+  }
+
+  // ── TDAS V5.2.2 — Trade Ready TSE shadow attachment ───────────────────────
+  // Runs after both _result.trendState (computed earlier this call) and
+  // _result.v511OneHEvidence (legacy staged acquisition, above) exist, so
+  // fetch-sharing against the legacy result is possible, AND after
+  // _result.tradeReadyV1 (legacy, just above) so the disagreement
+  // classifier has real legacy data. Only attempted for 4H setups, same
+  // scope as legacy staged acquisition/Trade Ready. Consumes ONLY
+  // d.trendState — never d.marketEvidenceTseShadow (no circular
+  // dependency, owner doctrine §22) and never independently re-derives
+  // regime/chop/slope/UT/TEMA. Never overwrites d.tradeReadyV1 (legacy,
+  // untouched).
+  if (_result.tf === '4h' && DIAG.tradeReadyV1TseShadow) {
+    try {
+      const _tseFourHRawComplete = !!(_result.trendState && _result.trendState.blockers
+        && _result.trendState.blockers.indexOf('TSE_EVIDENCE_INCOMPLETE') === -1
+        && _result.trendState.regimeState !== 'unknown');
+      _result.tradeReadyV1TseOneHEvidence = await tseAcquireStagedOneHEvidence(
+        symbol, _result.trendState, _tseFourHRawComplete, _result.v511OneHEvidence
+      );
+      _result.tradeReadyV1TseShadow = buildTradeReadyV1TseShadow(
+        symbol, _result.trendState, _result.v51Evidence, utBot, _result.tradeReadyV1TseOneHEvidence
+      );
+      _result.tradeReadyV1TseDisagreement = _classifyTradeReadyV1TseDisagreement(_result.tradeReadyV1, _result.tradeReadyV1TseShadow);
+    } catch (_tseTrErr) {
+      _result.tradeReadyV1TseShadow = {
+        rulesetVersion: TRADE_READY_V1_RULESET_VERSION, status: 'LIMITED_EVALUATION', ready: false,
+        direction: 'unknown', sourceTrendState: 'unknown', sourcePhase: 'unknown', tseRulesetVersion: null,
+        checks: {}, failedReasonCodes: [], missingEvidence: ['TSE_TRADE_READY_EVALUATION_THREW'],
+        prefilter: null,
+        errorMessage: (_tseTrErr && _tseTrErr.message) ? _tseTrErr.message : String(_tseTrErr),
+      };
+      _result.tradeReadyV1TseDisagreement = { class: 'TSE_UNAVAILABLE', reason: 'TSE_TRADE_READY_EVALUATION_THREW' };
     }
   }
 
@@ -19825,6 +20196,12 @@ function openAnalysisPanel(request){
     ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildMarketEvidenceTseShadowHtml(d) + '</pre>'
     : '';
 
+  // TDAS V5.2.2 — Trade Ready TSE shadow diagnostic. Same gated, additive,
+  // non-mutating pattern.
+  const _tradeReadyV1TseHtml = (DIAG.tradeReadyV1TseShadow === true && d.tradeReadyV1TseShadow)
+    ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildTradeReadyV1TseShadowHtml(d) + '</pre>'
+    : '';
+
   // TDAS V4.9.10 — remaining sections precomputed as standalone template
   // literals (same pattern as _tcHtml/_evalHtml/_lifecycleHtml/_advisoryHtml
   // above), each passed through the shared _apSectionWrap() helper. Same
@@ -19909,6 +20286,7 @@ function openAnalysisPanel(request){
     ${_tradeReadyV1Html}
     ${_trendStateHtml}
     ${_marketEvidenceTseHtml}
+    ${_tradeReadyV1TseHtml}
     ${_signalSummaryHtml}
     ${_lifecycleHtml}
     ${_evalHtml}
@@ -25832,6 +26210,9 @@ async function runScan(auto){
     }
     if (DIAG.marketEvidenceTseShadow) {
       try{ _runMarketEvidenceTseShadowCensus(PAIRS, tf); }catch(err){ console.warn('[V5.2.1 market evidence tse shadow] census failed (non-fatal, diagnostic only):', err); }
+    }
+    if (DIAG.tradeReadyV1TseShadow) {
+      try{ _runTradeReadyV1TseShadowCensus(PAIRS, tf); }catch(err){ console.warn('[V5.2.2 trade ready tse shadow] census failed (non-fatal, diagnostic only):', err); }
     }
 
     // TDAS V5.0.0H7 — two fixed directional lanes (Short left, Long right
