@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.1.1F1';
+const APP_BUILD = 'V5.1.1F2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -12766,7 +12766,17 @@ function tradeReadyV1Check1DirectionCoherent(direction, v51Evidence, utBot) {
     return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR1_DIRECTION_UNKNOWN'] });
   }
   if (!raw || !raw.complete || !regime) {
-    return Object.assign({}, base, { status: 'unknown', raw: { t17: raw && raw.t17, t92: raw && raw.t92, regime }, reasonCodes: ['TR1_EVIDENCE_UNAVAILABLE'] });
+    // TDAS V5.1.1F2 — deliberately left generic. This is a single
+    // blanket completeness flag over the WHOLE raw 4H evidence bundle
+    // (_calcConfirmedEvidenceFromKlines's own raw.complete), not a
+    // per-field flag — it genuinely cannot say which specific field
+    // (t17/t92/sma80/etc.) is missing without restructuring that
+    // function to expose per-field completeness, which is out of this
+    // bounded task's scope. Renamed only to distinguish it from the two
+    // genuinely field-specific codes below (TR1_SMA80_EVIDENCE_UNAVAILABLE,
+    // TR1_200MA_EVIDENCE_UNAVAILABLE), which check independent fields and
+    // could be split without any restructuring.
+    return Object.assign({}, base, { status: 'unknown', raw: { t17: raw && raw.t17, t92: raw && raw.t92, regime }, reasonCodes: ['TR1_4H_RAW_EVIDENCE_UNAVAILABLE'] });
   }
   const rawValues = { t17: raw.t17, t92: raw.t92, sma80: raw.sma80, lastClosedPrice: raw.lastClosedPrice, utDirection: utBot ? utBot.direction : null, regime };
   const reasons = [];
@@ -12782,14 +12792,22 @@ function tradeReadyV1Check1DirectionCoherent(direction, v51Evidence, utBot) {
     ? (direction === 'long' ? raw.lastClosedPrice > raw.sma80 : raw.lastClosedPrice < raw.sma80)
     : null;
   if (sma80Ok === false) reasons.push('TR1_SMA80_POSITION_FAILED');
-  if (sma80Ok === null) reasons.push('TR1_EVIDENCE_UNAVAILABLE');
+  // TDAS V5.1.1F2 — was the generic TR1_EVIDENCE_UNAVAILABLE. This branch
+  // checks specifically whether raw.sma80/raw.lastClosedPrice are
+  // present — a genuinely independent field from regime/TEMA below, so a
+  // specific code is accurate here, not invented.
+  if (sma80Ok === null) reasons.push('TR1_SMA80_EVIDENCE_UNAVAILABLE');
 
   const regimeOpposing = direction === 'long'
     ? (regime === 'confirmed_bearish' || regime === 'bearish_transitional')
     : (regime === 'confirmed_bullish' || regime === 'bullish_transitional');
   if (regimeOpposing) reasons.push('TR1_200MA_REGIME_OPPOSED');
   const regimeUnknown = regime === 'unknown' || regime === 'unresolved_chop';
-  if (regimeUnknown) reasons.push('TR1_EVIDENCE_UNAVAILABLE');
+  // TDAS V5.1.1F2 — was also the generic TR1_EVIDENCE_UNAVAILABLE. This
+  // branch checks specifically whether the 200MA regime classification
+  // itself resolved — independent of sma80/TEMA, so a specific code is
+  // accurate here too.
+  if (regimeUnknown) reasons.push('TR1_200MA_EVIDENCE_UNAVAILABLE');
 
   if (sma80Ok === null || regimeUnknown) {
     return Object.assign({}, base, { status: 'unknown', raw: rawValues, reasonCodes: Array.from(new Set(reasons)) });
@@ -12823,6 +12841,18 @@ function tradeReadyV1Check3ExecutionRegime(direction, oneHEvidence) {
   const ev = oneHEvidence && oneHEvidence.evidence;
   const base = { timeframe: '1h', confirmedBarId: (oneHEvidence && oneHEvidence.confirmedBarId) || null, threshold: { slopeAtr: TRADE_READY_V1_CONFIG.oneHSma200AlignedSlopeAtrFloor } };
 
+  // TDAS V5.1.1F2 — NOT_ACQUIRED vs UNAVAILABLE. v511AcquireStagedOneHEvidence()
+  // already distinguishes these at the source (status:'not_attempted'/
+  // 'skipped_flag_off' means the 4H prefilter/flag deliberately never
+  // triggered a fetch, requestMade stays false in both cases; status:
+  // 'failed'/'incomplete' means a fetch or calculation was genuinely
+  // attempted and did not succeed) — reused directly here rather than
+  // inventing a new field, per the existing-structure-first instruction.
+  // Never inferred from confirmedBarId==null alone, which cannot
+  // distinguish these causes on its own.
+  if (oneHEvidence && (oneHEvidence.status === 'not_attempted' || oneHEvidence.status === 'skipped_flag_off')) {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR3_1H_EVIDENCE_NOT_ACQUIRED'] });
+  }
   if (!oneHEvidence || oneHEvidence.status !== 'complete' || !ev || ev.status !== 'complete') {
     return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR3_1H_EVIDENCE_UNAVAILABLE'] });
   }
@@ -12846,6 +12876,11 @@ function tradeReadyV1Check4FreshTrigger(direction, oneHEvidence) {
   const ev = oneHEvidence && oneHEvidence.evidence;
   const base = { timeframe: '1h', confirmedBarId: (oneHEvidence && oneHEvidence.confirmedBarId) || null, threshold: { freshMaxBars: TRADE_READY_V1_CONFIG.oneHUtFreshMaxBars, recentMaxBars: TRADE_READY_V1_CONFIG.oneHUtRecentMaxBars } };
 
+  // TDAS V5.1.1F2 — see tradeReadyV1Check3ExecutionRegime's own comment
+  // for the full rationale; identical distinction, reused identically.
+  if (oneHEvidence && (oneHEvidence.status === 'not_attempted' || oneHEvidence.status === 'skipped_flag_off')) {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR4_1H_EVIDENCE_NOT_ACQUIRED'] });
+  }
   if (!oneHEvidence || oneHEvidence.status !== 'complete' || !ev || ev.status !== 'complete' || ev.utBarsSinceFlip == null) {
     return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR4_1H_EVIDENCE_UNAVAILABLE'] });
   }
@@ -12869,6 +12904,11 @@ function tradeReadyV1Check5Extension(oneHEvidence) {
   const ev = oneHEvidence && oneHEvidence.evidence;
   const base = { timeframe: '1h', confirmedBarId: (oneHEvidence && oneHEvidence.confirmedBarId) || null, threshold: { severeAtr: TRADE_READY_V1_CONFIG.oneHSevereExtensionAtr } };
 
+  // TDAS V5.1.1F2 — see tradeReadyV1Check3ExecutionRegime's own comment
+  // for the full rationale; identical distinction, reused identically.
+  if (oneHEvidence && (oneHEvidence.status === 'not_attempted' || oneHEvidence.status === 'skipped_flag_off')) {
+    return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR5_EXTENSION_NOT_ACQUIRED'] });
+  }
   if (!oneHEvidence || oneHEvidence.status !== 'complete' || !ev || ev.status !== 'complete' || ev.extensionAbsoluteAtr == null) {
     return Object.assign({}, base, { status: 'unknown', raw: null, reasonCodes: ['TR5_EXTENSION_UNKNOWN'] });
   }
@@ -13017,6 +13057,17 @@ function buildTradeReadyV1TestRearHtml(symbol, d) {
 }
 
 // ── Full Analysis shadow section ────────────────────────────────────────────
+// TDAS V5.1.1F2 — reason-code-to-human-text translation for the specific
+// NOT_ACQUIRED family only. Every other reason code renders exactly as
+// before (raw code list) — this is a narrow, additive substitution, not a
+// general reason-code formatter.
+function _formatTradeReadyV1CheckDetail(reasonCodes) {
+  if (!reasonCodes || !reasonCodes.length) return '';
+  if (reasonCodes.length === 1 && /_NOT_ACQUIRED$/.test(reasonCodes[0])) {
+    return ' \u2014 not evaluated; 4H prefilter not met';
+  }
+  return ' \u2014 ' + reasonCodes.join(', ');
+}
 function buildTradeReadyV1ShadowHtml(d, advisory) {
   const v1 = d && d.tradeReadyV1;
   if (!v1) return '';
@@ -13032,18 +13083,36 @@ function buildTradeReadyV1ShadowHtml(d, advisory) {
     const c = v1.checks && v1.checks[key];
     if (!c) return '? ' + label;
     const icon = c.status === 'pass' ? '\u2713' : (c.status === 'fail' ? '\u2715' : '?');
-    const detail = c.reasonCodes && c.reasonCodes.length ? ' \u2014 ' + c.reasonCodes.join(', ') : '';
+    const detail = _formatTradeReadyV1CheckDetail(c.reasonCodes);
     return icon + ' ' + label + detail;
   }).join('\n');
 
   const missing = v1.missingEvidence && v1.missingEvidence.length ? '\nMissing evidence: ' + v1.missingEvidence.join(', ') : '';
+
+  // TDAS V5.1.1F2 — explicit summary-level statement when 1H evidence was
+  // deliberately never acquired (any of the three 1H-dependent checks
+  // carrying a NOT_ACQUIRED reason code), distinguishing this from a
+  // genuine evidence failure at the top of the shadow section, not just
+  // per-row. Never fires when 1H evidence was genuinely attempted and
+  // failed (v1.checks.*'s reasonCodes would carry the plain
+  // ..._UNAVAILABLE/_UNKNOWN codes instead, which this check does not
+  // match).
+  const oneHChecks = ['executionRegime', 'freshTrigger', 'extension'];
+  const oneHNotAcquired = oneHChecks.some((key) => {
+    const c = v1.checks && v1.checks[key];
+    return c && c.reasonCodes && c.reasonCodes.length === 1 && /_NOT_ACQUIRED$/.test(c.reasonCodes[0]);
+  });
+  const oneHNotAcquiredNote = oneHNotAcquired
+    ? '\n1H evidence not acquired \u2014 4H prefilter not met\n'
+    : '';
 
   return '\n\n=== TRADE READY V1 \u2014 SHADOW ===\n'
     + 'Status: ' + v1.status + '\n'
     + 'Direction: ' + (v1.direction ? v1.direction.toUpperCase() : 'UNKNOWN') + '\n'
     + 'Ruleset: ' + v1.rulesetVersion + '\n'
     + 'Confirmed 4H bar: ' + (v1.confirmedBarIds && v1.confirmedBarIds.fourH || 'n/a') + '\n'
-    + 'Confirmed 1H bar: ' + (v1.confirmedBarIds && v1.confirmedBarIds.oneH || 'n/a') + '\n\n'
+    + 'Confirmed 1H bar: ' + (v1.confirmedBarIds && v1.confirmedBarIds.oneH || 'n/a') + '\n'
+    + oneHNotAcquiredNote + '\n'
     + rows + missing + '\n\n'
     + 'Legacy Trade Ready: ' + (cmp.legacyReady ? 'Yes' : 'No') + '\n'
     + 'Current advisory action: ' + (cmp.legacyAction || 'n/a') + '\n'
