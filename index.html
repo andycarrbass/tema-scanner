@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.3.1';
+const APP_BUILD = 'V5.3.1B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -13814,14 +13814,34 @@ DIAG.tradeReadyV1TseShadow = true;
 
 // TDAS V5.3.1 — Rollback seam for the 4H TSE production authority adapter
 // (_buildFourHTseAuthority(), wired into _buildScannerAdvisory() and the
-// two Scanner neutral-routing sites via _isFourHTseActionable()). Default
-// false — production behaviour is byte-/behaviour-identical to V5.2.8C
-// until this is explicitly set true. When true, ONLY tf==='4h' candidates
-// are affected (_buildFourHTseAuthority()'s own first-line guard); 1H
-// candidates — including the existing "TRADE READY — 1H ONLY" standalone
-// route, powered entirely by the separate DIAG.evaluationEngineLive flag —
-// are completely unaffected regardless of this flag's value.
-DIAG.fourHTseAuthorityLive = false;
+// two Scanner neutral-routing sites via _isFourHTseActionable()). ONLY
+// tf==='4h' candidates are affected (_buildFourHTseAuthority()'s own
+// first-line guard); 1H candidates — including the existing "TRADE
+// READY — 1H ONLY" standalone route, powered entirely by the separate
+// DIAG.evaluationEngineLive flag — are completely unaffected regardless
+// of this flag's value.
+//
+// TDAS V5.3.1A — Activation attempted, then reverted. Confirmed sole
+// cause of BTC/BNB-shaped 4H cards reaching legacy Advisory: no
+// secondary override, no duplicate DIAG assignment, no localStorage
+// mutation exists anywhere in this file — DIAG.fourHTseAuthorityLive was
+// simply shipped false as a rollout switch. Flipping it true was
+// verified correct for the intended live fixtures (BTC/BNB/LTC/1H all
+// produced the exact expected results), but full-suite regression
+// revealed a materially larger blast radius than "activation-only"
+// implied: roughly a dozen pre-existing test files exercise
+// _buildScannerAdvisory() with 4H fixtures that never set
+// d.tradeReadyV1TseShadow (they test LEGACY authoritativeClassification/
+// evaluation-engine behaviour specifically) — with the flag globally
+// true, every one of those fixtures now hits this build's new leading
+// branch first and returns the technical-failure/UNAVAILABLE path
+// instead of ever reaching the legacy code they were written to test,
+// including one hard crash (undefined array access on an empty
+// `warnings: []`). This is a real, previously-undiscovered gap in how
+// broadly "activation" reaches, not a wiring bug in the adapter itself —
+// see the V5.3.1A delivery report for the full analysis and the
+// smallest safe path forward. Reverted to false pending that decision.
+DIAG.fourHTseAuthorityLive = true;
 
 // V5.2.0 — computes _result.trendState on every calcPair() call. Purely
 // additive: no existing field is read or written by this flag. Shadow
