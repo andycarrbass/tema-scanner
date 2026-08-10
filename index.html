@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.5A';
+const APP_BUILD = 'V5.2.6';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -13436,7 +13436,7 @@ function buildTradeReadyV1TseShadow(symbol, trendState, v51Evidence, utBot, tseO
 
   const checks = {
     directionCoherent: tradeReadyV1Check1TseShadow(trendState),
-    trendQuality: tradeReadyV1Check2TrendQuality(v51Evidence),
+    trendQuality: tradeReadyV1Check2TrendQualityTseShadow(v51Evidence),
     executionRegime: tradeReadyV1Check3ExecutionRegime(direction, tseOneHEvidence),
     intermediateTrendSupport: tradeReadyV1Check4TseShadow(direction, v51Evidence, tseOneHEvidence),
     extension: tradeReadyV1Check5Extension(tseOneHEvidence),
@@ -13721,6 +13721,44 @@ function tradeReadyV1Check2TrendQuality(v51Evidence) {
   if (!sepOk) reasons.push('TR2_TEMA_SEPARATION_BELOW_FLOOR');
   const pass = adxOk && sepOk;
   return Object.assign({}, base, { status: pass ? 'pass' : 'fail', raw: rawValues, reasonCodes: pass ? [] : reasons });
+}
+
+// ── TDAS V5.2.6 — TSE-specific TR2: ADX-led trend quality ──────────────────
+// A SEPARATE function from tradeReadyV1Check2TrendQuality() above (which is
+// left byte-unchanged and remains the legacy/production shadow's TR2 —
+// confirmed by direct audit that both the legacy buildTradeReadyV1() and
+// the TSE shadow builder previously called the SAME function; per owner
+// doctrine, silently changing that shared function would have altered
+// legacy behaviour, so a dedicated TSE variant was created instead).
+//
+// TEMA separation is retained and returned for diagnostics (raw.separationAtr,
+// unchanged calculation, unchanged threshold value kept only as reference
+// context) but NEVER gates pass/fail/unknown here — TR2 now answers only
+// "is 4H trend quality (ADX) strong enough," matching the owner's demoted-
+// TEMA doctrine. 'unknown' still requires ADX itself to be missing/
+// incomplete (owner-specified: "missing ADX retains existing unknown/fail
+// semantics") — a missing/incomplete TEMA separation reading no longer
+// forces 'unknown', since it no longer participates in the decision at all.
+function tradeReadyV1Check2TrendQualityTseShadow(v51Evidence) {
+  const adx = v51Evidence && v51Evidence.evidence && v51Evidence.evidence.adx;
+  const sep = v51Evidence && v51Evidence.evidence && v51Evidence.evidence.tema && v51Evidence.evidence.tema.separation;
+  const barId = v51Evidence && v51Evidence.confirmedBars && v51Evidence.confirmedBars.setup && v51Evidence.confirmedBars.setup.barId;
+  const separationAtr = (sep && sep.separationAtr != null) ? sep.separationAtr : null;
+  const base = {
+    timeframe: '4h', confirmedBarId: barId || null,
+    threshold: { adx: TRADE_READY_V1_CONFIG.fourHAdxFloor },
+    // Diagnostic only — never consulted for pass/fail/unknown below.
+    temaSeparationAtr: separationAtr,
+    temaSeparationInformational: true,
+  };
+
+  if (!adx || !adx.complete) {
+    return Object.assign({}, base, { status: 'unknown', raw: { adx: adx && adx.value, separationAtr }, reasonCodes: ['TR2_TREND_QUALITY_UNKNOWN'] });
+  }
+  const rawValues = { adx: adx.value, separationAtr };
+  const adxOk = adx.value >= TRADE_READY_V1_CONFIG.fourHAdxFloor;
+  const reasons = adxOk ? [] : ['TR2_ADX_BELOW_FLOOR'];
+  return Object.assign({}, base, { status: adxOk ? 'pass' : 'fail', raw: rawValues, reasonCodes: reasons });
 }
 
 // ── Check 3 — 1H execution regime acceptable ────────────────────────────────
@@ -14099,6 +14137,11 @@ function buildTradeReadyV1TseShadowHtml(d) {
     const icon = c.status === 'pass' ? '\u2713' : (c.status === 'fail' ? '\u2715' : '?');
     const codes = (c.reasonCodes && c.reasonCodes.length) ? ' (' + c.reasonCodes.join(', ') + ')' : '';
     let detail = '';
+    if (key === 'trendQuality' && c.raw) {
+      const adxLabel = c.raw.adx != null ? c.raw.adx + ' \u00b7 ' + (c.status === 'pass' ? 'pass' : (c.status === 'fail' ? 'below floor' : 'unknown')) : 'unavailable';
+      const sepLabel = c.raw.separationAtr != null ? c.raw.separationAtr + ' ATR \u00b7 informational only' : 'unavailable';
+      detail = '\n    ADX: ' + adxLabel + '\n    TEMA separation: ' + sepLabel;
+    }
     if (key === 'intermediateTrendSupport' && c.raw && c.raw.sma80SlopeState) {
       detail = '\n    4H SMA80: price ' + c.raw.sma80PriceSide + ' \u00b7 regression slope ' + c.raw.sma80SlopeAtr + ' ATR/bar \u00b7 window displacement ' + c.raw.sma80WindowSlopeAtr + ' ATR / 10 bars \u00b7 grade: ' + c.raw.sma80SlopeState
         + '\n    1H SMA135: price ' + c.raw.sma135PriceSide + ' \u00b7 regression slope ' + c.raw.sma135SlopeAtr + ' ATR/bar \u00b7 window displacement ' + c.raw.sma135WindowSlopeAtr + ' ATR / 10 bars \u00b7 grade: ' + c.raw.sma135SlopeState;
