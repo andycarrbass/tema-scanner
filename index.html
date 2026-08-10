@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.8B';
+const APP_BUILD = 'V5.2.8C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -8814,35 +8814,44 @@ function _deriveHtf1dRelation(dir, htfTrendContext) {
   return { relation: 'neutral', key };
 }
 
-// ── TDAS V5.2.8A — Counter-HTF SHADOW classification ────────────────────────
+// ── TDAS V5.2.8A/C — Counter-HTF SHADOW classification ──────────────────────
 // Genuinely additive and non-authoritative: computes what the entry-side
-// counter-HTF classification WOULD be, using the exact same trigger logic
-// V5.2.8 originally used, but returns a plain data object attached to
-// d.counterHtfShadow (Full Analysis display only) — never returned by
-// _buildScannerAdvisory(), never read by any live card/button/routing
-// path. This is the corrected shadow-only home for the V5.2.7 Option B
-// classification, after V5.2.8's placement inside the live advisory path
-// was found to leak "TRADE READY — COUNTER-HTF" onto real production
-// Scanner cards even with DIAG.tradeReadyV1Live=false.
+// counter-HTF classification WOULD be, returning a plain data object
+// attached to d.counterHtfShadow (Full Analysis display only) — never
+// returned by _buildScannerAdvisory(), never read by any live card/
+// button/routing path. This is the corrected shadow-only home for the
+// V5.2.7 Option B classification, after V5.2.8's placement inside the
+// live advisory path was found to leak "TRADE READY — COUNTER-HTF" onto
+// real production Scanner cards even with DIAG.tradeReadyV1Live=false.
+//
+// TDAS V5.2.8C — ELIGIBILITY SOURCE CORRECTED. Counter-HTF is a modifier
+// of an already-valid TSE Trade Ready setup, not a route into one. Prior
+// to this build, eligibility was derived from legacy score/actionBias/
+// blockers — an entirely different, unrelated classification engine —
+// which produced two incoherent results: BNB (genuinely TSE TRADE_READY)
+// showed "Not eligible: SCORE_BELOW_FLOOR", and LTC (TSE NEUTRAL/
+// UNRESOLVED, no valid setup at all) showed an eligible "TRADE READY —
+// COUNTER-HTF". Both were wrong for the same reason: eligibility must
+// come from d.tradeReadyV1TseShadow (the canonical TSE Trade Ready shadow
+// object, already attached elsewhere in calcPair()), not from legacy
+// evaluation/score. Legacy score/actionBias/blockers are no longer read
+// anywhere in this function.
 function _buildCounterHtfShadow(d) {
-  const ev = d && d.evaluation;
-  if (!ev || ev.actionBias !== ACTION_BIAS.AVOID) {
-    return { eligible: false, relation: null, reason: 'NOT_AVOID_CLASSIFIED' };
+  const tse = d && d.tradeReadyV1TseShadow;
+  if (!tse) {
+    return { eligible: false, relation: null, reason: 'TSE_TRADE_READY_SHADOW_UNAVAILABLE' };
   }
-  const dir = ev.tradeBias === 'LONG' ? 'LONG' : (ev.tradeBias === 'SHORT' ? 'SHORT' : null);
-  if (!dir) return { eligible: false, relation: null, reason: 'NO_DIRECTION' };
-
-  const blockers = ev.blockers || [];
-  const regimeBlocker = blockers.find(b => b.indexOf('Regime opposed') === 0);
-  const otherSevereBlockers = blockers.filter(b => b.indexOf('Regime opposed') !== 0);
-  const isCounterHtfEligible = !!regimeBlocker && ev.score >= 45 && otherSevereBlockers.length === 0;
-  if (!isCounterHtfEligible) {
-    return { eligible: false, relation: null, reason: otherSevereBlockers.length ? 'OTHER_BLOCKERS_PRESENT' : (!regimeBlocker ? 'NO_REGIME_BLOCKER' : 'SCORE_BELOW_FLOOR') };
+  if (tse.status !== 'TRADE_READY') {
+    return { eligible: false, relation: null, reason: 'TSE_TRADE_READY_NOT_ESTABLISHED', tseStatus: tse.status };
+  }
+  const dir = tse.direction === 'long' ? 'LONG' : (tse.direction === 'short' ? 'SHORT' : null);
+  if (!dir) {
+    return { eligible: false, relation: null, reason: 'TSE_DIRECTION_UNKNOWN', tseStatus: tse.status };
   }
 
   const htf1d = _deriveHtf1dRelation(dir, d.htfTrendContext);
   if (htf1d.relation !== 'opposing' && htf1d.relation !== 'strongly_opposing') {
-    return { eligible: false, relation: htf1d.relation, reason: 'NOT_1D_DRIVEN' };
+    return { eligible: false, relation: htf1d.relation, reason: 'NOT_1D_DRIVEN', tseStatus: tse.status };
   }
 
   const strengthWord = htf1d.relation === 'strongly_opposing' ? 'strongly ' : '';
@@ -8852,6 +8861,7 @@ function _buildCounterHtfShadow(d) {
     direction: dir,
     relation: htf1d.relation,
     htf1dKey: htf1d.key,
+    tseStatus: tse.status,
     headline: 'TRADE READY \u2014 COUNTER-HTF ' + dir,
     detail: 'Strong 4H structure and supportive 1H execution, but the daily trend remains ' + strengthWord + regimeSideWord + '. Treat as a counter-trend setup with reduced conviction.',
     reason: 'COUNTER_HTF_ELIGIBLE',
@@ -16952,18 +16962,6 @@ async function calcPair(symbol,tf){
   // else: _result already holds the complete legacy bundle from (3) —
   // nothing further to assign.
 
-  // ── TDAS V5.2.8A — Counter-HTF shadow attachment ──────────────────────────
-  // Purely additive, Full-Analysis-only. Runs after _result.evaluation is
-  // final (whichever bundle won the atomic select above). Never read by
-  // _buildScannerAdvisory() or any live card/button/routing path — see
-  // _buildCounterHtfShadow()'s own header comment for the full V5.2.8A
-  // authority-boundary-correction rationale.
-  try {
-    _result.counterHtfShadow = _buildCounterHtfShadow(_result);
-  } catch (_chtfErr) {
-    _result.counterHtfShadow = { eligible: false, relation: null, reason: 'EVALUATION_THREW', errorMessage: (_chtfErr && _chtfErr.message) ? _chtfErr.message : String(_chtfErr) };
-  }
-
   // ── TDAS V5.2.1 — Market Evidence TSE shadow attachment ──────────────────
   // Runs AFTER the atomic select above so _result.evidence is the final
   // legacy Market Evidence bundle (whichever the flag chose), and after
@@ -17103,6 +17101,20 @@ async function calcPair(symbol,tf){
       };
       _result.tradeReadyV1TseDisagreement = { class: 'TSE_UNAVAILABLE', reason: 'TSE_TRADE_READY_EVALUATION_THREW' };
     }
+  }
+
+  // ── TDAS V5.2.8C — Counter-HTF shadow attachment ──────────────────────────
+  // Purely additive, Full-Analysis-only. Moved here (V5.2.8C) specifically
+  // so it runs AFTER _result.tradeReadyV1TseShadow is final — the eligibility
+  // source this build corrected it to depend on (see _buildCounterHtfShadow()'s
+  // own header comment for the full rationale: counter-HTF is a modifier of
+  // an already-established TSE Trade Ready setup, not an independent route
+  // into one, and legacy score/evaluation has no authority here). Never read
+  // by _buildScannerAdvisory() or any live card/button/routing path.
+  try {
+    _result.counterHtfShadow = _buildCounterHtfShadow(_result);
+  } catch (_chtfErr) {
+    _result.counterHtfShadow = { eligible: false, relation: null, reason: 'EVALUATION_THREW', errorMessage: (_chtfErr && _chtfErr.message) ? _chtfErr.message : String(_chtfErr) };
   }
 
   // TDAS Phase 2: classify lifecycle state — pure function receives resolved entry
@@ -20672,15 +20684,17 @@ function openAnalysisPanel(request){
     ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildTradeReadyV1TseShadowHtml(d) + '</pre>'
     : '';
 
-  // TDAS V5.2.8A — Counter-HTF shadow diagnostic. Full-Analysis-only,
+  // TDAS V5.2.8A/C — Counter-HTF shadow diagnostic. Full-Analysis-only,
   // never read by the live card. Kept simple/compact per doctrine — shows
   // what the entry-side counter-HTF classification would be, for
-  // validation, without ever feeding the production advisory.
+  // validation, without ever feeding the production advisory. V5.2.8C:
+  // now shows the TSE Trade Ready source status explicitly (the corrected
+  // eligibility authority) instead of any legacy score/blocker reference.
   const _counterHtfShadowHtml = (d.counterHtfShadow)
     ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + (
         d.counterHtfShadow.eligible
-          ? '=== COUNTER-HTF \u2014 SHADOW (not live) ===\n' + d.counterHtfShadow.headline + '\n' + d.counterHtfShadow.detail + '\nHTF 1D key: ' + d.counterHtfShadow.htf1dKey + ' (' + d.counterHtfShadow.relation + ')'
-          : '=== COUNTER-HTF \u2014 SHADOW (not live) ===\nNot eligible: ' + d.counterHtfShadow.reason
+          ? '=== COUNTER-HTF \u2014 SHADOW (not live) ===\n' + d.counterHtfShadow.headline + '\n' + d.counterHtfShadow.detail + '\nTSE Trade Ready source: ' + d.counterHtfShadow.tseStatus + '\nHTF 1D: ' + d.counterHtfShadow.relation + ' (' + d.counterHtfShadow.htf1dKey + ')'
+          : '=== COUNTER-HTF \u2014 SHADOW (not live) ===\nNot eligible: ' + d.counterHtfShadow.reason + (d.counterHtfShadow.tseStatus ? '\nTSE Trade Ready status: ' + d.counterHtfShadow.tseStatus : '')
       ) + '</pre>'
     : '';
 
