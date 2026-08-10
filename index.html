@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.8C';
+const APP_BUILD = 'V5.3.1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -8868,6 +8868,72 @@ function _buildCounterHtfShadow(d) {
   };
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.3.1 — 4H TSE Production Authority Adapter                        ║
+// ║                                                                          ║
+// ║  Answers exactly one question: "for this 4H setup, what is the current   ║
+// ║  authoritative actionable classification?" — consuming ONLY d.trendState,║
+// ║  d.tradeReadyV1TseShadow, d.counterHtfShadow (already-computed shadow    ║
+// ║  fields, no re-derivation). Pure, no DOM/fetch/mutation. Setup-timeframe ║
+// ║  scoped by its own first check — 1H candidates always get                ║
+// ║  {engaged:false}, so this function can never influence anything outside  ║
+// ║  4H regardless of caller behaviour.                                      ║
+// ║                                                                          ║
+// ║  Distinguishes a GENUINE TSE result (WATCH/LIMITED_EVALUATION/etc — a    ║
+// ║  real, valid, non-ready classification) from a TECHNICAL FAILURE         ║
+// ║  (missing/malformed tradeReadyV1TseShadow object, unknown direction on   ║
+// ║  an otherwise-TRADE_READY status) — owner doctrine requires these to be  ║
+// ║  handled differently: a genuine result is authoritative non-ready; a     ║
+// ║  technical failure is non-actionable/diagnostic, never silently          ║
+// ║  defaulting to Trade Ready either way, and never itself falling back to  ║
+// ║  legacy — the caller's flag is the only sanctioned path back to legacy.  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function _buildFourHTseAuthority(d) {
+  if (!d || d.tf !== '4h') {
+    return { engaged: false, actionable: false, classification: 'not_applicable', reason: 'NOT_4H_SETUP' };
+  }
+  const tse = d.tradeReadyV1TseShadow;
+  if (!tse || typeof tse.status !== 'string') {
+    return { engaged: true, actionable: false, classification: 'technical_failure', reason: 'TSE_TRADE_READY_SHADOW_MISSING', direction: null };
+  }
+  if (tse.status !== 'TRADE_READY') {
+    // Genuine, valid TSE non-ready result — authoritative, not a failure.
+    const dirKnown = tse.direction === 'long' ? 'LONG' : (tse.direction === 'short' ? 'SHORT' : null);
+    return { engaged: true, actionable: false, classification: 'not_trade_ready', tseStatus: tse.status, reason: 'TSE_NOT_TRADE_READY', direction: dirKnown };
+  }
+  const dir = tse.direction === 'long' ? 'LONG' : (tse.direction === 'short' ? 'SHORT' : null);
+  if (!dir) {
+    // TRADE_READY status but no resolvable direction — internally
+    // inconsistent, treated as a technical failure, never as Trade Ready.
+    return { engaged: true, actionable: false, classification: 'technical_failure', reason: 'TSE_DIRECTION_UNKNOWN', direction: null };
+  }
+  const shadow = d.counterHtfShadow;
+  const counterHtf = !!(shadow && shadow.eligible === true && shadow.direction === dir);
+  return {
+    engaged: true, actionable: true, classification: counterHtf ? 'counter_htf' : 'trade_ready',
+    direction: dir, tseStatus: tse.status, counterHtf,
+    headline: counterHtf ? shadow.headline : ('TRADE READY ' + dir),
+    detail: counterHtf ? shadow.detail : null,
+    reason: 'TSE_TRADE_READY',
+  };
+}
+
+// Small routing helper — used only at Scanner render-routing sites to
+// prevent a TSE-actionable 4H card from being mis-routed to the compact
+// neutral bucket because legacy d.signal happens to read 'neutral'. Reuses
+// _buildFourHTseAuthority() itself rather than re-deriving eligibility.
+// NOTE: DIAG.fourHTseAuthorityLive itself is declared later in the file
+// (after DIAG's own const declaration — this function is defined earlier
+// but only ever CALLED at runtime, well after module-load completes, so
+// the forward reference is safe, matching this codebase's own established
+// convention for every other DIAG.* flag read by an earlier-defined
+// function).
+function _isFourHTseActionable(d) {
+  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') return false;
+  const auth = _buildFourHTseAuthority(d);
+  return !!(auth && auth.engaged && auth.actionable);
+}
+
 // ── Scanner-mode advisory — direct translation of evaluateSetup() output ──
 // No new logic: actionBias already encodes the classification, this only
 // renames enum values to approved display wording.
@@ -9696,6 +9762,58 @@ function _buildLegacyTradeReadyVerdict(d, ev) {
 }
 
 function _buildScannerAdvisory(d) {
+  // ── TDAS V5.3.1 — 4H TSE production authority, leading branch ────────────
+  // Runs BEFORE the legacy ev.tradeBias/actionBias gate below, deliberately:
+  // a TSE-established 4H setup (e.g. the ADA/BNB-shaped cases this whole
+  // TSE project exists to fix) can have ev.tradeBias==='NEUTRAL' even while
+  // TSE itself is genuinely TRADE_READY — if this branch sat after the
+  // early-return guard, it would never be reached for exactly the cases it
+  // was built for. When the flag is off, or d.tf!=='4h', this block is a
+  // pure no-op (_buildFourHTseAuthority()'s own first check returns
+  // {engaged:false} for any non-4H d) and execution falls through
+  // unchanged to the untouched legacy chain below — byte-identical to
+  // V5.2.8C. When engaged, this function NEVER falls through to the legacy
+  // chain afterward, for ANY outcome (actionable, genuine non-ready, or
+  // technical failure) — owner doctrine: TSE is authoritative for 4H when
+  // the flag is on, not "TSE decides unless legacy disagrees."
+  if (DIAG.fourHTseAuthorityLive === true && d && d.tf === '4h') {
+    const _tseAuth = _buildFourHTseAuthority(d);
+    if (_tseAuth.engaged) {
+      if (_tseAuth.actionable) {
+        return {
+          mode: 'scanner', action: _tseAuth.counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
+          headline: _tseAuth.headline,
+          detail: _tseAuth.detail || 'TSE Trade Ready — all five checks pass.',
+          direction: _tseAuth.direction,
+          tradeReady: true,
+          readyLabel: 'TRADE READY',
+          supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [],
+          next: _tseAuth.counterHtf ? 'Treat as a counter-trend setup with reduced conviction.' : '',
+          authoritySource: 'tse_4h',
+        };
+      }
+      if (_tseAuth.classification === 'technical_failure') {
+        return {
+          mode: 'scanner', action: 'UNAVAILABLE', headline: 'UNAVAILABLE',
+          detail: '4H TSE authority evaluation unavailable for this cycle (' + _tseAuth.reason + '). Not actionable.',
+          direction: _tseAuth.direction, tradeReady: false, readyLabel: null,
+          supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [_tseAuth.reason],
+          next: '', authoritySource: 'tse_4h',
+        };
+      }
+      // Genuine, valid TSE non-ready result (WATCH/LIMITED_EVALUATION/
+      // DETERIORATING/EMERGING/UNRESOLVED) — authoritative, never re-
+      // promoted by the legacy chain below.
+      return {
+        mode: 'scanner', action: 'WATCH', headline: _tseAuth.direction ? ('WATCH ' + _tseAuth.direction) : 'WATCH',
+        detail: 'TSE 4H structure not yet Trade Ready (' + (_tseAuth.tseStatus || 'unresolved') + ').',
+        direction: _tseAuth.direction, tradeReady: false, readyLabel: null,
+        supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [_tseAuth.reason],
+        next: '', authoritySource: 'tse_4h',
+      };
+    }
+  }
+
   const ev = d.evaluation;
   if (!ev || ev.tradeBias === 'NEUTRAL' || ev.actionBias === ACTION_BIAS.NO_SETUP) {
     return null; // nothing to advise — no active signal
@@ -11270,6 +11388,19 @@ function createTradeReadyPaperTrade(symbol) {
     tradeReadyRsi:              st.rsi != null ? st.rsi : null,
     tradeReadyWarnings:         (advisory.warnings || []).join(' | '),
     tradeReadyBlockers:         (advisory.blocking || []).join(' | '),
+    // TDAS V5.3.1 — authoritative-direction override. advisory.direction is
+    // ALWAYS correct (it already comes from the same source — legacy or
+    // TSE — that decided this card was TRADE READY in the first place; see
+    // _buildScannerAdvisory()'s own leading-branch comment), unlike
+    // re-reading d.signal here, which can genuinely disagree with it for a
+    // TSE-authoritative counter-HTF setup (d.signal legacy-neutral while
+    // the card the user acted on says LONG/SHORT). Lowercased to match
+    // d.signal's own 'long'/'short' convention. Used ONLY inside
+    // buildV1Entry() to correct the entry's own signal/stop/target
+    // direction for THIS specific trade — d.signal itself is never
+    // touched, and every other card/scan continues reading it unchanged.
+    tradeReadyDirection: advisory.direction === 'LONG' ? 'long' : (advisory.direction === 'SHORT' ? 'short' : null),
+    tradeReadyAuthoritySource: advisory.authoritySource || 'legacy',
   };
 
   // Open the same rich modal + path as "+ Log decision → Trade". This
@@ -13680,6 +13811,17 @@ function _classifyTradeReadyV1TseDisagreement(legacyV1, tseV1) {
 // this flag controls only whether this SHADOW computation runs, not any
 // production authority.
 DIAG.tradeReadyV1TseShadow = true;
+
+// TDAS V5.3.1 — Rollback seam for the 4H TSE production authority adapter
+// (_buildFourHTseAuthority(), wired into _buildScannerAdvisory() and the
+// two Scanner neutral-routing sites via _isFourHTseActionable()). Default
+// false — production behaviour is byte-/behaviour-identical to V5.2.8C
+// until this is explicitly set true. When true, ONLY tf==='4h' candidates
+// are affected (_buildFourHTseAuthority()'s own first-line guard); 1H
+// candidates — including the existing "TRADE READY — 1H ONLY" standalone
+// route, powered entirely by the separate DIAG.evaluationEngineLive flag —
+// are completely unaffected regardless of this flag's value.
+DIAG.fourHTseAuthorityLive = false;
 
 // V5.2.0 — computes _result.trendState on every calcPair() call. Purely
 // additive: no existing field is read or written by this flag. Shadow
@@ -20873,6 +21015,21 @@ function buildV1Entry(symbol, d, decision, overrides) {
   const _now     = new Date().toISOString();
   const _tf      = overrides.tf || d.tf || (document.getElementById('tf') ? document.getElementById('tf').value : '4h');
   const _htf     = d.htf || HTF[_tf] || '1d';
+  // TDAS V5.3.1 — TSE-authoritative direction override, narrowly scoped.
+  // d.signal (the legacy confirmed-signal formula) can genuinely read
+  // 'neutral' for a TSE-authoritative counter-HTF setup — exactly the
+  // ADA/BNB-shaped case this whole build exists for — even though the
+  // card the user just clicked "Paper Trade" on said TRADE READY LONG/
+  // SHORT. Without this, the saved entry's own signal/stop/target fields
+  // would silently record the wrong (neutral) direction. Only applies
+  // when _tradeReadyModalContext matches THIS symbol (the same gate
+  // saveEntry() already uses below for its own metadata) and carries a
+  // resolved direction; d.signal itself is never modified, and every
+  // other buildV1Entry() call site (Watch, Skip, direct Log Decision —
+  // none of which set _tradeReadyModalContext) is completely unaffected.
+  const _tseDir  = (_tradeReadyModalContext && _tradeReadyModalContext.symbol === symbol && _tradeReadyModalContext.tradeReadyDirection)
+    ? _tradeReadyModalContext.tradeReadyDirection : null;
+  const _effectiveSignal = _tseDir || d.signal;
   // TDAS Phase 0: read pre-computed states from d.states where available.
   // Falls back to inline derivation for entries built from stale/non-calcPair data.
   const _st      = (d.states && typeof d.states === 'object') ? d.states : null;
@@ -20919,7 +21076,7 @@ function buildV1Entry(symbol, d, decision, overrides) {
     note:           overrides.note ? (decision === 'took' ? 'Trade' : decision === 'watching' ? 'Watch' : decision === 'skipped' ? 'Skip' : decision === 'missed' ? 'Miss' : 'Note') + ': ' + overrides.note : '',
 
     // Signal state at decision time
-    signal:         d.signal,
+    signal:         _effectiveSignal,
     score:          _score,
     signalStrength: _strength,
     setupStatus:    _setup,
@@ -20938,13 +21095,24 @@ function buildV1Entry(symbol, d, decision, overrides) {
     // Price state at decision time
     signalPrice:    d.price || null,
     entryPrice:     decision === 'took' ? (overrides.entryPrice || null) : null,
-    // stop15/target2 are ATR-based levels calculated in calcPair.
-    // Fall back to inline calculation if missing (e.g. watch→trade with stale data).
-    stopPrice:      d.stop15 != null ? d.stop15
-                  : (d.price && d.atr) ? (d.signal==='long' ? d.price-1.5*d.atr : d.price+1.5*d.atr)
+    // stop15/target2 are ATR-based levels calculated in calcPair using
+    // legacy d.signal — for a TSE-authoritative trade (_tseDir set) those
+    // values were computed off the WRONG direction whenever d.signal
+    // disagreed with the TSE-authoritative direction (calcPair's own
+    // signal==='long'?...:... ternary silently takes the short-direction
+    // branch for a neutral signal), so d.stop15/d.target2 are NOT trusted
+    // in that case — always recomputed here from d.price/d.atr using
+    // _effectiveSignal instead. When _tseDir is not set (the overwhelming
+    // majority of entries — every non-Trade-Ready-Card save), behaviour is
+    // byte-identical to before this build: d.stop15/d.target2 preferred,
+    // same inline fallback formula, same fallback trigger condition.
+    stopPrice:      _tseDir ? ((d.price && d.atr) ? (_effectiveSignal==='long' ? d.price-1.5*d.atr : d.price+1.5*d.atr) : null)
+                  : d.stop15 != null ? d.stop15
+                  : (d.price && d.atr) ? (_effectiveSignal==='long' ? d.price-1.5*d.atr : d.price+1.5*d.atr)
                   : null,
-    targetPrice:    d.target2 != null ? d.target2
-                  : (d.price && d.atr) ? (d.signal==='long' ? d.price+2.5*d.atr : d.price-2.5*d.atr)
+    targetPrice:    _tseDir ? ((d.price && d.atr) ? (_effectiveSignal==='long' ? d.price+2.5*d.atr : d.price-2.5*d.atr) : null)
+                  : d.target2 != null ? d.target2
+                  : (d.price && d.atr) ? (_effectiveSignal==='long' ? d.price+2.5*d.atr : d.price-2.5*d.atr)
                   : null,
     atr:            d.atr || null,
     fibStop:        d.fibRetrace618 || null,
@@ -24272,7 +24440,7 @@ async function _tdSignalRefresh(){
         // reintroduce the same full-size-card-for-a-neutral-symbol defect
         // if suppression doctrine ever changes.
         const _d2 = currentScanData[sym];
-        const _isNeutral2 = !_d2 || _d2.error || _d2.signal === 'neutral';
+        const _isNeutral2 = (!_d2 || _d2.error || _d2.signal === 'neutral') && !_isFourHTseActionable(_d2);
         _isNeutral2 ? renderNeutralCompact(sym, _d2) : renderCard(sym, _d2);
       }
     });
@@ -26055,7 +26223,7 @@ function reconcileScannerOwnership(){
       // irrelevant here — the correct renderer self-corrects it either
       // way, with no separate wrapper-migration step needed.
       const _d = currentScanData[sym];
-      const _isNeutral = !_d || _d.error || _d.signal === 'neutral';
+      const _isNeutral = (!_d || _d.error || _d.signal === 'neutral') && !_isFourHTseActionable(_d);
       try{ _isNeutral ? renderNeutralCompact(sym, _d) : renderCard(sym, _d); }
       catch(err){ console.warn('[reconcileScannerOwnership] render failed for',sym,err); }
     }
