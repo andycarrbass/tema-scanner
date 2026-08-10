@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.3.2';
+const APP_BUILD = 'V5.3.3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -8888,24 +8888,60 @@ function _buildCounterHtfShadow(d) {
 // ║  defaulting to Trade Ready either way, and never itself falling back to  ║
 // ║  legacy — the caller's flag is the only sanctioned path back to legacy.  ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
+// TDAS V5.3.3 — small, pure, standalone duplicate of Active Trade's own
+// _joinSurvivingClauses() (that helper is nested inside
+// _buildActiveTradeAdvisory() itself and not accessible from outside —
+// per doctrine, duplicating this one small pure phrase-joiner is safer
+// than reaching into Active Trade or exporting from it).
+function _fourHJoinSurvivingClauses(clauses) {
+  const present = clauses.filter(Boolean);
+  return present.length ? present.join(', with ') : null;
+}
+
+// TDAS V5.3.3 — supporting-structure clause, reused across every non-
+// ready branch below. Consumes ONLY already-computed d.trendState fields
+// (regimeState, temaPhase, utDirection, trendSmaSupport) — no new
+// evidence, no recomputation — mirroring the Active Trade interpreter's
+// own "structural context + confirming evidence" composition pattern.
+// Selects only facts that are genuinely known AND currently supportive;
+// silently omits anything unknown or opposing (a per-branch caller adds
+// opposing facts explicitly where that disagreement IS the point, e.g.
+// TRX's UT-opposing-while-TEMA-supportive nuance).
+function _fourHSupportingStructureClause(trendState, dirWord) {
+  if (!trendState) return null;
+  const regimeWord = dirWord === 'Bullish' ? 'above the 200MA' : (dirWord === 'Bearish' ? 'below the 200MA' : null);
+  const regimeOk = trendState.regimeState && trendState.regimeState.indexOf(dirWord === 'Bullish' ? 'bullish' : 'bearish') !== -1;
+  const temaOk = trendState.temaPhase === 'aligned';
+  const utOk = trendState.utDirection === (dirWord === 'Bullish' ? 'bullish' : 'bearish');
+  const clauses = [];
+  if (regimeOk && regimeWord) clauses.push(regimeWord);
+  const alignedBits = [];
+  if (temaOk) alignedBits.push('TEMA');
+  if (utOk) alignedBits.push('UT');
+  if (alignedBits.length) clauses.push(alignedBits.join(' and ') + ' still aligned');
+  return _fourHJoinSurvivingClauses(clauses);
+}
+
 function _buildFourHTseInterpretation(tse, trendState, counterHtf) {
   const dir = tse.direction === 'long' ? 'LONG' : (tse.direction === 'short' ? 'SHORT' : null);
   const dirWord = dir === 'LONG' ? 'Bullish' : (dir === 'SHORT' ? 'Bearish' : null);
   const phase = trendState ? trendState.state : null;
   const checks = tse.checks || {};
+  const structure = _fourHSupportingStructureClause(trendState, dirWord);
+  const structureClause = structure ? (', ' + structure) : '';
 
   if (tse.status === 'TRADE_READY' && dir) {
     const isCounterHtf = !!(counterHtf && counterHtf.eligible);
     if (isCounterHtf) {
       return {
         summary: dirWord + ' TREND \u2014 COUNTER-HTF',
-        explanation: 'Strong 4H ' + dirWord.toLowerCase() + ' structure is established, but the daily trend remains opposed.',
+        explanation: 'Strong 4H ' + dirWord.toLowerCase() + ' structure is established' + structureClause + ', but the daily trend remains opposed.',
         guidance: 'Valid setup with reduced conviction.',
       };
     }
     return {
       summary: dirWord + ' TREND \u2014 CONFIRMED',
-      explanation: dirWord + ' 4H trend is confirmed and Trade Ready.',
+      explanation: dirWord + ' 4H structure is established' + structureClause + ', trend quality is sufficient and execution conditions are aligned.',
       guidance: '',
     };
   }
@@ -8915,18 +8951,39 @@ function _buildFourHTseInterpretation(tse, trendState, counterHtf) {
   // before local indicator noise" principle):
   // 1. unresolved/invalid structural regime
   if (!dir || phase === 'UNRESOLVED') {
+    // TDAS V5.3.3 — unresolved cards still explain the CONFLICT, not just
+    // the absence of a trend: e.g. price above 200MA + TEMA supportive
+    // while UT opposes is more useful than a generic "not established"
+    // sentence. Facts are read direction-agnostically here since no
+    // direction has earned authority yet.
+    const bits = [];
+    if (trendState) {
+      if (trendState.regimeState === 'bullish_transitional' || (trendState.regimeState || '').indexOf('bullish') !== -1) bits.push('price remains above the 200MA');
+      else if ((trendState.regimeState || '').indexOf('bearish') !== -1) bits.push('price remains below the 200MA');
+      if (trendState.temaPhase === 'aligned') bits.push('TEMA is supportive');
+      if (trendState.utDirection && trendState.utDirection !== 'unknown') bits.push('UT is ' + (trendState.utDirection === 'bullish' ? 'bullish' : 'bearish'));
+    }
+    const conflictClause = bits.length ? (bits.join(', ') + ', but the 4H regime is still unresolved') : '4H structure remains unresolved';
     return {
       summary: 'UNRESOLVED 4H STRUCTURE',
-      explanation: '4H structure remains unresolved and no clean directional trend is established yet.',
+      explanation: conflictClause.charAt(0).toUpperCase() + conflictClause.slice(1) + '. Directional evidence is not yet coherent enough for entry.',
       guidance: 'Wait for a clearer 4H regime before entry.',
       noDirection: true,
     };
   }
   // 2. deterioration
   if (phase === 'DETERIORATING') {
+    const utOpposing = trendState && trendState.utDirection && trendState.utDirection !== (dirWord === 'Bullish' ? 'bullish' : 'bearish') && trendState.utDirection !== 'unknown';
+    const adxWeak = checks.trendQuality && checks.trendQuality.status === 'fail';
+    const causeBits = [];
+    if (utOpposing) causeBits.push('UT has turned against the setup');
+    if (adxWeak) causeBits.push('ADX is weak');
+    const tailSentence = causeBits.length
+      ? (' ' + causeBits.join(' and ') + ', so wait for stabilization or renewed alignment before considering entry.')
+      : ' Wait for stabilization or renewed alignment before considering entry.';
     return {
       summary: dirWord + ' STRUCTURE \u2014 DETERIORATING',
-      explanation: 'The underlying ' + dirWord.toLowerCase() + ' regime remains identifiable, but structural momentum is deteriorating. Wait for stabilization or renewed alignment.',
+      explanation: 'The broader ' + dirWord.toLowerCase() + ' regime remains identifiable' + structureClause + ', but 4H momentum is deteriorating.' + tailSentence,
       guidance: '',
     };
   }
@@ -8934,15 +8991,15 @@ function _buildFourHTseInterpretation(tse, trendState, counterHtf) {
   if (checks.trendQuality && checks.trendQuality.status === 'fail') {
     return {
       summary: dirWord + ' STRUCTURE \u2014 WEAK TREND QUALITY',
-      explanation: dirWord + ' 4H structure remains intact, but trend quality is weak.',
-      guidance: 'Wait for stronger trend participation before entry.',
+      explanation: dirWord + ' 4H structure remains established' + structureClause + '. Trend quality is weak, with ADX below the required level, so wait for stronger participation before entry.',
+      guidance: '',
     };
   }
   // 4. execution regime (TR3)
   if (checks.executionRegime && checks.executionRegime.status === 'fail') {
     return {
       summary: dirWord + ' TREND \u2014 EXECUTION PENDING',
-      explanation: 'The 4H trend remains valid, but 1H execution structure is not yet aligned.',
+      explanation: 'The 4H trend remains valid' + structureClause + ', but 1H execution structure is not yet aligned.',
       guidance: 'Wait for a cleaner entry regime.',
     };
   }
@@ -8950,7 +9007,7 @@ function _buildFourHTseInterpretation(tse, trendState, counterHtf) {
   if (checks.intermediateTrendSupport && checks.intermediateTrendSupport.status === 'fail') {
     return {
       summary: dirWord + ' TREND \u2014 STRUCTURE PENDING',
-      explanation: 'The broader trend remains valid, but intermediate structure is not yet supportive.',
+      explanation: 'The broader trend remains valid' + structureClause + ', but intermediate structure is not yet supportive.',
       guidance: 'Wait for structure to realign before entry.',
     };
   }
@@ -8958,24 +9015,26 @@ function _buildFourHTseInterpretation(tse, trendState, counterHtf) {
   if (checks.extension && checks.extension.status === 'fail') {
     return {
       summary: dirWord + ' TREND \u2014 EXTENDED',
-      explanation: 'Trend structure remains valid, but price is too extended for a new entry.',
-      guidance: 'Wait for a pullback or consolidation.',
+      explanation: 'Trend structure remains valid' + structureClause + ', but price is too extended for a new entry.',
+      guidance: 'Wait for a pullback or consolidation rather than chasing the move.',
     };
   }
   // Phase-specific fallbacks (reached only when no specific TR2-5 check
   // is flagged as the cause, e.g. an 'unknown' evidence state) — still
   // interpreted, never a bare enum.
   if (phase === 'PULLBACK') {
+    const temaOpposing = trendState && trendState.temaPhase === 'opposing';
+    const temaClause = temaOpposing ? ' TEMA has rotated against the move, but structural support remains intact;' : '';
     return {
       summary: dirWord + ' TREND \u2014 PULLBACK',
-      explanation: 'Underlying ' + dirWord.toLowerCase() + ' structure remains intact while price pulls back.',
-      guidance: 'Wait for execution structure to realign before entry.',
+      explanation: 'The broader ' + dirWord.toLowerCase() + ' trend remains intact' + structureClause + ' while price pulls back.' + temaClause + ' Wait for execution structure to realign before entry.',
+      guidance: '',
     };
   }
   if (phase === 'EMERGING') {
     return {
       summary: dirWord + ' STRUCTURE \u2014 EMERGING',
-      explanation: 'Direction is developing, but confirmation is not yet sufficient for entry.',
+      explanation: dirWord + ' direction is developing' + structureClause + ', but the broader 4H regime is not yet fully established. Wait for structural confirmation before entry.',
       guidance: '',
     };
   }
