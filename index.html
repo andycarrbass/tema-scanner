@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.3.1C';
+const APP_BUILD = 'V5.3.2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -8888,6 +8888,104 @@ function _buildCounterHtfShadow(d) {
 // ║  defaulting to Trade Ready either way, and never itself falling back to  ║
 // ║  legacy — the caller's flag is the only sanctioned path back to legacy.  ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
+function _buildFourHTseInterpretation(tse, trendState, counterHtf) {
+  const dir = tse.direction === 'long' ? 'LONG' : (tse.direction === 'short' ? 'SHORT' : null);
+  const dirWord = dir === 'LONG' ? 'Bullish' : (dir === 'SHORT' ? 'Bearish' : null);
+  const phase = trendState ? trendState.state : null;
+  const checks = tse.checks || {};
+
+  if (tse.status === 'TRADE_READY' && dir) {
+    const isCounterHtf = !!(counterHtf && counterHtf.eligible);
+    if (isCounterHtf) {
+      return {
+        summary: dirWord + ' TREND \u2014 COUNTER-HTF',
+        explanation: 'Strong 4H ' + dirWord.toLowerCase() + ' structure is established, but the daily trend remains opposed.',
+        guidance: 'Valid setup with reduced conviction.',
+      };
+    }
+    return {
+      summary: dirWord + ' TREND \u2014 CONFIRMED',
+      explanation: dirWord + ' 4H trend is confirmed and Trade Ready.',
+      guidance: '',
+    };
+  }
+
+  // Priority order (most fundamental cause dominates — reused directly
+  // from the Active Trade interpreter's own "structural interpretation
+  // before local indicator noise" principle):
+  // 1. unresolved/invalid structural regime
+  if (!dir || phase === 'UNRESOLVED') {
+    return {
+      summary: 'UNRESOLVED 4H STRUCTURE',
+      explanation: '4H structure remains unresolved and no clean directional trend is established yet.',
+      guidance: 'Wait for a clearer 4H regime before entry.',
+      noDirection: true,
+    };
+  }
+  // 2. deterioration
+  if (phase === 'DETERIORATING') {
+    return {
+      summary: dirWord + ' STRUCTURE \u2014 DETERIORATING',
+      explanation: 'The underlying ' + dirWord.toLowerCase() + ' regime remains identifiable, but structural momentum is deteriorating. Wait for stabilization or renewed alignment.',
+      guidance: '',
+    };
+  }
+  // 3. trend quality (TR2)
+  if (checks.trendQuality && checks.trendQuality.status === 'fail') {
+    return {
+      summary: dirWord + ' STRUCTURE \u2014 WEAK TREND QUALITY',
+      explanation: dirWord + ' 4H structure remains intact, but trend quality is weak.',
+      guidance: 'Wait for stronger trend participation before entry.',
+    };
+  }
+  // 4. execution regime (TR3)
+  if (checks.executionRegime && checks.executionRegime.status === 'fail') {
+    return {
+      summary: dirWord + ' TREND \u2014 EXECUTION PENDING',
+      explanation: 'The 4H trend remains valid, but 1H execution structure is not yet aligned.',
+      guidance: 'Wait for a cleaner entry regime.',
+    };
+  }
+  // 5. intermediate structure (TR4)
+  if (checks.intermediateTrendSupport && checks.intermediateTrendSupport.status === 'fail') {
+    return {
+      summary: dirWord + ' TREND \u2014 STRUCTURE PENDING',
+      explanation: 'The broader trend remains valid, but intermediate structure is not yet supportive.',
+      guidance: 'Wait for structure to realign before entry.',
+    };
+  }
+  // 6. severe extension (TR5)
+  if (checks.extension && checks.extension.status === 'fail') {
+    return {
+      summary: dirWord + ' TREND \u2014 EXTENDED',
+      explanation: 'Trend structure remains valid, but price is too extended for a new entry.',
+      guidance: 'Wait for a pullback or consolidation.',
+    };
+  }
+  // Phase-specific fallbacks (reached only when no specific TR2-5 check
+  // is flagged as the cause, e.g. an 'unknown' evidence state) — still
+  // interpreted, never a bare enum.
+  if (phase === 'PULLBACK') {
+    return {
+      summary: dirWord + ' TREND \u2014 PULLBACK',
+      explanation: 'Underlying ' + dirWord.toLowerCase() + ' structure remains intact while price pulls back.',
+      guidance: 'Wait for execution structure to realign before entry.',
+    };
+  }
+  if (phase === 'EMERGING') {
+    return {
+      summary: dirWord + ' STRUCTURE \u2014 EMERGING',
+      explanation: 'Direction is developing, but confirmation is not yet sufficient for entry.',
+      guidance: '',
+    };
+  }
+  return {
+    summary: dirWord + ' STRUCTURE \u2014 NOT YET READY',
+    explanation: dirWord + ' 4H structure is developing but not yet confirmed.',
+    guidance: '',
+  };
+}
+
 function _buildFourHTseAuthority(d) {
   if (!d || d.tf !== '4h') {
     return { engaged: false, actionable: false, classification: 'not_applicable', reason: 'NOT_4H_SETUP' };
@@ -9780,10 +9878,12 @@ function _buildScannerAdvisory(d) {
     const _tseAuth = _buildFourHTseAuthority(d);
     if (_tseAuth.engaged) {
       if (_tseAuth.actionable) {
+        const _interpReady = _buildFourHTseInterpretation(d.tradeReadyV1TseShadow, d.trendState, d.counterHtfShadow);
         return {
           mode: 'scanner', action: _tseAuth.counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
           headline: _tseAuth.headline,
-          detail: _tseAuth.detail || 'TSE Trade Ready — all five checks pass.',
+          detail: _tseAuth.detail || _interpReady.explanation,
+          summary: _interpReady.summary,
           direction: _tseAuth.direction,
           tradeReady: true,
           readyLabel: 'TRADE READY',
@@ -9801,13 +9901,20 @@ function _buildScannerAdvisory(d) {
           next: '', authoritySource: 'tse_4h',
         };
       }
-      // Genuine, valid TSE non-ready result (WATCH/LIMITED_EVALUATION/
-      // DETERIORATING/EMERGING/UNRESOLVED) — authoritative, never re-
-      // promoted by the legacy chain below.
+      // TDAS V5.3.2 — genuine, valid TSE non-ready result (WATCH/
+      // LIMITED_EVALUATION/DETERIORATING/EMERGING/UNRESOLVED) —
+      // authoritative, never re-promoted by the legacy chain below. Card
+      // language now goes through _buildFourHTseInterpretation() rather
+      // than printing the raw internal TSE status — see that function's
+      // own header for the reused Active Trade interpretation principles
+      // and priority order.
+      const _interp = _buildFourHTseInterpretation(d.tradeReadyV1TseShadow, d.trendState, d.counterHtfShadow);
+      const _watchDir = _interp.noDirection ? null : _tseAuth.direction;
       return {
-        mode: 'scanner', action: 'WATCH', headline: _tseAuth.direction ? ('WATCH ' + _tseAuth.direction) : 'WATCH',
-        detail: 'TSE 4H structure not yet Trade Ready (' + (_tseAuth.tseStatus || 'unresolved') + ').',
-        direction: _tseAuth.direction, tradeReady: false, readyLabel: null,
+        mode: 'scanner', action: 'WATCH', headline: _watchDir ? ('WATCH ' + _watchDir) : 'WATCH',
+        detail: _interp.explanation + (_interp.guidance ? ' ' + _interp.guidance : ''),
+        summary: _interp.summary,
+        direction: _watchDir, tradeReady: false, readyLabel: null,
         supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [_tseAuth.reason],
         next: '', authoritySource: 'tse_4h',
       };
