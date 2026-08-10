@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.3.1B';
+const APP_BUILD = 'V5.3.1C';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -17120,6 +17120,34 @@ async function calcPair(symbol,tf){
     // _v51EarlyStrategicDirection and that function's own header comment.
     _result.signal = _v51ConfirmedBundle.signal;
     _result._evidenceBuiltFrom1hTiming = _result._1hTiming;
+
+    // TDAS V5.3.1C — Confirmed-Direction Scanner Risk Geometry Correction.
+    // _result.stop15/_result.target2 above were captured (at _result's
+    // construction, earlier in this function) from the RAW/forming-candle
+    // local `signal` variable — the same pre-switch value _result.liveSignal
+    // preserves. _result.signal has just been switched to the confirmed
+    // direction on this line; stop15/target2 were never re-derived against
+    // it, so a genuine raw-vs-confirmed disagreement (an intrabar cross,
+    // or any recent candle-boundary flip) could leave the returned risk
+    // geometry on the WRONG side of a card that now displays the confirmed
+    // direction everywhere else — exactly the defect the V5.3.1C audit
+    // traced. Recomputed here, once, only when the switch actually changed
+    // anything (`_result.signal !== signal`) — using the exact same
+    // formula shapes as the original raw-signal computation above (ATR-
+    // based stop; Fib-1.618-based target when directional, matching the
+    // existing swingH50/swingL50/fibRange non-directional inputs already
+    // computed; ATR-based target for neutral, preserving the pre-existing
+    // neutral behavior deliberately, not reinterpreting it) — no formula,
+    // multiplier, or precision change, only the direction input. This is
+    // unconditional on DIAG.fourHTseAuthorityLive — the defect predates
+    // and is independent of TSE authority entirely.
+    if (_result.signal !== signal) {
+      const _confirmedSignal = _result.signal;
+      _result.stop15 = _confirmedSignal === 'long' ? price - 1.5 * atr : price + 1.5 * atr;
+      _result.target2 = _confirmedSignal !== 'neutral'
+        ? (_confirmedSignal === 'short' ? swingL50 - fibRange * 0.618 : swingH50 + fibRange * 0.618)
+        : (_confirmedSignal === 'long' ? price + 2.5 * atr : price - 2.5 * atr);
+    }
   }
   // else: _result already holds the complete legacy bundle from (3) —
   // nothing further to assign.
