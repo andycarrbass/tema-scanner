@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.6';
+const APP_BUILD = 'V5.2.8';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -8787,6 +8787,33 @@ function buildAdvisory(d, entry) {
   return openTrade ? _buildActiveTradeAdvisory(d, openTrade) : _buildScannerAdvisory(d);
 }
 
+// ── TDAS V5.2.8 — 1D relation classifier (Counter-HTF) ──────────────────────
+// Purely additive. Consumes ONLY the existing d.htfTrendContext.key enum
+// (bullish/bullish-weak/mixed-bullish/bearish/bearish-weak/mixed-bearish) —
+// no new 1D indicator, no new threshold. Direction-relative: for a LONG
+// candidate, 'bullish'/'bullish-weak'/'mixed-bullish' are aligned/benign;
+// 'mixed-bearish'/'bearish-weak' are (mildly) opposing; 'bearish' (the
+// un-hedged key — no '-weak'/'mixed-' qualifier) is strongly opposing.
+// Mirrored for SHORT. Never used to alter classifyRegime()'s own ladder
+// placement or d.regime — presentation/classification-context only.
+// TDAS V5.2.8 — Premium doctrine, RECORDED ONLY, NOT IMPLEMENTED. For the
+// future 4H Premium Setup tier: 4H Premium requires normal Trade Ready
+// eligibility + aligned 1D context. Counter-HTF Trade Ready cannot qualify
+// as Premium. No Premium classification logic exists yet — this is a
+// design note for a future bounded task, not active behaviour.
+function _deriveHtf1dRelation(dir, htfTrendContext) {
+  const key = htfTrendContext && htfTrendContext.key;
+  if (!key || key === 'null') return { relation: 'neutral', key: key || null };
+  const isLong = dir === 'LONG';
+  const alignedKeys = isLong ? ['bullish', 'bullish-weak', 'mixed-bullish'] : ['bearish', 'bearish-weak', 'mixed-bearish'];
+  const mildOpposingKeys = isLong ? ['mixed-bearish', 'bearish-weak'] : ['mixed-bullish', 'bullish-weak'];
+  const strongOpposingKeys = isLong ? ['bearish'] : ['bullish'];
+  if (alignedKeys.indexOf(key) !== -1) return { relation: 'aligned', key };
+  if (strongOpposingKeys.indexOf(key) !== -1) return { relation: 'strongly_opposing', key };
+  if (mildOpposingKeys.indexOf(key) !== -1) return { relation: 'opposing', key };
+  return { relation: 'neutral', key };
+}
+
 // ── Scanner-mode advisory — direct translation of evaluateSetup() output ──
 // No new logic: actionBias already encodes the classification, this only
 // renames enum values to approved display wording.
@@ -9652,31 +9679,42 @@ function _buildScannerAdvisory(d) {
     // reachability of this branch is corrected.
     detail = _buildScannerEvidenceDetail(d, dir) || ((ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : ''));
   } else if (ev.actionBias === ACTION_BIAS.AVOID) {
-    // Counter-regime WATCH exception (presentation only — does not touch
-    // evaluateSetup/actionBias/scoring). A meaningful counter-regime setup
-    // whose ONLY real problem is regime opposition is worth monitoring, not
-    // dismissing outright — WATCH means "worth tracking", not "tradeable".
-    // Broadened from an earlier score>=80 threshold (Task 2): that made
-    // WATCH depend almost entirely on score, when a moderate-score setup
-    // with real scanner-TF structure (UT/TEMA support, 200MA position) is
-    // just as worth watching as a high-score one — the score row already
-    // communicates the difference in strength. AVOID remains reserved for
-    // setups with an additional severe blocker, or too weak to track.
+    // TDAS V5.2.8 — Counter-HTF classification (Option B from the V5.2.7
+    // audit). Presentation-layer only — does NOT touch evaluateSetup()'s
+    // own actionBias/blockers/score, and does NOT modify classifyRegime()'s
+    // HTF override (that override feeds Market Evidence, cross-engine-
+    // tests, and other widely-read d.regime consumers — the V5.2.7 audit
+    // found changing it directly would have broad, hard-to-fully-audit
+    // effects, so this reuses the SAME "regime opposition is the only real
+    // problem" trigger the pre-existing counter-regime-WATCH exception
+    // already used (score >= 45, no other severe blockers — an EXISTING
+    // threshold, not newly invented here), and upgrades its destination
+    // from a bare WATCH to an explicit counter-HTF classification that no
+    // longer reads as a rejection. 1D opposition modifies a valid setup;
+    // it never manufactures one — HYPE/LINK-style setups that are weak on
+    // their OWN setup-timeframe evidence still carry other blockers and
+    // fall through to ordinary AVOID below, unaffected by this branch.
     const blockers = ev.blockers || [];
     const regimeBlocker = blockers.find(b => b.indexOf('Regime opposed') === 0);
     const otherSevereBlockers = blockers.filter(b => b.indexOf('Regime opposed') !== 0);
-    const isCounterRegimeWatchable = !!regimeBlocker && ev.score >= 45 && otherSevereBlockers.length === 0;
+    const isCounterHtfEligible = !!regimeBlocker && ev.score >= 45 && otherSevereBlockers.length === 0;
 
-    if (isCounterRegimeWatchable) {
-      action = 'WATCH'; headline = 'WATCH ' + dir;
-      next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
-      // TDAS V4.10.3L — the visible card detail now uses this branch's own
-      // dedicated counter-regime action sentence (settled grammar
-      // correction: "a counter-trend watch") instead of
-      // _buildScannerEvidenceDetail()'s diagnostic sentence, which could
-      // duplicate the Technicals box verbatim. `next` above is completely
-      // unchanged — still the original wording, still Full-Analysis-only.
-      detail = 'Wait for regime alignment to improve — treat as a counter-trend watch only.';
+    if (isCounterHtfEligible) {
+      const _htf1d = _deriveHtf1dRelation(dir, d.htfTrendContext);
+      if (_htf1d.relation === 'opposing' || _htf1d.relation === 'strongly_opposing') {
+        action = 'COUNTER_HTF'; headline = 'TRADE READY \u2014 COUNTER-HTF ' + dir;
+        const strengthWord = _htf1d.relation === 'strongly_opposing' ? 'strongly ' : '';
+        const regimeSideWord = dir === 'LONG' ? 'bearish' : 'bullish';
+        next = 'Treat as a counter-trend setup with reduced conviction — the daily trend remains ' + strengthWord + regimeSideWord + '.';
+        detail = 'Strong 4H structure and supportive 1H execution, but the daily trend remains ' + strengthWord + regimeSideWord + '. Treat as a counter-trend setup with reduced conviction.';
+      } else {
+        // The AVOID trigger was not actually 1D-driven (raw setup-TF
+        // regime disagreement, unrelated to htfTrendContext) — the old
+        // counter-regime-WATCH treatment still applies here, unchanged.
+        action = 'WATCH'; headline = 'WATCH ' + dir;
+        next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
+        detail = 'Wait for regime alignment to improve — treat as a counter-trend watch only.';
+      }
     } else {
       action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
       next = 'Wait for regime improvement or a cleaner reset before considering entry.';
@@ -10293,6 +10331,24 @@ function _buildActiveTradeAdvisory(d, openTrade) {
     const bullBear = tradeDir === 'long' ? 'bullish' : 'bearish';
     return tfLabel + ' remains ' + (tradeDir === 'long' ? 'above' : 'below') + ' the 200MA; ' + bullBear + ' regime intact';
   }
+  // TDAS V5.2.8 — SMA135-explicit pullback phrase. Builds the owner-
+  // approved wording exactly: "Price remains {above/below} the SMA135 and
+  // the {tf} {bullish/bearish} regime is intact". Distinct from
+  // _formatSetupRegimeIntactPhrase above (200MA-only) — this explicitly
+  // names SMA135, reusing the already-computed oneH.aboveSma135_1h field
+  // (no new evidence) plus the same setup-tf regime-relation gate.
+  // Returns null (never fabricates) if either piece is unavailable or
+  // genuinely opposing.
+  function _formatOneHPullbackPhrase(tradeDir, ma200Context){
+    if (!oneH || typeof oneH.aboveSma135_1h !== 'boolean') return null;
+    const wantAbove = tradeDir === 'long';
+    if (oneH.aboveSma135_1h !== wantAbove) return null;
+    const s = ma200Context.setup;
+    if (!s.tf || s.relation !== (wantAbove ? 'above' : 'below')) return null;
+    const tfLabel = s.tf.toUpperCase();
+    const bullBear = wantAbove ? 'bullish' : 'bearish';
+    return 'Price remains ' + (wantAbove ? 'above' : 'below') + ' the SMA135 and the ' + tfLabel + ' ' + bullBear + ' regime is intact';
+  }
   // TDAS V5.1.1E2 — genuinely 1H execution-context 200MA phrase (distinct
   // from _formatOneH1hMa200Phrase above, which only ever states "holds
   // above/below", never "testing"). Reuses _relationFromMaState — the
@@ -10577,7 +10633,18 @@ function _buildActiveTradeAdvisory(d, openTrade) {
           _isOneHSetupShort ? (_oneHUtSupportsShort ? '1H UT remains bearish' : null) : _regimeOrOneHMaShort,
           _isOneHSetupShort ? _maPhrase : (_oneHUtSupportsShort ? '1H UT remains bearish' : null),
         ]);
-        detail = '1H TEMA is turning against the short' + (_tail ? '; ' + _tail : '') + '.';
+        // TDAS V5.2.8 — mirrors the long branch's pullback reinterpretation
+        // exactly (see that branch's own comment for the full rationale).
+        if (_isOneHSetupShort) {
+          detail = (_oneHUtSupportsShort && _maPhrase)
+            ? '1H pullback in progress. ' + _maPhrase.charAt(0).toUpperCase() + _maPhrase.slice(1) + ', with UT still aligned. No structural breakdown yet.'
+            : '1H TEMA is turning against the short' + (_tail ? '; ' + _tail : '') + '.';
+        } else {
+          const _pullbackPhraseShort = _formatOneHPullbackPhrase('short', _ma200Context);
+          detail = (_oneHUtSupportsShort && _pullbackPhraseShort)
+            ? '1H pullback in progress. ' + _pullbackPhraseShort + ', with UT still aligned. No structural breakdown yet.'
+            : '1H TEMA is turning against the short' + (_tail ? '; ' + _tail : '') + '.';
+        }
       } else {
         const _tailE4 = _regimeOrOneHMaShort;
         detail = '1H reversal developing. ' + _stateTfTag + ' UT still bearish.' + (_tailE4 && !_isOneHSetupShort ? ' ' + _tailE4.charAt(0).toUpperCase() + _tailE4.slice(1) + '.' : '');
@@ -10712,7 +10779,33 @@ function _buildActiveTradeAdvisory(d, openTrade) {
           _isOneHSetupLong ? (_oneHUtSupportsLong ? '1H UT remains bullish' : null) : _regimeOrOneHMaLong,
           _isOneHSetupLong ? _maPhrase : (_oneHUtSupportsLong ? '1H UT remains bullish' : null),
         ]);
-        detail = '1H TEMA is turning against the long' + (_tail ? '; ' + _tail : '') + '.';
+        // TDAS V5.2.8 — owner-approved pullback reinterpretation. Reached
+        // here means TEMA alone turned against the trade AND (by this
+        // branch's own outer if/else-if ordering, checked above) 1H
+        // structure has NOT reclaimed against the trade — i.e. SMA135/1H-
+        // 200MA are already confirmed still on the trade's side; nothing
+        // new is being asserted about structure here, only read from what
+        // this branch's own preconditions already guarantee. When UT is
+        // ALSO still confirmed aligned, TEMA-only opposition inside an
+        // otherwise-intact structure reads as an ordinary pullback, not a
+        // reversal in progress — this is the ONLY change: which sentence
+        // is chosen for this exact, already-narrow precondition. When UT
+        // support cannot be confirmed (_oneHUtSupportsLong false — neutral/
+        // unknown, since a genuine opposing UT flip is handled by the
+        // separate oneH1hUtAgainst branches above), the previous, more
+        // cautious wording is kept unchanged — this build does not soften
+        // wording for any case with less evidence than the exact
+        // UT-aligned+structure-intact case the owner approved.
+        if (_isOneHSetupLong) {
+          detail = (_oneHUtSupportsLong && _maPhrase)
+            ? '1H pullback in progress. ' + _maPhrase.charAt(0).toUpperCase() + _maPhrase.slice(1) + ', with UT still aligned. No structural breakdown yet.'
+            : '1H TEMA is turning against the long' + (_tail ? '; ' + _tail : '') + '.';
+        } else {
+          const _pullbackPhraseLong = _formatOneHPullbackPhrase('long', _ma200Context);
+          detail = (_oneHUtSupportsLong && _pullbackPhraseLong)
+            ? '1H pullback in progress. ' + _pullbackPhraseLong + ', with UT still aligned. No structural breakdown yet.'
+            : '1H TEMA is turning against the long' + (_tail ? '; ' + _tail : '') + '.';
+        }
       } else {
         const _tailE4 = _regimeOrOneHMaLong;
         detail = '1H reversal developing. ' + _stateTfTag + ' UT still bullish.' + (_tailE4 && !_isOneHSetupLong ? ' ' + _tailE4.charAt(0).toUpperCase() + _tailE4.slice(1) + '.' : '');
