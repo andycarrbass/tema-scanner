@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.2.8';
+const APP_BUILD = 'V5.2.8B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -8814,6 +8814,50 @@ function _deriveHtf1dRelation(dir, htfTrendContext) {
   return { relation: 'neutral', key };
 }
 
+// ── TDAS V5.2.8A — Counter-HTF SHADOW classification ────────────────────────
+// Genuinely additive and non-authoritative: computes what the entry-side
+// counter-HTF classification WOULD be, using the exact same trigger logic
+// V5.2.8 originally used, but returns a plain data object attached to
+// d.counterHtfShadow (Full Analysis display only) — never returned by
+// _buildScannerAdvisory(), never read by any live card/button/routing
+// path. This is the corrected shadow-only home for the V5.2.7 Option B
+// classification, after V5.2.8's placement inside the live advisory path
+// was found to leak "TRADE READY — COUNTER-HTF" onto real production
+// Scanner cards even with DIAG.tradeReadyV1Live=false.
+function _buildCounterHtfShadow(d) {
+  const ev = d && d.evaluation;
+  if (!ev || ev.actionBias !== ACTION_BIAS.AVOID) {
+    return { eligible: false, relation: null, reason: 'NOT_AVOID_CLASSIFIED' };
+  }
+  const dir = ev.tradeBias === 'LONG' ? 'LONG' : (ev.tradeBias === 'SHORT' ? 'SHORT' : null);
+  if (!dir) return { eligible: false, relation: null, reason: 'NO_DIRECTION' };
+
+  const blockers = ev.blockers || [];
+  const regimeBlocker = blockers.find(b => b.indexOf('Regime opposed') === 0);
+  const otherSevereBlockers = blockers.filter(b => b.indexOf('Regime opposed') !== 0);
+  const isCounterHtfEligible = !!regimeBlocker && ev.score >= 45 && otherSevereBlockers.length === 0;
+  if (!isCounterHtfEligible) {
+    return { eligible: false, relation: null, reason: otherSevereBlockers.length ? 'OTHER_BLOCKERS_PRESENT' : (!regimeBlocker ? 'NO_REGIME_BLOCKER' : 'SCORE_BELOW_FLOOR') };
+  }
+
+  const htf1d = _deriveHtf1dRelation(dir, d.htfTrendContext);
+  if (htf1d.relation !== 'opposing' && htf1d.relation !== 'strongly_opposing') {
+    return { eligible: false, relation: htf1d.relation, reason: 'NOT_1D_DRIVEN' };
+  }
+
+  const strengthWord = htf1d.relation === 'strongly_opposing' ? 'strongly ' : '';
+  const regimeSideWord = dir === 'LONG' ? 'bearish' : 'bullish';
+  return {
+    eligible: true,
+    direction: dir,
+    relation: htf1d.relation,
+    htf1dKey: htf1d.key,
+    headline: 'TRADE READY \u2014 COUNTER-HTF ' + dir,
+    detail: 'Strong 4H structure and supportive 1H execution, but the daily trend remains ' + strengthWord + regimeSideWord + '. Treat as a counter-trend setup with reduced conviction.',
+    reason: 'COUNTER_HTF_ELIGIBLE',
+  };
+}
+
 // ── Scanner-mode advisory — direct translation of evaluateSetup() output ──
 // No new logic: actionBias already encodes the classification, this only
 // renames enum values to approved display wording.
@@ -9221,17 +9265,29 @@ function buildActiveTradeHtfContextText(d, tradeDirection, setupTf) {
 }
 
 // Gate for the existing (unmodified) getHtfDirectionState(d, dir)==='conflict'
-// REVIEW trigger. For non-1H-setup trades this always returns true —
-// completely unchanged behaviour, including for 4H setups, which keep 1D
-// as their management HTF exactly as before. For 1H-setup trades, this
-// trigger now additionally requires genuine deterioration (per
-// _classifyActive1hHtfState above) — merely non-confirmed or
-// awaiting-UT-confirmation states no longer escalate to REVIEW on their
-// own; every other existing hard trigger (stop breach, CLOSE, TP25, TP50,
-// fresh adverse setup-TF UT, setup-TF TEMA-cross REVIEW) is untouched and
-// still evaluated earlier in the same branch chain, unaffected by this gate.
+// REVIEW trigger.
+//
+// TDAS V5.2.8B — AUTHORITY CORRECTION. For 4H-setup trades (the ones where
+// the management HTF genuinely is 1D), this used to return `true`
+// unconditionally — meaning 1D opposition ALONE, with no other management
+// evidence at all, independently set action='REVIEW' on an active 4H
+// trade. That is exactly the "1D repeatedly re-judging an intact 4H
+// thesis" behaviour the owner's doctrine forbids: 1D is background risk
+// context (the HTF 1D pill), not management authority. Corrected to
+// `false` for 4H-setup trades — this branch can no longer independently
+// create REVIEW for them; genuine REVIEW must come from actual 4H-thesis
+// deterioration or real 1H management evidence (the other, earlier
+// branches in this same if/else-if chain — stop breach, CLOSE, TP25/50,
+// fresh adverse setup-TF UT, setup-TF TEMA-cross REVIEW, and the V5.2.8
+// pullback branch — none of which are touched here).
+//
+// For 1H-setup trades, this function's behaviour is COMPLETELY UNCHANGED:
+// their management HTF is 4H, not 1D — a different pairing this task's
+// doctrine does not address — and that path was ALREADY properly gated
+// behind genuine deterioration evidence (_classifyActive1hHtfState()) well
+// before this build, so nothing needed correcting there.
 function _shouldTriggerHtfConflictReview(d, openTrade, tradeDirWord){
-  if (!openTrade || (openTrade.tf || '').toLowerCase() !== '1h') return true; // unchanged for non-1H setups
+  if (!openTrade || (openTrade.tf || '').toLowerCase() !== '1h') return false; // V5.2.8B — 1D alone never triggers REVIEW for a 4H-setup trade
   return _classifyActive1hHtfState(d, openTrade, tradeDirWord) === 'deteriorating';
 }
 
@@ -9679,42 +9735,44 @@ function _buildScannerAdvisory(d) {
     // reachability of this branch is corrected.
     detail = _buildScannerEvidenceDetail(d, dir) || ((ev.reasons && ev.reasons.length) ? ev.reasons[0] : (d.regime ? d.regime.label : ''));
   } else if (ev.actionBias === ACTION_BIAS.AVOID) {
-    // TDAS V5.2.8 — Counter-HTF classification (Option B from the V5.2.7
-    // audit). Presentation-layer only — does NOT touch evaluateSetup()'s
-    // own actionBias/blockers/score, and does NOT modify classifyRegime()'s
-    // HTF override (that override feeds Market Evidence, cross-engine-
-    // tests, and other widely-read d.regime consumers — the V5.2.7 audit
-    // found changing it directly would have broad, hard-to-fully-audit
-    // effects, so this reuses the SAME "regime opposition is the only real
-    // problem" trigger the pre-existing counter-regime-WATCH exception
-    // already used (score >= 45, no other severe blockers — an EXISTING
-    // threshold, not newly invented here), and upgrades its destination
-    // from a bare WATCH to an explicit counter-HTF classification that no
-    // longer reads as a rejection. 1D opposition modifies a valid setup;
-    // it never manufactures one — HYPE/LINK-style setups that are weak on
-    // their OWN setup-timeframe evidence still carry other blockers and
-    // fall through to ordinary AVOID below, unaffected by this branch.
+    // TDAS V5.2.8A — AUTHORITY BOUNDARY CORRECTION. V5.2.8 put the
+    // counter-HTF classification directly inside this function's live
+    // return path, which IS the production Scanner card's advisory
+    // (confirmed: this function's whole documented purpose is "direct
+    // translation of evaluateSetup() output" for the live card) — that
+    // made "TRADE READY — COUNTER-HTF" a real, deployed production
+    // headline even though DIAG.tradeReadyV1Live stayed false. Reverted to
+    // the exact pre-V5.2.8 (V5.2.6) behaviour below, unchanged. The
+    // counter-HTF classification itself is preserved and computed
+    // separately (see the diagnostic-only counter-HTF builder, attached
+    // as its own field in calcPair(), Full-Analysis-only) — this
+    // function no longer references it at all.
+    //
+    // Counter-regime WATCH exception (presentation only — does not touch
+    // evaluateSetup/actionBias/scoring). A meaningful counter-regime setup
+    // whose ONLY real problem is regime opposition is worth monitoring, not
+    // dismissing outright — WATCH means "worth tracking", not "tradeable".
+    // Broadened from an earlier score>=80 threshold (Task 2): that made
+    // WATCH depend almost entirely on score, when a moderate-score setup
+    // with real scanner-TF structure (UT/TEMA support, 200MA position) is
+    // just as worth watching as a high-score one — the score row already
+    // communicates the difference in strength. AVOID remains reserved for
+    // setups with an additional severe blocker, or too weak to track.
     const blockers = ev.blockers || [];
     const regimeBlocker = blockers.find(b => b.indexOf('Regime opposed') === 0);
     const otherSevereBlockers = blockers.filter(b => b.indexOf('Regime opposed') !== 0);
-    const isCounterHtfEligible = !!regimeBlocker && ev.score >= 45 && otherSevereBlockers.length === 0;
+    const isCounterRegimeWatchable = !!regimeBlocker && ev.score >= 45 && otherSevereBlockers.length === 0;
 
-    if (isCounterHtfEligible) {
-      const _htf1d = _deriveHtf1dRelation(dir, d.htfTrendContext);
-      if (_htf1d.relation === 'opposing' || _htf1d.relation === 'strongly_opposing') {
-        action = 'COUNTER_HTF'; headline = 'TRADE READY \u2014 COUNTER-HTF ' + dir;
-        const strengthWord = _htf1d.relation === 'strongly_opposing' ? 'strongly ' : '';
-        const regimeSideWord = dir === 'LONG' ? 'bearish' : 'bullish';
-        next = 'Treat as a counter-trend setup with reduced conviction — the daily trend remains ' + strengthWord + regimeSideWord + '.';
-        detail = 'Strong 4H structure and supportive 1H execution, but the daily trend remains ' + strengthWord + regimeSideWord + '. Treat as a counter-trend setup with reduced conviction.';
-      } else {
-        // The AVOID trigger was not actually 1D-driven (raw setup-TF
-        // regime disagreement, unrelated to htfTrendContext) — the old
-        // counter-regime-WATCH treatment still applies here, unchanged.
-        action = 'WATCH'; headline = 'WATCH ' + dir;
-        next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
-        detail = 'Wait for regime alignment to improve — treat as a counter-trend watch only.';
-      }
+    if (isCounterRegimeWatchable) {
+      action = 'WATCH'; headline = 'WATCH ' + dir;
+      next = 'Wait for regime alignment to improve — treat as counter-trend watch only.';
+      // TDAS V4.10.3L — the visible card detail now uses this branch's own
+      // dedicated counter-regime action sentence (settled grammar
+      // correction: "a counter-trend watch") instead of
+      // _buildScannerEvidenceDetail()'s diagnostic sentence, which could
+      // duplicate the Technicals box verbatim. `next` above is completely
+      // unchanged — still the original wording, still Full-Analysis-only.
+      detail = 'Wait for regime alignment to improve — treat as a counter-trend watch only.';
     } else {
       action = 'AVOID'; headline = 'AVOID ' + dir; // direction included when known, per Task 2
       next = 'Wait for regime improvement or a cleaner reset before considering entry.';
@@ -16894,6 +16952,18 @@ async function calcPair(symbol,tf){
   // else: _result already holds the complete legacy bundle from (3) —
   // nothing further to assign.
 
+  // ── TDAS V5.2.8A — Counter-HTF shadow attachment ──────────────────────────
+  // Purely additive, Full-Analysis-only. Runs after _result.evaluation is
+  // final (whichever bundle won the atomic select above). Never read by
+  // _buildScannerAdvisory() or any live card/button/routing path — see
+  // _buildCounterHtfShadow()'s own header comment for the full V5.2.8A
+  // authority-boundary-correction rationale.
+  try {
+    _result.counterHtfShadow = _buildCounterHtfShadow(_result);
+  } catch (_chtfErr) {
+    _result.counterHtfShadow = { eligible: false, relation: null, reason: 'EVALUATION_THREW', errorMessage: (_chtfErr && _chtfErr.message) ? _chtfErr.message : String(_chtfErr) };
+  }
+
   // ── TDAS V5.2.1 — Market Evidence TSE shadow attachment ──────────────────
   // Runs AFTER the atomic select above so _result.evidence is the final
   // legacy Market Evidence bundle (whichever the flag chose), and after
@@ -20602,6 +20672,18 @@ function openAnalysisPanel(request){
     ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildTradeReadyV1TseShadowHtml(d) + '</pre>'
     : '';
 
+  // TDAS V5.2.8A — Counter-HTF shadow diagnostic. Full-Analysis-only,
+  // never read by the live card. Kept simple/compact per doctrine — shows
+  // what the entry-side counter-HTF classification would be, for
+  // validation, without ever feeding the production advisory.
+  const _counterHtfShadowHtml = (d.counterHtfShadow)
+    ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + (
+        d.counterHtfShadow.eligible
+          ? '=== COUNTER-HTF \u2014 SHADOW (not live) ===\n' + d.counterHtfShadow.headline + '\n' + d.counterHtfShadow.detail + '\nHTF 1D key: ' + d.counterHtfShadow.htf1dKey + ' (' + d.counterHtfShadow.relation + ')'
+          : '=== COUNTER-HTF \u2014 SHADOW (not live) ===\nNot eligible: ' + d.counterHtfShadow.reason
+      ) + '</pre>'
+    : '';
+
   // TDAS V4.9.10 — remaining sections precomputed as standalone template
   // literals (same pattern as _tcHtml/_evalHtml/_lifecycleHtml/_advisoryHtml
   // above), each passed through the shared _apSectionWrap() helper. Same
@@ -20687,6 +20769,7 @@ function openAnalysisPanel(request){
     ${_trendStateHtml}
     ${_marketEvidenceTseHtml}
     ${_tradeReadyV1TseHtml}
+    ${_counterHtfShadowHtml}
     ${_signalSummaryHtml}
     ${_lifecycleHtml}
     ${_evalHtml}
