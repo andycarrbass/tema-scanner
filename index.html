@@ -9139,6 +9139,44 @@ function _isFourHTseActionable(d) {
   return !!(auth && auth.engaged && auth.actionable);
 }
 
+// TDAS V5.3.3B (ADA routing-authority correction) — broader sibling of
+// _isFourHTseActionable() just above. That function only rescues the
+// ACTIONABLE subset (Trade Ready / Counter-HTF) from the legacy neutral
+// section — a genuine, directionally-engaged TSE WATCH (e.g. a valid 4H
+// bullish pullback blocked only by TR3's 1H execution check) still fell
+// through to the collapsed "no signal" section despite having a real,
+// authoritative thesis to show. Audited and confirmed in
+// TDAS_V5_3_3B_ADA_ROUTING_AUTHORITY_AUDIT.md: the Scanner
+// visibility/lane-routing layer was never included in the V5.3.1 4H TSE
+// authority migration at all (only _buildScannerAdvisory() and the two
+// existing repaint reconciliation sites were). This helper is the
+// resolved fix: engaged + a resolved direction is enough to earn
+// directional lane placement — actionability is a SEPARATE question,
+// answered elsewhere (Trade Ready badge/checklist), never conflated here.
+// Same self-gating as its sibling: 4H only, flag-gated, never touches
+// d.signal, never touches TR1-5, never touches strategy.
+function _isFourHTseDirectional(d) {
+  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') return false;
+  const auth = _buildFourHTseAuthority(d);
+  return !!(auth && auth.engaged && auth.direction);
+}
+
+// TDAS V5.3.3B (ADA routing-authority correction) — the LONG/SHORT lane a
+// rescued card belongs in. For an ordinary legacy-directional card
+// (d.signal!=='neutral') this simply returns d.signal, unchanged. For a
+// card only reachable via _isFourHTseDirectional() (legacy neutral, TSE
+// engaged+directional), the lane is TSE's OWN direction — d.signal itself
+// is never read as a direction SOURCE in that case, only as the (already
+// 'neutral') value that made the rescue necessary. Never mutates d.signal.
+function _fourHTseLaneDirection(d) {
+  if (d && d.signal && d.signal !== 'neutral') return d.signal;
+  if (_isFourHTseDirectional(d)) {
+    const auth = _buildFourHTseAuthority(d);
+    return auth.direction === 'LONG' ? 'long' : auth.direction === 'SHORT' ? 'short' : 'neutral';
+  }
+  return (d && d.signal) || 'neutral';
+}
+
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║  TDAS V5.3.3B — 4H Narrative Engine (semantic adapter, not a classifier) ║
 // ║                                                                          ║
@@ -19771,15 +19809,27 @@ function renderCard(symbol,d){
   // to Full Analysis / future use.
 
   // ── Signal pill — small, inline with price ────────────────────────────
+  // TDAS V5.3.3B (ADA routing-authority correction) — a 4H card only
+  // placed in its directional lane via _isFourHTseDirectional() (legacy
+  // signal==='neutral', TSE engaged+directional) would otherwise still
+  // show "No signal" here despite living in the LONG/SHORT lane and
+  // carrying a real WATCH LONG/SHORT Advisory — a header/content
+  // mismatch. _fourHTseLaneDirection(d) is the same helper the lane
+  // partition itself uses: for every ordinary card it returns `signal`
+  // (=d.signal) completely unchanged, so this is a no-op everywhere
+  // except the narrow rescued subset. Display-only — d.signal itself, and
+  // the `signal` local used throughout the rest of this function, are
+  // both untouched.
+  const _pillSignal = _fourHTseLaneDirection(d);
   const pillClass = isOpenTrade
     ? 'pill-trade'
-    : signal==='long' ? 'pill-long'
-    : signal==='short' ? 'pill-short'
+    : _pillSignal==='long' ? 'pill-long'
+    : _pillSignal==='short' ? 'pill-short'
     : 'pill-neutral';
   const pillText = isOpenTrade
     ? (openTrade.signal==='long' ? '\u25b2 LONG ACTIVE' : '\u25bc SHORT ACTIVE')
-    : signal==='long' ? '\u25b2 LONG SIGNAL'
-    : signal==='short' ? '\u25bc SHORT SIGNAL'
+    : _pillSignal==='long' ? '\u25b2 LONG SIGNAL'
+    : _pillSignal==='short' ? '\u25bc SHORT SIGNAL'
     : 'No signal';
 
   // ── TDAS Phase 2A/2B — new decision-focused blocks ──────────────────────
@@ -25353,7 +25403,16 @@ async function _tdSignalRefresh(){
         // reintroduce the same full-size-card-for-a-neutral-symbol defect
         // if suppression doctrine ever changes.
         const _d2 = currentScanData[sym];
-        const _isNeutral2 = (!_d2 || _d2.error || _d2.signal === 'neutral') && !_isFourHTseActionable(_d2);
+        // TDAS V5.3.3B (ADA routing-authority correction) — widened from
+        // _isFourHTseActionable() to _isFourHTseDirectional(): a genuine
+        // TSE WATCH LONG/SHORT (not just Trade Ready/Counter-HTF) must
+        // repaint into the full card here too, keeping this site in
+        // lockstep with runScan()'s own corrected partition and
+        // reconcileScannerOwnership() just below — the audited invariant
+        // is initial scan == live repaint == ownership reconciliation for
+        // the same 4H authority state. Still 4H-only (self-gated inside
+        // _isFourHTseDirectional()); still never touches d.signal.
+        const _isNeutral2 = (!_d2 || _d2.error || _d2.signal === 'neutral') && !_isFourHTseDirectional(_d2);
         _isNeutral2 ? renderNeutralCompact(sym, _d2) : renderCard(sym, _d2);
       }
     });
@@ -27026,9 +27085,27 @@ function renderSummary(results, tf){
       return !isScannerSymbolSuppressed(sym, tf);
     })
     .map(({r})=>r.value);
-  const longs=valid.filter(v=>v.signal==='long').length;
-  const shorts=valid.filter(v=>v.signal==='short').length;
+  // TDAS V5.3.3B (ADA routing-authority correction — count consistency).
+  // Widened from raw v.signal to _fourHTseLaneDirection(v), the SAME
+  // helper the Scanner lane partition itself now uses (see
+  // TDAS_V5_3_3B_ADA_ROUTING_AUTHORITY_AUDIT.md and the follow-up
+  // Scanner-routing fix). This function's own long-standing doctrine
+  // (V4.5.4/V5.0.0H6, see the comment above `valid`) is explicitly that
+  // this tile must never disagree with what's actually visible in the
+  // lanes — "Scanner says N signals but only M cards visible" is the
+  // exact defect this function exists to prevent. A 4H TSE-rescued
+  // directional card (legacy signal neutral, e.g. a WATCH LONG blocked
+  // only by TR3) is now visible in its lane, so it must be counted here
+  // too, via the identical predicate. For every ordinary card
+  // _fourHTseLaneDirection(v) returns v.signal unchanged — no behavior
+  // change outside the narrow rescued subset, and 1H is a complete no-op
+  // (the helper self-gates to 4H).
+  const longs=valid.filter(v=>_fourHTseLaneDirection(v)==='long').length;
+  const shorts=valid.filter(v=>_fourHTseLaneDirection(v)==='short').length;
   const aligned=valid.filter(v=>v.htfAlign==='aligned').length;
+  // sigPairs/avgScore deliberately LEFT ON raw v.signal — "Avg strength"
+  // is a legacy-score metric (v.score), a different question from lane
+  // membership, and out of this narrow count-consistency fix's scope.
   const sigPairs=valid.filter(v=>v.signal!=='neutral');
   const avgScore=sigPairs.length?Math.round(sigPairs.reduce((a,v)=>a+v.score,0)/sigPairs.length):0;
   // TDAS V4.10.2D — Authoritative Presentation Language and Visual
@@ -27135,8 +27212,20 @@ function reconcileScannerOwnership(){
       // 'nc-row'), so whichever one previously rendered this element is
       // irrelevant here — the correct renderer self-corrects it either
       // way, with no separate wrapper-migration step needed.
+      //
+      // TDAS V5.3.3B (ADA routing-authority correction) — widened from
+      // _isFourHTseActionable() to _isFourHTseDirectional(): a genuine TSE
+      // WATCH LONG/SHORT (not just Trade Ready/Counter-HTF) now also earns
+      // the full renderCard() here, matching runScan()'s own corrected
+      // signalItems/neutralItems partition and the second repaint site
+      // above. See TDAS_V5_3_3B_ADA_ROUTING_AUTHORITY_AUDIT.md — this
+      // predicate previously only rescued the actionable subset, which is
+      // why a valid 4H WATCH LONG (e.g. a bullish pullback blocked only by
+      // TR3's 1H execution check, legacy signal neutral) could still
+      // repaint as neutral even at this site. Still 4H-only; still never
+      // touches d.signal.
       const _d = currentScanData[sym];
-      const _isNeutral = (!_d || _d.error || _d.signal === 'neutral') && !_isFourHTseActionable(_d);
+      const _isNeutral = (!_d || _d.error || _d.signal === 'neutral') && !_isFourHTseDirectional(_d);
       try{ _isNeutral ? renderNeutralCompact(sym, _d) : renderCard(sym, _d); }
       catch(err){ console.warn('[reconcileScannerOwnership] render failed for',sym,err); }
     }
@@ -27147,8 +27236,14 @@ function reconcileScannerOwnership(){
     : {status:'rejected', reason:{message:'no data'}});
   renderSummary(results, tf);
   updateSetupsCount();
+  // TDAS V5.3.3B (ADA routing-authority correction — count consistency).
+  // Widened to match renderSummary()'s Longs+Shorts (see that function's
+  // own comment) and the lane partition itself: _fourHTseLaneDirection(v)
+  // in place of raw v.signal!=='neutral'. Same helper, same predicate
+  // shape as the lane router — a rescued card is now counted exactly
+  // once, consistent with being visible exactly once.
   const sigs = results.filter((r,i)=>{
-    if(r.status!=='fulfilled'||r.value.signal==='neutral') return false;
+    if(r.status!=='fulfilled'||_fourHTseLaneDirection(r.value)==='neutral') return false;
     return !isScannerSymbolSuppressed(PAIRS[i], tf);
   }).length;
   const _statusEl = document.getElementById('status');
@@ -27762,18 +27857,39 @@ async function runScan(auto){
   // direction to show. shortItems/longItems below are then simple
   // sub-filters of signalItems, so they inherit the exact same relative
   // order `indexed` was already sorted into — no separate sort step.
+  //
+  // TDAS V5.3.3B (ADA routing-authority correction) — this was the
+  // PRIMARY defect: this partition had NO TSE rescue of any kind (unlike
+  // _isFourHTseActionable(), already used at the two live-repaint sites),
+  // so on every manual/initial scan a genuinely directional 4H TSE result
+  // (WATCH LONG/SHORT, or even TRADE_READY) with legacy signal==='neutral'
+  // was placed in neutralItems and rendered by the stripped-down
+  // renderNeutralCompact() — no Technical/Advisory content at all. Now
+  // widened to _isFourHTseDirectional(v) (engaged + resolved direction —
+  // not merely actionable), matching the two repaint sites below. A
+  // non-directional TSE result (chop/no-regime/technical-failure,
+  // auth.direction===null) still correctly has nothing to show and stays
+  // in neutralItems, unchanged. See
+  // TDAS_V5_3_3B_ADA_ROUTING_AUTHORITY_AUDIT.md for the full trace.
   const signalItems  = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
     if(isScannerSymbolSuppressed(sym, tf)) return false;
-    return v && v.signal!=='neutral';
+    return !!(v && (v.signal!=='neutral' || _isFourHTseDirectional(v)));
   });
   const neutralItems = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
     if(isScannerSymbolSuppressed(sym, tf)) return false;
-    return !v || v.signal==='neutral';
+    return !v || (v.signal==='neutral' && !_isFourHTseDirectional(v));
   });
-  const shortItems = signalItems.filter(({r}) => r.value.signal === 'short');
-  const longItems  = signalItems.filter(({r}) => r.value.signal === 'long');
+  // TDAS V5.3.3B (ADA routing-authority correction) — a rescued card's own
+  // v.signal is still the legacy 'neutral' that made the rescue necessary
+  // in the first place, so the LONG/SHORT sub-split can no longer read
+  // v.signal directly here. _fourHTseLaneDirection(v) returns v.signal
+  // unchanged for every ordinary legacy-directional card (the vast
+  // majority) and only falls through to TSE's own direction for the
+  // narrow rescued subset — see that helper's own comment.
+  const shortItems = signalItems.filter(({r}) => _fourHTseLaneDirection(r.value) === 'short');
+  const longItems  = signalItems.filter(({r}) => _fourHTseLaneDirection(r.value) === 'long');
 
 
   if(!auto){
@@ -27879,8 +27995,13 @@ async function runScan(auto){
   // the identical check already used above for signalItems/neutralItems.
   // TDAS V5.0.0H6 — now also excludes exact symbol+tf watched setups via
   // the same isScannerSymbolSuppressed() predicate renderSummary uses.
+  // TDAS V5.3.3B (ADA routing-authority correction — count consistency)
+  // — widened to _fourHTseLaneDirection(v), matching signalItems/
+  // neutralItems and renderSummary()'s Longs+Shorts above, so this status
+  // line keeps its documented "always matches Longs+Shorts exactly"
+  // invariant true for a TSE-rescued directional card too.
   const sigs=results.filter((r,i)=>{
-    if(r.status!=='fulfilled'||r.value.signal==='neutral') return false;
+    if(r.status!=='fulfilled'||_fourHTseLaneDirection(r.value)==='neutral') return false;
     const sym=PAIRS[i];
     return !isScannerSymbolSuppressed(sym, tf);
   }).length;
