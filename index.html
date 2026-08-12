@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.3.3';
+const APP_BUILD = 'V5.3.3B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2517,6 +2517,54 @@ function _runTradeReadyV1TseShadowCensus(pairs, tf){
     'legacyAcquired1h\u2192tseSkipped=' + legacyAcquired1hTseSkipped,
     'legacySkipped1h\u2192tseAcquired=' + legacySkipped1hTseAcquired,
     'sameStatusDifferentDirection=' + sameStatusDifferentDirection
+  );
+}
+
+// TDAS V5.3.3B — 1H TSE-vs-legacy Advisory-axis census (audit §A.5). This is
+// deliberately a DIFFERENT axis from the existing V5.2.1 Market Evidence
+// census just below: that one compares d.trendState against the legacy
+// MarketEvidence direction/alignment model (drives the Technical box). This
+// one compares d.trendState against the legacy 1H Advisory's own
+// d.evaluation.tradeBias — the axis that actually governs whether a future
+// 1H Technical+Advisory migration would introduce a card-coherence
+// contradiction (e.g. TSE "BEARISH TREND — ESTABLISHED" over legacy
+// "CONSIDER LONG"). Read-only, console-only, no UI, no persistence, no
+// network, no actionability change. Only meaningful when the manual scan
+// itself is 1H (currentScanData is keyed by symbol only, so d.trendState
+// reflects whichever tf was last scanned) — a no-op on any other tf.
+function _classifyOneHTseAdvisoryDisagreement(trendState, evaluation) {
+  if (!trendState || typeof trendState.direction !== 'string' || typeof trendState.state !== 'string') {
+    return { class: 'TSE_UNAVAILABLE' };
+  }
+  const tseDir = trendState.direction === 'LONG' ? 'long' : trendState.direction === 'SHORT' ? 'short' : 'neutral';
+  const legacyDir = (evaluation && evaluation.tradeBias === 'LONG') ? 'long' : (evaluation && evaluation.tradeBias === 'SHORT') ? 'short' : 'neutral';
+  if (trendState.state === 'DETERIORATING' && legacyDir !== 'neutral') return { class: 'DETERIORATION_RECLASSIFICATION' };
+  if (tseDir === 'neutral' && legacyDir !== 'neutral') return { class: 'CHOP_SUPPRESSION' };
+  if (legacyDir === 'neutral' && tseDir !== 'neutral') return { class: 'DIRECTION_CORRECTION' };
+  if (legacyDir !== 'neutral' && tseDir !== 'neutral' && legacyDir !== tseDir) return { class: 'MATERIAL_OPPOSITE_DIRECTION' };
+  if (legacyDir === tseDir && legacyDir === 'neutral') return { class: 'AGREEMENT' };
+  return { class: 'PHASE_REFINEMENT' }; // same direction — TSE adds phase nuance legacy tradeBias lacks
+}
+function _runOneHTseAdvisoryAxisCensus(pairs, tf){
+  if (tf !== '1h') return; // only meaningful when the manual scan itself is 1H
+  const counts = { AGREEMENT: 0, PHASE_REFINEMENT: 0, CHOP_SUPPRESSION: 0, DIRECTION_CORRECTION: 0, DETERIORATION_RECLASSIFICATION: 0, MATERIAL_OPPOSITE_DIRECTION: 0, TSE_UNAVAILABLE: 0 };
+  let compared = 0;
+  pairs.forEach(sym => {
+    const d = currentScanData[sym];
+    if (!d || d.tf !== '1h') return;
+    const cls = _classifyOneHTseAdvisoryDisagreement(d.trendState, d.evaluation);
+    if (Object.prototype.hasOwnProperty.call(counts, cls.class)) counts[cls.class]++;
+    compared++;
+  });
+  console.log(
+    '[V5.3.3B 1H TSE-vs-legacy advisory axis] tf=' + tf, 'compared=' + compared,
+    'agreement=' + counts.AGREEMENT,
+    'phaseRefinement=' + counts.PHASE_REFINEMENT,
+    'chopSuppression=' + counts.CHOP_SUPPRESSION,
+    'directionCorrection=' + counts.DIRECTION_CORRECTION,
+    'deteriorationReclass=' + counts.DETERIORATION_RECLASSIFICATION,
+    'materialOppositeDirection=' + counts.MATERIAL_OPPOSITE_DIRECTION,
+    'tseUnavailable=' + counts.TSE_UNAVAILABLE
   );
 }
 
@@ -9091,6 +9139,470 @@ function _isFourHTseActionable(d) {
   return !!(auth && auth.engaged && auth.actionable);
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.3.3B — 4H Narrative Engine (semantic adapter, not a classifier) ║
+// ║                                                                          ║
+// ║  Grounded in TDAS_V5_3_3A_NARRATIVE_ENGINE_ARCHITECTURE_AUDIT.md. Reads  ║
+// ║  ONLY already-computed fields already attached to `d` by calcPair():     ║
+// ║  d.trendState (TSE, V5.2.0), d.v51Evidence.evidence (V5.1.x), d.tradeR-  ║
+// ║  eadyV1TseShadow (TR1-TR5, V5.2.2/V5.2.4), d.counterHtfShadow (V5.2.8C). ║
+// ║  Never calls buildTrendState()/buildV51Evidence()/any TR check function/ ║
+// ║  any indicator calculator/any fetch. Never recomputes strategy, never    ║
+// ║  writes back to `d`, never mutates d.signal/d.regime/d.evaluation.       ║
+// ║                                                                          ║
+// ║  Scope: 4H only (d.tf === '4h'). 1H/Active Trade/Setups/alerts are       ║
+// ║  completely untouched by every function in this section.                ║
+// ║                                                                          ║
+// ║  Rollback seams: DIAG.narrativeEngineLive (Technical/Advisory boxes),    ║
+// ║  DIAG.evidenceStripNarrativeLive (evidence strip). Both default false —  ║
+// ║  shadow-only in this build. With both false, buildTechnicalSummaryHtml/  ║
+// ║  _buildScannerAdvisory/buildDecisionDotsHtml are byte-identical to       ║
+// ║  V5.3.3 (see test_v533b_4h_narrative_engine.js, "flag off parity").      ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Stable fact-id vocabulary (versioned). Every emitted card clause must map
+// to one of these ids via the `factIds` arrays the composers return — the
+// mechanism the non-duplication tests (T-D1/T-D2) check.
+const NARRATIVE_FACT_VOCAB_V1 = Object.freeze([
+  'MA200_SIDE','MA200_REGIME','MA200_SLOPE','CHOP_STATE','CHOP_CROSSINGS',
+  'TEMA_PHASE','TEMA_DIRECTION','TEMA_MATURITY','TEMA_SEPARATION','TEMA_TRAJECTORY',
+  'UT_DIRECTION','UT_ALIGNMENT','UT_FRESHNESS',
+  'ADX_VALUE','ADX_BAND','ADX_SLOPE','ADX_DECAY',
+  'SMA_INTERMEDIATE_SIDE','SMA_INTERMEDIATE_SLOPE','SMA_STATE_MACHINE',
+  'EXTENSION_TIER','EXTENSION_DISTANCE',
+  'RSI_VALUE','RSI_CONTEXT',
+  'HTF_RELATION','HTF_COUNTER',
+  'EXEC_1H_REGIME','EXEC_1H_SMA135',
+  'TSE_PHASE','TRADE_READY_STATUS',
+]);
+
+// One fact: { id, value, tf, source, consumedBy }. `consumedBy` is mutated
+// only by the composers, via _narrativeConsume() below — never by the
+// context builder itself (which only ever produces consumedBy:null facts).
+function _narrativeFact(id, value, tf, source) {
+  return { id: id, value: value, tf: tf || null, source: source || null, consumedBy: null };
+}
+function _narrativeConsume(factsMap, id, consumer) {
+  if (factsMap && factsMap[id] && factsMap[id].consumedBy == null) factsMap[id].consumedBy = consumer;
+}
+
+// ── Situation classifier — reads d.trendState.state/.direction ONLY plus ──
+// TEMA maturity/separation from v51Evidence. Never re-derives regime/chop/
+// slope/UT-alignment itself — those are already resolved inside `ts` by
+// buildTrendState(), and re-deriving them here would be exactly the second-
+// classifier failure mode the audit identified. See the audit §1/§B for the
+// full proof that this branching is a complete, non-overlapping partition
+// of buildTrendState()'s own reachable outputs.
+function _fourHNarrativeSituation(ts, v51ev) {
+  const tema = v51ev && v51ev.tema;
+  const sep = tema && tema.separation;
+  const mat = tema && tema.maturity;
+
+  if (ts.state === 'DETERIORATING') {
+    return { situationId: 'S10', direction: ts.direction, phaseModifier: null };
+  }
+  if (ts.state === 'PULLBACK') {
+    if (sep && sep.trajectory === 'contracting' && sep.consecutiveCount >= 2) {
+      if (sep.band === 'noise') return { situationId: 'S8', direction: ts.direction, phaseModifier: 'resumption_developing' };
+      if (sep.band === 'meaningful' || sep.band === 'strong') return { situationId: 'S7', direction: ts.direction, phaseModifier: 'losing_momentum' };
+    }
+    return { situationId: 'S6', direction: ts.direction, phaseModifier: null };
+  }
+  if (ts.state === 'ESTABLISHED') {
+    const dirWord = ts.direction === 'LONG' ? 'bullish' : 'bearish';
+    if (ts.temaPhase === 'aligned' && mat && mat.maturity === 'nascent' && mat.direction === dirWord
+        && sep && sep.trajectory === 'expanding') {
+      return { situationId: 'S9', direction: ts.direction, phaseModifier: 'resuming' };
+    }
+    return { situationId: 'S5', direction: ts.direction, phaseModifier: null };
+  }
+  if (ts.state === 'EMERGING') {
+    return { situationId: 'S4', direction: ts.direction, phaseModifier: null };
+  }
+  // ts.state === 'UNRESOLVED'. buildTrendState() only preserves a real
+  // direction here via its FINAL fallback (TSE_INSUFFICIENT_EVIDENCE_FOR_
+  // PHASE) — its earlier chop/unknown-regime early-return always forces
+  // direction to 'NEUTRAL'. A resolved direction here therefore always
+  // means: transitional regime + UT known + UT opposing + chop not 'chop'
+  // — i.e. reversal pressure (S3). See audit §C.3 for the full proof.
+  if (ts.direction === 'LONG' || ts.direction === 'SHORT') {
+    return { situationId: 'S3', direction: ts.direction, phaseModifier: 'reversal_pressure' };
+  }
+  if (ts.regimeState === 'unresolved_chop' || ts.chopState === 'chop') {
+    return { situationId: 'S1', direction: 'neutral', phaseModifier: null };
+  }
+  return { situationId: 'S2', direction: 'neutral', phaseModifier: null };
+}
+
+// ── Normalized 4H narrative context — the single evidence-context object ──
+// both composers and the evidence strip must consume. Never null when
+// d.tf==='4h': always returns an object, with meta.completeness===
+// 'unavailable' when d.trendState itself is missing/blocked — the fail-
+// honest branch (no hidden fallback to legacy MarketEvidence text once the
+// engine is engaged; see composeFourHTechnicalNarrative()'s own first
+// branch).
+function buildFourHNarrativeContext(d) {
+  if (!d || d.tf !== '4h') return null; // out of scope — 4H only in this build
+
+  const meta = {
+    tf: '4h', surface: null, authoritySource: 'tse_4h',
+    rulesetVersion: (typeof TREND_STATE_RULESET_VERSION !== 'undefined') ? TREND_STATE_RULESET_VERSION : null,
+    completeness: 'unavailable',
+    tfRoles: { thesis: '4h', execution: '1h', context: '1d' },
+  };
+
+  const ts = d.trendState;
+  const facts = {};
+  function put(id, value, tf, source) { facts[id] = _narrativeFact(id, value, tf, source); return facts[id]; }
+
+  if (!ts || typeof ts.direction !== 'string' || typeof ts.state !== 'string'
+      || (Array.isArray(ts.blockers) && ts.blockers.indexOf('TSE_EVIDENCE_INCOMPLETE') !== -1)) {
+    return { meta: meta, trend: null, structure: null, momentum: null, quality: null, extension: null, htf: null, decision: null, facts: facts };
+  }
+
+  const v51ev = (d.v51Evidence && d.v51Evidence.evidence) || null;
+  const tr = d.tradeReadyV1TseShadow;
+  const ch = d.counterHtfShadow;
+  const sit = _fourHNarrativeSituation(ts, v51ev);
+  const dirWord = sit.direction === 'LONG' ? 'bullish' : sit.direction === 'SHORT' ? 'bearish' : 'neutral';
+
+  put('MA200_REGIME', ts.regimeState, '4h', 'trendState');
+  put('MA200_SLOPE', ts.ma200SlopeState, '4h', 'trendState');
+  put('CHOP_STATE', ts.chopState, '4h', 'trendState');
+  if (v51ev && v51ev.chop && v51ev.chop.crossings != null) put('CHOP_CROSSINGS', v51ev.chop.crossings, '4h', 'v51Evidence');
+
+  put('TEMA_PHASE', ts.temaPhase, '4h', 'trendState');
+  put('TEMA_DIRECTION', ts.temaDirection, '4h', 'trendState');
+  if (v51ev && v51ev.tema && v51ev.tema.maturity) put('TEMA_MATURITY', v51ev.tema.maturity, '4h', 'v51Evidence');
+  if (v51ev && v51ev.tema && v51ev.tema.separation) {
+    put('TEMA_SEPARATION', v51ev.tema.separation, '4h', 'v51Evidence');
+    put('TEMA_TRAJECTORY', v51ev.tema.separation.trajectory, '4h', 'v51Evidence');
+  }
+
+  put('UT_DIRECTION', ts.utDirection, '4h', 'trendState');
+  const utAligned = (ts.utDirection && ts.utDirection !== 'unknown' && dirWord !== 'neutral')
+    ? (ts.utDirection === dirWord ? 'aligned' : 'opposing') : 'unknown';
+  put('UT_ALIGNMENT', utAligned, '4h', 'trendState');
+  put('UT_FRESHNESS', ts.utBarsSinceFlip, '4h', 'trendState');
+
+  if (v51ev && v51ev.adx && v51ev.adx.complete) {
+    put('ADX_VALUE', v51ev.adx.value, '4h', 'v51Evidence');
+    put('ADX_BAND', v51ev.adx.band, '4h', 'v51Evidence');
+    put('ADX_SLOPE', v51ev.adx.slope, '4h', 'v51Evidence');
+    put('ADX_DECAY', { materiallyDecaying: !!v51ev.adx.materiallyDecaying, decayPct: v51ev.adx.decayPct, peak: v51ev.adx.peak }, '4h', 'v51Evidence');
+  }
+
+  if (v51ev && v51ev.sma && v51ev.sma.complete) {
+    put('SMA_INTERMEDIATE_SIDE', v51ev.sma.side, '4h', 'v51Evidence');
+    put('SMA_STATE_MACHINE', { state: v51ev.sma.state, consecutiveConfirmedBars: v51ev.sma.consecutiveConfirmedBars }, '4h', 'v51Evidence');
+  }
+  if (ts.trendSmaSupport && ts.trendSmaSupport !== 'unknown') put('SMA_INTERMEDIATE_SLOPE', ts.trendSmaSupport, '4h', 'trendState');
+
+  // Extension is TR5's own fact — measured on 1H, anchored to TEMA92 (audit
+  // §1.3/L2). Prefer TR5's raw values (the actual entry-gating number);
+  // fall back to the 4H v51Evidence extension only if TR5's own raw is
+  // unavailable, and label it '4h' honestly in that fallback case only.
+  const oneHExt = (tr && tr.checks && tr.checks.extension && tr.checks.extension.raw) || null;
+  if (oneHExt && oneHExt.extensionAbsoluteAtr != null) {
+    const tier = (v51ev && v51ev.extension && v51ev.extension.complete) ? v51ev.extension.tier : null;
+    put('EXTENSION_TIER', tier, '1h', 'tradeReadyV1TseShadow');
+    put('EXTENSION_DISTANCE', oneHExt.extensionAbsoluteAtr, '1h', 'tradeReadyV1TseShadow');
+  } else if (v51ev && v51ev.extension && v51ev.extension.complete) {
+    put('EXTENSION_TIER', v51ev.extension.tier, '4h', 'v51Evidence');
+    put('EXTENSION_DISTANCE', v51ev.extension.distanceAtr, '4h', 'v51Evidence');
+  }
+
+  if (d.htfTrendContext && d.htfTrendContext.key) put('HTF_RELATION', d.htfTrendContext.key, '1d', 'd.htfTrendContext');
+  if (ch) put('HTF_COUNTER', { eligible: !!ch.eligible, relation: ch.relation || null }, '1d', 'counterHtfShadow');
+
+  const execCheck = tr && tr.checks && tr.checks.executionRegime;
+  if (execCheck && execCheck.raw) put('EXEC_1H_REGIME', execCheck.raw, '1h', 'tradeReadyV1TseShadow');
+  const interCheck = tr && tr.checks && tr.checks.intermediateTrendSupport;
+  if (interCheck && interCheck.raw) put('EXEC_1H_SMA135', { side: interCheck.raw.sma135PriceSide, slope: interCheck.raw.sma135SlopeState }, '1h', 'tradeReadyV1TseShadow');
+
+  put('TSE_PHASE', ts.state, '4h', 'trendState');
+  if (tr) put('TRADE_READY_STATUS', tr.status, '4h+1h', 'tradeReadyV1TseShadow');
+
+  meta.completeness = (v51ev && v51ev.adx && v51ev.adx.complete && v51ev.tema && v51ev.tema.maturity && v51ev.tema.maturity.maturity !== 'unknown')
+    ? 'complete' : 'partial';
+
+  // decision.blocker — first FAILING TSE Trade Ready check in TR1->TR5
+  // order (audit §1.6/§9/§15). Never re-ranked by prose; 1D/Counter-HTF
+  // context is never eligible to be the blocker (it is a conviction
+  // modifier on an already-ready setup, per V5.2.8C doctrine — untouched).
+  let blocker = null;
+  if (tr && tr.checks) {
+    const order = [['directionCoherent', 'TR1'], ['trendQuality', 'TR2'], ['executionRegime', 'TR3'],
+      ['intermediateTrendSupport', 'TR4'], ['extension', 'TR5']];
+    for (let i = 0; i < order.length; i++) {
+      const c = tr.checks[order[i][0]];
+      if (c && c.status === 'fail') {
+        blocker = { checkId: order[i][1], reasonCode: (c.reasonCodes && c.reasonCodes[0]) || null, raw: c.raw || null, threshold: c.threshold || null };
+        break;
+      }
+    }
+  }
+
+  return {
+    meta: meta,
+    trend: { direction: dirWord, phase: ts.state, phaseModifier: sit.phaseModifier, situationId: sit.situationId },
+    structure: {
+      ma200: { side: null, regime: ts.regimeState, slopeState: ts.ma200SlopeState, tf: '4h' },
+      chop: { state: ts.chopState, crossings: v51ev && v51ev.chop ? v51ev.chop.crossings : null, windowBars: (typeof MA200_CHOP_WINDOW_BARS !== 'undefined') ? MA200_CHOP_WINDOW_BARS : null },
+      intermediateSma: (v51ev && v51ev.sma && v51ev.sma.complete)
+        ? { period: v51ev.sma.period || 80, side: v51ev.sma.side, slopeState: ts.trendSmaSupport, stateMachine: v51ev.sma.state, consecutiveConfirmedBars: v51ev.sma.consecutiveConfirmedBars, tf: '4h' }
+        : null,
+    },
+    momentum: {
+      tema: {
+        phase: ts.temaPhase, direction: ts.temaDirection,
+        barsSinceCross: (v51ev && v51ev.tema && v51ev.tema.maturity) ? v51ev.tema.maturity.barsSinceCross : null,
+        maturity: (v51ev && v51ev.tema && v51ev.tema.maturity) ? v51ev.tema.maturity.maturity : 'unknown',
+        separationAtr: (v51ev && v51ev.tema && v51ev.tema.separation) ? v51ev.tema.separation.separationAtr : null,
+        separationBand: (v51ev && v51ev.tema && v51ev.tema.separation) ? v51ev.tema.separation.band : 'unknown',
+        trajectory: (v51ev && v51ev.tema && v51ev.tema.separation) ? v51ev.tema.separation.trajectory : 'unknown',
+        consecutiveCount: (v51ev && v51ev.tema && v51ev.tema.separation) ? v51ev.tema.separation.consecutiveCount : 0,
+      },
+      ut: { direction: ts.utDirection, aligned: utAligned === 'unknown' ? null : (utAligned === 'aligned'), barsSinceFlip: ts.utBarsSinceFlip, freshnessKey: null },
+    },
+    quality: {
+      adx: (v51ev && v51ev.adx && v51ev.adx.complete)
+        ? { value: v51ev.adx.value, band: v51ev.adx.band, slope: v51ev.adx.slope, decaying: !!v51ev.adx.materiallyDecaying, peak: v51ev.adx.peak,
+            floor: (typeof TRADE_READY_V1_CONFIG !== 'undefined') ? TRADE_READY_V1_CONFIG.fourHAdxFloor : null }
+        : null,
+    },
+    extension: facts.EXTENSION_TIER ? { tier: facts.EXTENSION_TIER.value, distanceAtr: facts.EXTENSION_DISTANCE ? facts.EXTENSION_DISTANCE.value : null, tf: facts.EXTENSION_TIER.tf, anchor: 'TEMA92' } : null,
+    htf: { tf: '1d', relation: facts.HTF_RELATION ? facts.HTF_RELATION.value : 'unknown', counterHtf: !!(ch && ch.eligible), applicable: true },
+    decision: {
+      authorityState: tr ? tr.status : 'unknown',
+      authorityDirection: sit.direction,
+      displayAction: null,
+      blocker: blocker,
+      nextCondition: null,
+      counterHtf: !!(ch && ch.eligible),
+    },
+    facts: facts,
+  };
+}
+
+// ── Technical composer — "what is the 4H chart doing?" ──────────────────
+// Pure function of the normalized context. Never reads d/d.states/d.
+// evaluation/d.regime/d.evidence directly (static invariant — see
+// test_v533b's "no raw d access" check). Deterministic, hand-written
+// per-situation templates (S1-S10, audit §1.1/§2/§3) — not a generic NLG
+// generator, per doctrine ("pure helpers ... not a sprawling framework").
+function composeFourHTechnicalNarrative(ctx) {
+  if (!ctx || ctx.meta.completeness === 'unavailable') {
+    return { headline: 'EVALUATION LIMITED', detail: 'Required 4H trend evidence is unavailable this cycle.', factIds: [], colorCls: 'tech-weak' };
+  }
+  const t = ctx.trend, s = ctx.structure, m = ctx.momentum;
+  const dirLower = t.direction; // 'bullish'|'bearish'|'neutral'
+  const DIR = dirLower === 'bullish' ? 'BULLISH' : dirLower === 'bearish' ? 'BEARISH' : null;
+  const sideWord = dirLower === 'bullish' ? 'above' : 'below';
+  const factIds = [];
+  function use(id) { if (ctx.facts[id]) { factIds.push(id); _narrativeConsume(ctx.facts, id, 'technical'); return ctx.facts[id].value; } return null; }
+  const colorCls = dirLower === 'bullish' ? 'tech-bullish' : dirLower === 'bearish' ? 'tech-bearish' : 'tech-weak';
+
+  switch (t.situationId) {
+    case 'S1': {
+      use('CHOP_STATE');
+      const crossings = use('CHOP_CROSSINGS');
+      const windowBars = s.chop.windowBars || 20;
+      const detail = (crossings != null)
+        ? ('Price has crossed the 200MA ' + crossings + ' times in the last ' + windowBars + ' bars; no regime is holding.')
+        : 'Price is oscillating across the 200MA without a sustained regime.';
+      return { headline: 'CHOPPY ENVIRONMENT', detail: detail, factIds: factIds, colorCls: 'tech-weak' };
+    }
+    case 'S2': {
+      use('MA200_REGIME');
+      return { headline: 'NO REGIME ESTABLISHED', detail: 'Price is too close to the 200MA to honestly call a direction.', factIds: factIds, colorCls: 'tech-weak' };
+    }
+    case 'S3': {
+      use('MA200_REGIME');
+      const utDir = use('UT_DIRECTION');
+      const utWord = 'UT has turned ' + (utDir === 'bullish' ? 'bullish' : utDir === 'bearish' ? 'bearish' : 'against it');
+      const detail = 'Price is ' + sideWord + ' the 200MA, but ' + utWord + ' against the regime.';
+      return { headline: DIR + ' REGIME \u2014 REVERSAL PRESSURE', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S4': {
+      use('MA200_REGIME'); use('MA200_SLOPE');
+      const detail = 'Price is ' + sideWord + ' the 200MA with UT aligned, but the 200MA slope has not yet confirmed.';
+      return { headline: DIR + ' STRUCTURE \u2014 EMERGING', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S5': {
+      use('MA200_REGIME'); use('TEMA_PHASE'); use('UT_DIRECTION');
+      let detail = 'Price is ' + sideWord + ' the 200MA with TEMA and UT aligned.';
+      if (s.intermediateSma) { use('SMA_INTERMEDIATE_SIDE'); detail += ' Intermediate structure is supportive.'; }
+      return { headline: DIR + ' TREND \u2014 ESTABLISHED', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S6': {
+      use('MA200_REGIME'); use('UT_DIRECTION'); use('TEMA_PHASE');
+      const utWord = dirLower === 'bullish' ? 'UT bullish' : 'UT bearish';
+      const temaWord = dirLower === 'bullish' ? 'rotated lower' : 'rotated higher';
+      const detail = 'Price holds ' + sideWord + ' the 200MA with ' + utWord + '; TEMA has ' + temaWord + ' into the retracement.';
+      return { headline: DIR + ' TREND \u2014 PULLBACK', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S7': {
+      use('TEMA_SEPARATION'); use('UT_DIRECTION');
+      const utWord = dirLower === 'bullish' ? 'UT remains bullish' : 'UT remains bearish';
+      const oppWord = dirLower === 'bullish' ? 'bearish' : 'bullish';
+      const detail = 'The ' + oppWord + ' TEMA gap has narrowed for ' + m.tema.consecutiveCount + ' confirmed bars while ' + utWord + '.';
+      return { headline: DIR + ' TREND \u2014 PULLBACK LOSING MOMENTUM', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S8': {
+      use('TEMA_SEPARATION'); use('UT_DIRECTION');
+      const utWord = dirLower === 'bullish' ? 'UT remains bullish' : 'UT remains bearish';
+      const detail = 'The opposing TEMA gap is inside the noise band and still contracting; ' + utWord + '.';
+      return { headline: DIR + ' TREND \u2014 RESUMPTION DEVELOPING', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S9': {
+      use('TEMA_MATURITY'); use('TEMA_SEPARATION'); use('UT_DIRECTION');
+      const detail = 'TEMA has re-crossed ' + dirLower + ' inside the established trend and its separation is expanding again.';
+      return { headline: DIR + ' TREND \u2014 RESUMING', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S10': {
+      use('MA200_REGIME');
+      const utDir = use('UT_DIRECTION');
+      const utWord = 'UT has flipped ' + (utDir === 'bullish' ? 'bullish' : utDir === 'bearish' ? 'bearish' : 'against it');
+      const detail = 'Price is still ' + sideWord + ' the 200MA, but ' + utWord + ' against the confirmed regime.';
+      return { headline: DIR + ' STRUCTURE \u2014 DETERIORATING', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    default:
+      return { headline: 'EVALUATION LIMITED', detail: 'The 4H trend phase could not be classified from current evidence.', factIds: factIds, colorCls: 'tech-weak' };
+  }
+}
+
+// ── Advisory composer — "is it actionable now, and if not, why?" ────────
+// Blocker-only: never restates structure the Technical composer already
+// owns (audit §8 factsUsed invariant — the blocker fact is the one
+// permitted exception, per §8.3). `tseAuth` is the EXISTING, UNTOUCHED
+// _buildFourHTseAuthority(d) result — this composer only decides display
+// TEXT; it never reads/writes authority, action, tradeReady, or routing.
+function composeFourHAdvisoryNarrative(ctx, tseAuth) {
+  const factIds = [];
+  function use(id) { if (ctx && ctx.facts && ctx.facts[id]) { factIds.push(id); _narrativeConsume(ctx.facts, id, 'advisory'); return ctx.facts[id].value; } return null; }
+
+  if (!ctx || ctx.meta.completeness === 'unavailable') {
+    return { displayHeadline: null, detail: 'Required 4H trend evidence is unavailable this cycle. Not actionable.', factIds: [] };
+  }
+
+  const sit = ctx.trend.situationId;
+  const DIR = ctx.trend.direction === 'bullish' ? 'LONG' : ctx.trend.direction === 'bearish' ? 'SHORT' : null;
+
+  if (tseAuth && tseAuth.actionable) {
+    if (tseAuth.counterHtf) {
+      use('HTF_RELATION'); use('HTF_COUNTER');
+      return { displayHeadline: null, detail: 'Entry conditions pass, but the 1D trend opposes. Reduced conviction.', factIds: factIds };
+    }
+    use('TRADE_READY_STATUS');
+    return { displayHeadline: null, detail: 'All entry conditions pass. Size to your risk.', factIds: factIds };
+  }
+
+  if (sit === 'S10') {
+    if (ctx.decision.blocker) factIds.push('TRADE_READY_STATUS');
+    return { displayHeadline: DIR ? ('AVOID ' + DIR) : 'AVOID', detail: 'Trend authority has turned. Wait for UT to realign or the regime to reset.', factIds: factIds };
+  }
+  if (sit === 'S1' || sit === 'S2') {
+    return { displayHeadline: 'WAIT', detail: 'No directional structure to trade. Wait for price to hold one side of the 200MA.', factIds: factIds };
+  }
+  if (sit === 'S3') {
+    return { displayHeadline: 'WAIT', detail: 'The ' + ctx.trend.direction + ' regime is unconfirmed. Wait for trend authority to resolve.', factIds: factIds };
+  }
+  if (sit === 'S4') {
+    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Structure is still forming. Wait for the regime to confirm.', factIds: factIds };
+  }
+
+  const blocker = ctx.decision.blocker;
+  if (blocker) {
+    factIds.push('TRADE_READY_STATUS');
+    let detail;
+    switch (blocker.checkId) {
+      case 'TR2': {
+        const adx = use('ADX_VALUE');
+        const floor = (ctx.quality.adx && ctx.quality.adx.floor != null) ? ctx.quality.adx.floor : (blocker.threshold && blocker.threshold.adx);
+        detail = (adx != null && floor != null)
+          ? ('ADX ' + Math.round(adx) + ' is below the ' + floor + ' floor. Wait for participation to strengthen.')
+          : 'ADX is below the required floor. Wait for participation to strengthen.';
+        break;
+      }
+      case 'TR3':
+        use('EXEC_1H_REGIME');
+        detail = '1H execution structure is not yet aligned. Wait for a cleaner entry regime.';
+        break;
+      case 'TR4':
+        use('EXEC_1H_SMA135');
+        detail = 'Intermediate structure is not yet supportive. Wait for structure to realign.';
+        break;
+      case 'TR5': {
+        const dist = use('EXTENSION_DISTANCE');
+        detail = (dist != null)
+          ? ('1H price is ' + dist.toFixed(1) + ' ATR from TEMA92. Too extended for a fresh entry.')
+          : 'Price is too extended from TEMA92 for a fresh entry.';
+        break;
+      }
+      default:
+        detail = 'Trend phase is not yet eligible for entry.';
+    }
+    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: detail, factIds: factIds };
+  }
+
+  // No hard-failing TR check found (LIMITED_EVALUATION / genuinely unknown
+  // evidence) — fail honest, never a confident directional claim, never the
+  // prohibited "not yet ready" vague fallback.
+  if (sit === 'S7') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'The retracement is slowing but TEMA still opposes. Wait for the cross back.', factIds: factIds };
+  if (sit === 'S8') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'TEMA is close to realigning. Wait for the confirmed cross.', factIds: factIds };
+  if (sit === 'S9') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Execution is realigning with the trend. Wait for entry conditions to confirm.', factIds: factIds };
+  if (sit === 'S6') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Trend intact. Wait for TEMA to turn back with the trend.', factIds: factIds };
+  return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Evaluation is limited this cycle \u2014 required entry evidence is not yet available.', factIds: factIds };
+}
+
+// ── Evidence-strip facts — factual view of the SAME normalized context ──
+// (audit §6/§20 — the strip must never derive its own alternative
+// interpretation from raw d.evaluation/d.regime). N/A only when the
+// underlying fact is genuinely unknown, never merely because legacy
+// ev.tradeBias === 'NEUTRAL'.
+function _fourHNarrativeDotState(ctx) {
+  if (!ctx || ctx.meta.completeness === 'unavailable') return { regimeCls: 'na', htfCls: 'na', temaCls: 'na', utCls: 'na' };
+  const dirWord = ctx.trend.direction;
+  if (dirWord === 'neutral') return { regimeCls: 'na', htfCls: 'na', temaCls: 'na', utCls: 'na' };
+
+  const regimeState = ctx.structure.ma200.regime;
+  let regimeDirWord = 'unknown';
+  if (regimeState === 'confirmed_bullish' || regimeState === 'bullish_transitional') regimeDirWord = 'bullish';
+  else if (regimeState === 'confirmed_bearish' || regimeState === 'bearish_transitional') regimeDirWord = 'bearish';
+  const regimeCls = regimeDirWord === 'unknown' ? 'na' : (regimeDirWord === dirWord ? 'ok' : 'no');
+
+  const htfKey = ctx.htf.relation;
+  let htfCls = 'na';
+  if (htfKey && htfKey !== 'unknown') {
+    const bullishKeys = ['bullish', 'bullish-weak', 'mixed-bullish'];
+    const bearishKeys = ['bearish', 'bearish-weak', 'mixed-bearish'];
+    const htfDirWord = bullishKeys.indexOf(htfKey) !== -1 ? 'bullish' : bearishKeys.indexOf(htfKey) !== -1 ? 'bearish' : 'neutral';
+    htfCls = htfDirWord === 'neutral' ? 'warn' : (htfDirWord === dirWord ? 'ok' : 'no');
+  }
+
+  const temaPhase = ctx.momentum.tema.phase;
+  const temaCls = temaPhase === 'aligned' ? 'ok' : temaPhase === 'opposing' ? 'warn' : 'na';
+
+  const utDirWord = ctx.momentum.ut.direction;
+  const utCls = (!utDirWord || utDirWord === 'unknown') ? 'na' : (utDirWord === dirWord ? 'ok' : 'no');
+
+  return { regimeCls: regimeCls, htfCls: htfCls, temaCls: temaCls, utCls: utCls };
+}
+
+// ── Rollback seams (V5.3.3B) ──────────────────────────────────────────────
+// Declared as DIAG.* assignment statements further below, immediately
+// after `const DIAG = {...}` itself (the codebase's own established
+// pattern for every post-hoc TSE-era flag — e.g. DIAG.fourHTseAuthorityLive
+// — since `const DIAG` is block-scoped and a same-file-earlier assignment
+// would throw a temporal-dead-zone ReferenceError). Search
+// "DIAG.narrativeEngineLive" to find them. Both default false: shadow-only
+// in this build. The composers/context builder above are fully callable
+// (and fully tested) regardless of these flags — only the three render-
+// time call sites (buildTechnicalSummaryHtml, _buildScannerAdvisory's 4H
+// branch, buildDecisionDotsHtml) are gated. Activate only after live
+// shadow review (see delivery report).
+
 // ── Scanner-mode advisory — direct translation of evaluateSetup() output ──
 // No new logic: actionBias already encodes the classification, this only
 // renames enum values to approved display wording.
@@ -9936,12 +10448,36 @@ function _buildScannerAdvisory(d) {
   if (DIAG.fourHTseAuthorityLive === true && d && d.tf === '4h') {
     const _tseAuth = _buildFourHTseAuthority(d);
     if (_tseAuth.engaged) {
+      // TDAS V5.3.3B — Narrative Engine, presentation-only overlay. Computed
+      // once, used by all three branches below. `action`/`direction`/
+      // `tradeReady`/`readyLabel`/`tradeReadyBlockedReasons`/`authoritySource`
+      // are NEVER read from this — they remain sourced from _tseAuth exactly
+      // as in V5.3.3, satisfying the authority/display separation (audit
+      // §5): only `detail`/`summary`/`headline` TEXT may change. A pure
+      // no-op when the flag is off (byte-identical to V5.3.3).
+      let _narrCtx = null, _narrAdv = null;
+      if (DIAG.narrativeEngineLive === true) {
+        try {
+          _narrCtx = buildFourHNarrativeContext(d);
+          _narrAdv = composeFourHAdvisoryNarrative(_narrCtx, _tseAuth);
+        } catch (e) {
+          if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[_buildScannerAdvisory] 4H narrative engine threw, using legacy TSE interpreter', e);
+          _narrCtx = null; _narrAdv = null;
+        }
+      }
       if (_tseAuth.actionable) {
         const _interpReady = _buildFourHTseInterpretation(d.tradeReadyV1TseShadow, d.trendState, d.counterHtfShadow);
         return {
           mode: 'scanner', action: _tseAuth.counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
           headline: _tseAuth.headline,
-          detail: _tseAuth.detail || _interpReady.explanation,
+          detail: _narrAdv ? _narrAdv.detail : (_tseAuth.detail || _interpReady.explanation),
+          // TDAS V5.3.3B note (audit §7): `summary` is confirmed unreachable
+          // — no consumer in the codebase reads advisory.summary; the
+          // rendered Technical-box headline comes from buildTechnicalSumm-
+          // aryHtml()'s own narrative branch above, not from this field.
+          // Left sourced from the pre-existing legacy interpreter (also
+          // dead) rather than adding a second composer call for a field
+          // nothing renders — see delivery report for the reachability audit.
           summary: _interpReady.summary,
           direction: _tseAuth.direction,
           tradeReady: true,
@@ -9966,13 +10502,17 @@ function _buildScannerAdvisory(d) {
       // language now goes through _buildFourHTseInterpretation() rather
       // than printing the raw internal TSE status — see that function's
       // own header for the reused Active Trade interpretation principles
-      // and priority order.
+      // and priority order. TDAS V5.3.3B: when the Narrative Engine flag is
+      // on, `detail`/`summary`/`headline` TEXT are sourced from the
+      // blocker-only Advisory composer instead — `action` stays 'WATCH'
+      // unconditionally either way (untouched CSS/routing; see audit §5).
       const _interp = _buildFourHTseInterpretation(d.tradeReadyV1TseShadow, d.trendState, d.counterHtfShadow);
       const _watchDir = _interp.noDirection ? null : _tseAuth.direction;
       return {
-        mode: 'scanner', action: 'WATCH', headline: _watchDir ? ('WATCH ' + _watchDir) : 'WATCH',
-        detail: _interp.explanation + (_interp.guidance ? ' ' + _interp.guidance : ''),
-        summary: _interp.summary,
+        mode: 'scanner', action: 'WATCH',
+        headline: _narrAdv ? (_narrAdv.displayHeadline || (_watchDir ? ('WATCH ' + _watchDir) : 'WATCH')) : (_watchDir ? ('WATCH ' + _watchDir) : 'WATCH'),
+        detail: _narrAdv ? _narrAdv.detail : (_interp.explanation + (_interp.guidance ? ' ' + _interp.guidance : '')),
+        summary: _interp.summary, // unreachable field — see reachability note above
         direction: _watchDir, tradeReady: false, readyLabel: null,
         supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [_tseAuth.reason],
         next: '', authoritySource: 'tse_4h',
@@ -14017,6 +14557,27 @@ DIAG.fourHTseAuthorityLive = true;
 // every existing live path is completely unaffected either way.
 DIAG.trendStateShadow = true;
 
+// TDAS V5.3.3B — Narrative Engine rollback seams. Both default false:
+// shadow-only in this build. The composers/context builder
+// (buildFourHNarrativeContext/composeFourHTechnicalNarrative/
+// composeFourHAdvisoryNarrative/_fourHNarrativeDotState) are fully callable
+// and fully tested regardless of these flags — only the three render-time
+// call sites (buildTechnicalSummaryHtml, _buildScannerAdvisory's 4H
+// branch, buildDecisionDotsHtml) are gated. When both are false,
+// buildTechnicalSummaryHtml()/_buildScannerAdvisory()/buildDecisionDots-
+// Html() are byte-identical to V5.3.3. Activate only after live shadow
+// review (see delivery report). Rollback: set back to false — no other
+// change required, no state to unwind.
+DIAG.narrativeEngineLive = false;
+DIAG.evidenceStripNarrativeLive = false;
+// TDAS V5.3.3B — read-only, console-only, non-auto-cadence diagnostic
+// comparing 1H d.trendState (already computed today; TSE authority NOT
+// engaged on 1H) against legacy 1H d.evaluation.tradeBias/actionBias. No
+// UI, no persistence, no network, no actionability change. Prepares
+// Category A/B fixtures for the future V5.3.4 standalone-1H-authority
+// migration (see audit §A.5). Rollback: set to false to stop the census.
+DIAG.oneHAdvisoryAxisCensus = true;
+
 // ── Diagnostics accessor ────────────────────────────────────────────────────
 // Deliberately NOT wired into openAnalysisPanel() or any render path — the
 // ordinary Full Analysis view is byte-unchanged by this build. Pure,
@@ -14660,6 +15221,86 @@ function buildTradeReadyV1TseShadowHtml(d) {
     + 'TSE TR V1: ' + tse.status + ' / ' + (tse.direction || 'unavailable') + '\n'
     + 'Difference: ' + (disagreement ? disagreement.class : 'n/a') + '\n'
     + 'Ruleset: ' + tse.rulesetVersion + ' (TSE source: ' + (tse.tseRulesetVersion || 'n/a') + ')';
+}
+
+// ── TDAS V5.3.3B — 4H Narrative Engine shadow diagnostic ────────────────────
+// Full-Analysis-only, diagnostic-only. Deliberately does NOT depend on
+// DIAG.narrativeEngineLive/DIAG.evidenceStripNarrativeLive — it must be
+// visible so the owner can validate the shadow output BEFORE flipping
+// either flag (that is the entire point of this section). Reuses the
+// existing Narrative Engine verbatim: buildFourHNarrativeContext(),
+// composeFourHTechnicalNarrative(), composeFourHAdvisoryNarrative() — no
+// second interpreter, no re-derivation. The resolved Advisory headline
+// mirrors _buildScannerAdvisory()'s own inline resolution rule exactly
+// (tseAuth.actionable ? tseAuth.headline : adv.displayHeadline) — every
+// non-"unavailable" composeFourHAdvisoryNarrative() branch always returns
+// a non-null displayHeadline (see that function), so this two-way
+// resolution is provably equivalent to the production wiring without
+// needing to flip any DIAG flag or call the render-time functions a
+// second time. Never mutates `d`. Never mutates any DIAG flag.
+function buildNarrativeShadowHtml(d, advisory) {
+  if (!d || d.tf !== '4h') return '';
+  if (typeof buildFourHNarrativeContext !== 'function' || typeof composeFourHTechnicalNarrative !== 'function' || typeof composeFourHAdvisoryNarrative !== 'function') return '';
+
+  const tseAuth = (typeof _buildFourHTseAuthority === 'function') ? _buildFourHTseAuthority(d) : { engaged: false, actionable: false };
+  let ctx = null;
+  try { ctx = buildFourHNarrativeContext(d); } catch (e) { ctx = null; }
+
+  // "Current Technical" is genuinely absent elsewhere in Full Analysis
+  // today (only the Advisory is already shown, in the "TDAS Advisory"
+  // section above via the exact same buildAdvisory() the card calls — not
+  // duplicated here). Reused verbatim via the exact same
+  // buildTechnicalSummaryHtml(d) the card calls; HTML tags stripped for a
+  // clean copy/paste line. Reflects whatever DIAG.narrativeEngineLive
+  // ACTUALLY is right now — no flag manipulation.
+  let currentTechnicalText = '(unavailable)';
+  try {
+    const rawHtml = (typeof buildTechnicalSummaryHtml === 'function') ? buildTechnicalSummaryHtml(d) : '';
+    currentTechnicalText = rawHtml.replace(/<\/div>/, '</div> \u2014 ').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() || '(unavailable)';
+  } catch (e) { currentTechnicalText = '(unavailable)'; }
+  const _currentBlock = '\n\n=== CURRENT CARD PRESENTATION \u2014 TECHNICAL ===\n'
+    + currentTechnicalText + '\n'
+    + '(Current Advisory: see "TDAS Advisory" section above \u2014 not duplicated here)';
+
+  if (!ctx || ctx.meta.completeness === 'unavailable') {
+    const reason = !d.trendState ? 'd.trendState not computed for this card'
+      : (Array.isArray(d.trendState.blockers) && d.trendState.blockers.length) ? d.trendState.blockers.join(', ')
+      : 'TSE evidence incomplete';
+    return _currentBlock + '\n\n=== V5.3.3B NARRATIVE SHADOW ===\n'
+      + 'Status: unavailable\n'
+      + 'Reason: ' + reason;
+  }
+
+  const tech = composeFourHTechnicalNarrative(ctx);
+  const adv = composeFourHAdvisoryNarrative(ctx, tseAuth);
+  const resolvedHeadline = (tseAuth && tseAuth.actionable) ? (tseAuth.headline || 'TRADE READY') : (adv.displayHeadline || 'WATCH');
+  const resolvedDetail = adv.detail;
+
+  const factLine = (id) => {
+    const f = ctx.facts[id];
+    if (!f) return id + ' = (not captured)';
+    const val = (typeof f.value === 'object' && f.value !== null) ? JSON.stringify(f.value) : String(f.value);
+    return id + ' = ' + val + ' [' + (f.tf || '?') + ' / ' + (f.source || '?') + ']';
+  };
+  const techFactsBlock = tech.factIds.length ? tech.factIds.map(id => '  ' + factLine(id)).join('\n') : '  (none)';
+  const advFactsBlock = adv.factIds.length ? adv.factIds.map(id => '  ' + factLine(id)).join('\n') : '  (none)';
+
+  const blocker = ctx.decision.blocker;
+  const blockerLine = blocker
+    ? blocker.checkId + (blocker.reasonCode ? ' (' + blocker.reasonCode + ')' : '')
+      + (blocker.raw && Object.keys(blocker.raw).length ? ' \u2014 observed: ' + JSON.stringify(blocker.raw) : '')
+      + (blocker.threshold && Object.keys(blocker.threshold).length ? ' \u2014 threshold: ' + JSON.stringify(blocker.threshold) : '')
+    : '(none \u2014 no failing TR check)';
+
+  return _currentBlock + '\n\n=== V5.3.3B NARRATIVE SHADOW ===\n'
+    + 'Situation: ' + ctx.trend.situationId + ' \u2014 ' + ctx.trend.phase + (ctx.trend.phaseModifier ? ' (' + ctx.trend.phaseModifier + ')' : '') + '\n'
+    + 'Authority: ' + ctx.decision.authorityState + (ctx.decision.authorityDirection ? ' ' + ctx.decision.authorityDirection : '') + '\n'
+    + 'Display Action: ' + resolvedHeadline + '\n'
+    + 'Technical:\n  ' + tech.headline + '\n  ' + tech.detail + '\n'
+    + 'Advisory:\n  ' + resolvedHeadline + '\n  ' + resolvedDetail + '\n'
+    + 'Decisive Blocker:\n  ' + blockerLine + '\n'
+    + 'Technical Facts:\n' + techFactsBlock + '\n'
+    + 'Advisory Facts:\n' + advFactsBlock;
 }
 
 // ── Local shadow logging ─────────────────────────────────────────────────────
@@ -18400,6 +19041,30 @@ function _joinNames(names){
 // Do not delete this legacy function; do not remove the legacy CSS
 // classes (tech-bullish/tech-bearish/tech-mixed/tech-conflicted) it uses.
 function buildTechnicalSummaryHtml(d){
+  // TDAS V5.3.3B — 4H Narrative Engine, leading branch. When engaged, this
+  // is the ONLY visible Technical-box authority for a 4H card — no fall
+  // through to the legacy MarketEvidence model below for ANY outcome
+  // (situation classified, or fail-honest EVALUATION LIMITED), per audit
+  // §33 "no hidden legacy fallback once the 4H Narrative Engine is
+  // engaged". 1H/other timeframes are completely unaffected: this branch
+  // is a pure no-op whenever d.tf !== '4h' (falls through unchanged to the
+  // exact V5.3.3 legacy path below).
+  if (DIAG.narrativeEngineLive === true && d && d.tf === '4h') {
+    let narrModel;
+    try {
+      const ctx = buildFourHNarrativeContext(d);
+      const tech = composeFourHTechnicalNarrative(ctx);
+      narrModel = { label: tech.headline, detail: tech.detail, colorCls: tech.colorCls };
+    } catch (e) {
+      if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildTechnicalSummaryHtml] 4H narrative engine threw, failing honest', e);
+      narrModel = { label: 'EVALUATION LIMITED', detail: 'Required 4H trend evidence is unavailable this cycle.', colorCls: 'tech-weak' };
+    }
+    return '<div class="tdas-techsummary-block '+narrModel.colorCls+'">'
+      + '<div class="tdas-techsummary-label">'+narrModel.label+'</div>'
+      + '<div class="tdas-techsummary-detail">'+narrModel.detail+'</div>'
+      + '</div>';
+  }
+
   let model;
   const ev = d && d.evidence;
   const hasUsableEvidence = ev && typeof ev === 'object'
@@ -18714,6 +19379,29 @@ function buildDecisionDotsHtml(d){
   }
 
   let regimeCls='na', htfCls='na', temaCls='na', utCls='na';
+
+  // TDAS V5.3.3B — 4H evidence-strip narrative override (audit §6/§19/§20).
+  // Deliberately does NOT depend on `hasBias` (legacy ev.tradeBias) at all
+  // when engaged — a TSE Trade Ready/Watch card must not render meaningless
+  // N/A dots merely because the legacy classifier has no bias (the source-
+  // proven "blank strip" hazard the audit identified). No-op for any
+  // non-4H card, or when the flag is off — falls through unchanged to the
+  // exact V5.3.3 legacy dots logic below.
+  if (DIAG.evidenceStripNarrativeLive === true && d && d.tf === '4h') {
+    try {
+      const _stripCtx = buildFourHNarrativeContext(d);
+      const _dots = _fourHNarrativeDotState(_stripCtx);
+      return '<div class="dot-row dot-row-lg">'
+        + item(_dots.regimeCls,'Regime') + item(_dots.htfCls,'HTF')
+        + item(_dots.temaCls,'TEMA') + item(_dots.utCls,'UT')
+        + '</div>';
+    } catch (e) {
+      if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildDecisionDotsHtml] 4H narrative strip threw, degrading to all-na', e);
+      return '<div class="dot-row dot-row-lg">'
+        + item('na','Regime') + item('na','HTF') + item('na','TEMA') + item('na','UT')
+        + '</div>';
+    }
+  }
 
   if(hasBias){
     const reg = d.regime || {};
@@ -21054,6 +21742,16 @@ function openAnalysisPanel(request){
       ) + '</pre>'
     : '';
 
+  // TDAS V5.3.3B — 4H Narrative Engine shadow diagnostic. 4H only (the
+  // function itself self-guards on d.tf==='4h' too — belt and braces).
+  // Deliberately NOT gated on DIAG.narrativeEngineLive/DIAG.evidenceStrip-
+  // NarrativeLive: this section must be visible for validation BEFORE
+  // either flag is flipped, which is the entire purpose of this task.
+  // Same additive, non-mutating pattern as every shadow section above.
+  const _narrativeShadowHtml = (d.tf === '4h' && typeof buildNarrativeShadowHtml === 'function')
+    ? '<pre style="white-space:pre-wrap;font-family:inherit;font-size:12px;color:var(--text2);margin:0;">' + buildNarrativeShadowHtml(d, _advisory) + '</pre>'
+    : '';
+
   // TDAS V4.9.10 — remaining sections precomputed as standalone template
   // literals (same pattern as _tcHtml/_evalHtml/_lifecycleHtml/_advisoryHtml
   // above), each passed through the shared _apSectionWrap() helper. Same
@@ -21140,6 +21838,7 @@ function openAnalysisPanel(request){
     ${_marketEvidenceTseHtml}
     ${_tradeReadyV1TseHtml}
     ${_counterHtfShadowHtml}
+    ${_narrativeShadowHtml}
     ${_signalSummaryHtml}
     ${_lifecycleHtml}
     ${_evalHtml}
@@ -27092,6 +27791,9 @@ async function runScan(auto){
     }
     if (DIAG.tradeReadyV1TseShadow) {
       try{ _runTradeReadyV1TseShadowCensus(PAIRS, tf); }catch(err){ console.warn('[V5.2.2 trade ready tse shadow] census failed (non-fatal, diagnostic only):', err); }
+    }
+    if (DIAG.oneHAdvisoryAxisCensus) {
+      try{ _runOneHTseAdvisoryAxisCensus(PAIRS, tf); }catch(err){ console.warn('[V5.3.3B 1H advisory axis census] failed (non-fatal, diagnostic only):', err); }
     }
 
     // TDAS V5.0.0H7 — two fixed directional lanes (Short left, Long right
