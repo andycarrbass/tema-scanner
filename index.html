@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.3.3B';
+const APP_BUILD = 'V5.4.0A';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9447,8 +9447,8 @@ function composeFourHTechnicalNarrative(ctx) {
       const crossings = use('CHOP_CROSSINGS');
       const windowBars = s.chop.windowBars || 20;
       const detail = (crossings != null)
-        ? ('Price has crossed the 200MA ' + crossings + ' times in the last ' + windowBars + ' bars; no regime is holding.')
-        : 'Price is oscillating across the 200MA without a sustained regime.';
+        ? ('Price has crossed the 200MA ' + crossings + ' times in the last ' + windowBars + ' bars; no sustained directional regime has formed.')
+        : 'Price is oscillating across the 200MA; no sustained directional regime has formed.';
       return { headline: 'CHOPPY ENVIRONMENT', detail: detail, factIds: factIds, colorCls: 'tech-weak' };
     }
     case 'S2': {
@@ -9456,15 +9456,29 @@ function composeFourHTechnicalNarrative(ctx) {
       return { headline: 'NO REGIME ESTABLISHED', detail: 'Price is too close to the 200MA to honestly call a direction.', factIds: factIds, colorCls: 'tech-weak' };
     }
     case 'S3': {
+      // TDAS V5.4.0A — UT temporal wording now reflects the SAME freshness
+      // fact already carried on `ts` (UT_FRESHNESS/ts.utBarsSinceFlip),
+      // reusing the single central classifyUtFreshness() bucketing already
+      // used elsewhere in this file (no new threshold invented here). A
+      // genuinely fresh flip (classifyUtFreshness key 'fresh') reads "has
+      // turned"; any older-but-still-opposing UT state (recent/mature/
+      // stale/unknown-bars) reads "remains" — never claims a stale UT
+      // state just "turned" this cycle.
       use('MA200_REGIME');
       const utDir = use('UT_DIRECTION');
-      const utWord = 'UT has turned ' + (utDir === 'bullish' ? 'bullish' : utDir === 'bearish' ? 'bearish' : 'against it');
-      const detail = 'Price is ' + sideWord + ' the 200MA, but ' + utWord + ' against the regime.';
+      const utBars = use('UT_FRESHNESS');
+      const isFresh = (typeof classifyUtFreshness === 'function') && classifyUtFreshness(utBars).key === 'fresh';
+      const utWord = utDir === 'bullish' ? 'bullish' : utDir === 'bearish' ? 'bearish' : 'against it';
+      const utPhrase = (isFresh ? 'UT has turned ' : 'UT remains ') + utWord;
+      const detail = 'Price is ' + sideWord + ' the 200MA, but ' + utPhrase + ' against the regime.';
       return { headline: DIR + ' REGIME \u2014 REVERSAL PRESSURE', detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S4': {
       use('MA200_REGIME'); use('MA200_SLOPE');
-      const detail = 'Price is ' + sideWord + ' the 200MA with UT aligned, but the 200MA slope has not yet confirmed.';
+      const utDir = use('UT_DIRECTION');
+      const utWord = utDir === 'bullish' ? 'UT bullish' : utDir === 'bearish' ? 'UT bearish' : 'UT aligned';
+      const slopeWord = dirLower === 'bullish' ? 'has not yet turned up' : dirLower === 'bearish' ? 'has not yet turned down' : 'has not yet confirmed';
+      const detail = 'Price is ' + sideWord + ' the 200MA with ' + utWord + ', but the 200MA slope ' + slopeWord + '.';
       return { headline: DIR + ' STRUCTURE \u2014 EMERGING', detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S5': {
@@ -14606,8 +14620,14 @@ DIAG.trendStateShadow = true;
 // Html() are byte-identical to V5.3.3. Activate only after live shadow
 // review (see delivery report). Rollback: set back to false — no other
 // change required, no state to unwind.
-DIAG.narrativeEngineLive = false;
-DIAG.evidenceStripNarrativeLive = false;
+//
+// TDAS V5.4.0A — 4H Narrative Presentation Activation. Both flags now
+// live for 4H. Standalone 1H is untouched — every gated call site above
+// checks d.tf==='4h' first, so this activation has zero effect on 1H
+// presentation. Rollback: set both back to false — no other change
+// required, no state to unwind (see V5.4.0A delivery report).
+DIAG.narrativeEngineLive = true;
+DIAG.evidenceStripNarrativeLive = true;
 // TDAS V5.3.3B — read-only, console-only, non-auto-cadence diagnostic
 // comparing 1H d.trendState (already computed today; TSE authority NOT
 // engaged on 1H) against legacy 1H d.evaluation.tradeBias/actionBias. No
@@ -15896,6 +15916,22 @@ function buildV51SharedPipelineShadow(legacyBundle, confirmedBundle, symbol, tf,
   // Minimal d-shaped wrappers — exactly the fields buildAdvisory()/
   // buildTechnicalSummaryHtml()/buildAuthoritativeSortKey() actually read
   // (per v51SharedPipelineFieldMap()), nothing more.
+  //
+  // TDAS V5.4.0A note: with DIAG.narrativeEngineLive now live in
+  // production, buildTechnicalSummaryHtml() for a tf==='4h' wrapper here
+  // is now Narrative-Engine-owned and requires d.trendState (not supplied
+  // by either wrapper below, by design — this comparator only carries the
+  // legacy live-vs-confirmed indicator/evaluation bundle fields, never
+  // TSE state). Both legacyTechSummary/confirmedTechSummary therefore now
+  // fail honest identically ("EVALUATION LIMITED") for 4H, so the
+  // 'technicalSummaryHtml'/TECHNICAL_SUMMARY_TEXT_DIFFERS comparison below
+  // can no longer detect a real legacy-vs-confirmed 4H text disagreement.
+  // This is an accepted, foreseeable consequence of the approved V5.4.0A
+  // activation (same "no hidden legacy fallback once engaged" doctrine as
+  // the live Technical box itself) — not a change to this function's own
+  // logic, and not a TSE/Advisory/TR/lifecycle regression: every other
+  // field comparison below (regime/TEMA/evaluation/advisory/sort/score)
+  // is completely unaffected and still detects genuine divergence.
   const legacyD = { states: legacyBundle.states, regime: legacyBundle.regime, evaluation: legacyBundle.evaluation, evidence: legacyBundle.evidence, authoritativeClassification: legacyBundle.authoritativeClassification, signal: legacyBundle.signal, symbol, tf };
   const confirmedD = { states: confirmedBundle.states, regime: confirmedBundle.regime, evaluation: confirmedBundle.evaluation, evidence: confirmedBundle.evidence, authoritativeClassification: confirmedBundle.authoritativeClassification, signal: confirmedBundle.signal, symbol, tf };
 
