@@ -2149,7 +2149,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0A';
+const APP_BUILD = 'V5.4.0D';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9155,26 +9155,37 @@ function _isFourHTseActionable(d) {
 // answered elsewhere (Trade Ready badge/checklist), never conflated here.
 // Same self-gating as its sibling: 4H only, flag-gated, never touches
 // d.signal, never touches TR1-5, never touches strategy.
-function _isFourHTseDirectional(d) {
-  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') return false;
-  const auth = _buildFourHTseAuthority(d);
-  return !!(auth && auth.engaged && auth.direction);
+//
+// TDAS V5.4.0D — DELETED. The two V5.3.3B rescue helpers this section
+// used to define, _isFourHTseDirectional() and _fourHTseLaneDirection(),
+// were confirmed to have zero external executable callers in the V5.4.0C
+// delivery report (only their own definitions and each other's internal
+// self-call) and are removed here per owner doctrine §3A. Every
+// production consumer reads _fourHCanonicalLaneDirection()/
+// _fourHCanonicalIsDirectional() below instead, unchanged.
+//
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.0C — Canonical 4H direction authority (owner doctrine §9,     ║
+// ║  §24). Reads ONLY d.eval.lifecycle.laneDirection — already resolved by  ║
+// ║  resolveCanonicalLifecycle() from d.eval.technicalState.direction; no   ║
+// ║  re-derivation, no independent classification here. NEVER falls back    ║
+// ║  to d.signal for 4H — if canonical lifecycle is unavailable, fails      ║
+// ║  honest to 'neutral' rather than silently resurrecting legacy           ║
+// ║  authority (no fallback chain, owner doctrine §24). Standalone 1H is    ║
+// ║  completely untouched: returns d.signal unchanged, exactly as every     ║
+// ║  4H-gated helper in this codebase already does for 1H.                  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function _fourHCanonicalLaneDirection(d) {
+  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') return (d && d.signal) || 'neutral';
+  const lane = d.eval && d.eval.lifecycle && d.eval.lifecycle.laneDirection;
+  return lane || 'neutral';
 }
-
-// TDAS V5.3.3B (ADA routing-authority correction) — the LONG/SHORT lane a
-// rescued card belongs in. For an ordinary legacy-directional card
-// (d.signal!=='neutral') this simply returns d.signal, unchanged. For a
-// card only reachable via _isFourHTseDirectional() (legacy neutral, TSE
-// engaged+directional), the lane is TSE's OWN direction — d.signal itself
-// is never read as a direction SOURCE in that case, only as the (already
-// 'neutral') value that made the rescue necessary. Never mutates d.signal.
-function _fourHTseLaneDirection(d) {
-  if (d && d.signal && d.signal !== 'neutral') return d.signal;
-  if (_isFourHTseDirectional(d)) {
-    const auth = _buildFourHTseAuthority(d);
-    return auth.direction === 'LONG' ? 'long' : auth.direction === 'SHORT' ? 'short' : 'neutral';
-  }
-  return (d && d.signal) || 'neutral';
+// Convenience predicate for the "is this card directional" checks that
+// used to read `d.signal !== 'neutral'` (or the deleted
+// _isFourHTseDirectional() rescue helper) — same canonical source as
+// above, same 1H passthrough.
+function _fourHCanonicalIsDirectional(d) {
+  return _fourHCanonicalLaneDirection(d) !== 'neutral';
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -10825,6 +10836,243 @@ function _buildScannerAdvisory(d) {
     tradeReadyBlockedReasons: _tradeReadyBlockedReasons,
     next,
   };
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.0B — Canonical d.eval Dual-Population (ASSEMBLY/PROOF ONLY)   ║
+// ║                                                                          ║
+// ║  Doctrine: one technical authority (TSE), one decision authority        ║
+// ║  (Advisory), Trade Ready a validated branch of Advisory (never a peer   ║
+// ║  authority), market meaning computed once. buildCanonicalEval() copies  ║
+// ║  already-computed authoritative conclusions onto one canonical object — ║
+// ║  it NEVER reclassifies, reinterprets raw evidence, introduces a new     ║
+// ║  direction resolver, invents/alters a threshold, or adds new Trade      ║
+// ║  Ready/lifecycle rules. Every non-null field below is a direct          ║
+// ║  reference/copy of an existing authoritative result; every null field   ║
+// ║  is a deliberate, documented V5.4.0B transitional gap (see the V5.4.0B  ║
+// ║  delivery report for the full rationale on each).                       ║
+// ║                                                                          ║
+// ║  ABSOLUTE ZERO-CONSUMER RULE (V5.4.0B): nothing in production may read  ║
+// ║  d.eval yet. It is constructed and attached to d for inspection by      ║
+// ║  tests/diagnostics only — Scanner routing/visibility/lanes, counts,     ║
+// ║  Setups, Watch, Trade, Full Analysis, Journal, alerts, risk geometry,   ║
+// ║  Narrative/Advisory rendering, and sorting all remain completely        ║
+// ║  untouched and continue reading their existing V5.4.0A source fields    ║
+// ║  directly. See test_v540b_canonical_eval.js section [Z] for the static  ║
+// ║  architectural proof.                                                   ║
+// ║                                                                          ║
+// ║  4H ONLY (owner doctrine §15): canonical 4H architecture must be        ║
+// ║  established before any standalone-1H migration. A non-4H `d` still     ║
+// ║  gets a d.eval object for shape consistency, but every member stays     ║
+// ║  null/'not_applicable_tf' so 1H can never be mistaken for canonicalised ║
+// ║  TSE authority.                                                         ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function buildCanonicalEval(d, symbol, entry) {
+  const tf = d && d.tf;
+  const ts = d && d.trendState;
+
+  if (tf !== '4h') {
+    return {
+      meta: {
+        tf: tf || null, symbol: symbol || null, confirmedBarId: null,
+        rulesetVersion: TREND_STATE_RULESET_VERSION, completeness: 'not_applicable_tf',
+      },
+      evidence: null, technicalState: null, advisoryState: null, lifecycle: null,
+    };
+  }
+
+  const v51 = d.v51Evidence || null;
+  // Same confirmed-bar-identity access pattern already established by
+  // buildV51SharedPipelineShadow() — no new confirmed-bar concept invented.
+  const confirmedBarId = (v51 && v51.confirmedBars && v51.confirmedBars.setup)
+    ? v51.confirmedBars.setup.barId : null;
+  const tsIncomplete = !ts || (Array.isArray(ts.blockers) && ts.blockers.indexOf('TSE_EVIDENCE_INCOMPLETE') !== -1);
+
+  const meta = {
+    tf, symbol: symbol || null, confirmedBarId,
+    // Reuses TSE's own existing ruleset version string — no new version
+    // namespace introduced (owner doctrine §13).
+    rulesetVersion: TREND_STATE_RULESET_VERSION,
+    completeness: tsIncomplete ? 'unavailable' : 'complete',
+  };
+
+  // ── evidence — direct reference to the existing V5.1 factual evidence
+  // layer. Never reshaped, never reinterpreted (owner doctrine §6).
+  const evidence = v51;
+
+  // ── technicalState — TSE's own authoritative concepts only.
+  //
+  // `situationId` is DELIBERATELY OMITTED (owner doctrine §7). The only
+  // existing function that produces an S1-S10 situation id
+  // (_fourHNarrativeSituation(), inside the 4H Narrative Engine section) is
+  // presentation-layer classification — it subdivides PULLBACK into
+  // S6/S7/S8/S9 using TEMA separation trajectory/consecutive-count facts
+  // that trendState itself never exposes as a phase concept. Copying it
+  // here would make Narrative a second technical authority. Left null;
+  // decision reported to architecture review.
+  //
+  // `phase` is also left null: trendState exposes exactly ONE phase/state
+  // concept (`state`, mapped below) — inventing a second, distinct `phase`
+  // value would fabricate a distinction TSE itself does not make.
+  const technicalState = ts ? {
+    direction: ts.direction,
+    state: ts.state,
+    regime: ts.regimeState,
+    phase: null,
+    modifiers: { reasons: ts.reasons, cautions: ts.cautions, blockers: ts.blockers },
+    situationId: null,
+  } : null;
+
+  // ── advisoryState — the sole decision-authority representation. Calls
+  // the SAME existing, unmodified _buildScannerAdvisory(d) the live
+  // Scanner card render path already calls, with the same already-final d
+  // (trendState/tradeReadyV1TseShadow/counterHtfShadow are all already
+  // computed and frozen for this cycle by this point in calcPair()) — this
+  // is a redundant-but-byte-identical SECOND call in V5.4.0B (assembly/
+  // proof phase only, zero consumers read the result yet); V5.4.0C is
+  // where the render path is repointed to consume d.eval instead and this
+  // redundancy is removed, satisfying "market meaning computed exactly
+  // once" for the FINAL architecture. Never re-derives action/direction —
+  // only copies _buildScannerAdvisory()'s own already-authoritative output.
+  let _advForEval = null;
+  try { _advForEval = _buildScannerAdvisory(d); } catch (_evalAdvErr) { _advForEval = null; }
+  const tr = d.tradeReadyV1TseShadow || null;
+  const advisoryState = {
+    action: _advForEval ? _advForEval.action : null,
+    direction: _advForEval ? _advForEval.direction : null,
+    // Trade Ready nested inside Advisory as validation — never a sibling
+    // authority (owner doctrine §8, Trade Ready nesting).
+    validation: {
+      status: tr ? tr.status : null,
+      checks: tr ? tr.checks : null,
+      // `blocker`/`nextCondition` intentionally left null. The only
+      // existing computation of "which TR check is the blocker" lives
+      // inside the 4H Narrative Engine's context builder
+      // (buildFourHNarrativeContext().decision.blocker) — presentation-
+      // layer per architecture doctrine. `nextCondition` is itself a
+      // hardcoded null placeholder in that same existing object today (no
+      // authoritative non-presentation source produces it yet). Reaching
+      // into Narrative for either risks making it a second decision
+      // authority; left transitional and reported to architecture review.
+      blocker: null,
+      nextCondition: null,
+    },
+    counterHtf: d.counterHtfShadow || null,
+    reasons: (_advForEval && _advForEval.tradeReadyBlockedReasons) ? _advForEval.tradeReadyBlockedReasons : [],
+  };
+
+  // ── lifecycle — INTENTIONALLY entirely transitional in V5.4.0B (owner
+  // doctrine §10, extra caution). No existing single authoritative source
+  // produces destination/ownership/visible/laneDirection as one coherent
+  // canonical result today — these are currently decided by several
+  // separate render-time-only helpers (_isFourHTseActionable(),
+  // _isFourHTseDirectional(), _fourHTseLaneDirection(), the Scanner
+  // ownership resolver) that owner doctrine explicitly forbids copying
+  // into d.eval in this build. Populating this here would require either
+  // reimplementing Scanner routing logic (forbidden — "no new logic") or
+  // treating render-time-only helpers as if they were canonical authority
+  // (also forbidden). Deferred to V5.4.0C.
+  //
+  // NOTE: d.lifecycle (classifyLifecycle()'s own result, already computed
+  // earlier this same calcPair() call) is a DIFFERENT, unrelated concept —
+  // Journal/Active-Trade lifecycle state (HOLD/REDUCE/PREPARE_EXIT/CLOSE/
+  // JOURNALLED/etc.), not Scanner card ownership/routing — and is
+  // deliberately NOT reused here, to avoid conflating the two homonymous
+  // "lifecycle" ideas that happen to share a name in this codebase.
+  //
+  // TDAS V5.4.0C — canonical lifecycle is now RESOLVED (was hardcoded null
+  // in V5.4.0B). See resolveCanonicalLifecycle()'s own header for the full
+  // routing doctrine.
+  const lifecycle = resolveCanonicalLifecycle(d, { meta, evidence, technicalState, advisoryState }, entry);
+
+  return { meta, evidence, technicalState, advisoryState, lifecycle };
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.0C — Canonical 4H Lifecycle Resolver (owner doctrine §4-§7)   ║
+// ║                                                                          ║
+// ║  Pure. Consumes ONLY already-canonical results (evalState.technicalState║
+// ║  / evalState.advisoryState) plus already-persisted ownership state      ║
+// ║  passed in by the caller: `openTrade` (symbol-wide — resolveJournal-    ║
+// ║  Entry()'s own openTrade, the SAME symbol-wide semantics                ║
+// ║  isScannerSymbolSuppressed()/classifyLifecycle() already use for Active ║
+// ║  Trade — one open trade suppresses every timeframe for that symbol,     ║
+// ║  documented existing doctrine) and `hasWatchOwnership` (a BOOLEAN,      ║
+// ║  sourced by the caller from isExactSymbolTfWatched(symbol, '4h') — the  ║
+// ║  ONE already-authoritative, already-TF-EXACT Watch predicate            ║
+// ║  isScannerSymbolSuppressed() itself already uses, deliberately NOT the  ║
+// ║  symbol-only resolveJournalEntry().openWatch, which was audited and     ║
+// ║  found to ignore timeframe entirely — a 1H Watch record would have      ║
+// ║  incorrectly routed a 4H Setups-demotion candidate to 'watch'. See the  ║
+// ║  V5.4.0C delivery report §1 for the full audit trail).                  ║
+// ║                                                                          ║
+// ║  NEVER reads TEMA/UT/ADX/200MA/SMA/RSI/ATR/raw candles, NEVER calls      ║
+// ║  evaluateSetup()/reads legacy tradeBias/actionBias, NEVER reads         ║
+// ║  d.signal as technical or decision authority. Advisory WATCH alone can  ║
+// ║  never create Watch ownership (owner doctrine §3) — Watch is a          ║
+// ║  user-activated upgrade; this resolver only ever READS existing Watch   ║
+// ║  ownership (via the boolean above), never creates it.                   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function resolveCanonicalLifecycle(d, evalState, persistedContext) {
+  const tf = d && d.tf;
+  if (tf !== '4h' || !evalState) {
+    return { destination: null, ownership: null, visible: null, laneDirection: null };
+  }
+  const ctx = persistedContext || {};
+  const openTrade = ctx.openTrade || null;
+  const hasWatchOwnership = !!ctx.hasWatchOwnership;
+
+  // E. Active Trade suppression — highest priority, symbol-level. One
+  // active trade per symbol suppresses every other 4H entry-side
+  // representation for that symbol — existing settled product rule,
+  // preserved exactly (see isScannerSymbolSuppressed()). d.eval is never
+  // fed INTO active-trade management — this is the one permitted
+  // direction of interaction (existing ownership -> suppression), not the
+  // reverse.
+  if (openTrade) {
+    return { destination: null, ownership: 'active_trade', visible: false, laneDirection: null };
+  }
+
+  const ts = evalState.technicalState;
+  if (!ts) {
+    // Canonical technicalState unavailable/incomplete (owner doctrine
+    // §21) — fail conservative, never synthesize direction from d.signal.
+    return { destination: 'scanner', ownership: 'scanner', visible: true, laneDirection: null };
+  }
+  const tsDir = ts.direction === 'LONG' ? 'long' : ts.direction === 'SHORT' ? 'short' : 'neutral';
+
+  const adv = evalState.advisoryState;
+  const tradeReady = !!(adv && (adv.action === 'TRADE_READY' || adv.action === 'COUNTER_HTF') && (adv.direction === 'LONG' || adv.direction === 'SHORT'));
+
+  // C. Trade Ready promotion — automatic, from either origin (Scanner or
+  // Watch); applies identically whether or not a Watch record currently
+  // exists for this candidate.
+  if (tradeReady) {
+    const advDir = adv.direction === 'LONG' ? 'long' : 'short';
+    return { destination: 'setups', ownership: 'setups', visible: true, laneDirection: advDir };
+  }
+
+  // B/D. Not (or no longer) Trade Ready. Existing persisted, TF-EXACT
+  // Watch ownership (hasWatchOwnership, sourced from
+  // isExactSymbolTfWatched(symbol,'4h') by the caller) is the origin-aware
+  // signal used for both fresh WATCH-worthy Scanner candidates that
+  // already have a 4H Watch record AND for a candidate demoted out of
+  // Setups: still has an open 4H Watch record -> returns to Watch,
+  // preserving Watch history; never had 4H Watch ownership (pure Scanner
+  // origin, or only ever watched on a DIFFERENT timeframe) -> returns to
+  // Scanner. This reuses ALREADY-EXISTING, ALREADY-TF-EXACT persisted
+  // state rather than inventing a new origin field (owner doctrine §6 —
+  // d.eval is not a history database).
+  if (hasWatchOwnership) {
+    return { destination: 'watch', ownership: 'watch', visible: true, laneDirection: tsDir };
+  }
+
+  // A/F. Scanner-owned default — WAIT/WATCH/AVOID/neutral, all live on
+  // Scanner. A WATCH Advisory alone never creates Watch ownership (owner
+  // doctrine §3 — Advisory WATCH is a system recommendation, not
+  // user-activated ownership; only existing TF-exact Watch ownership,
+  // checked above, routes here to 'watch').
+  return { destination: 'scanner', ownership: 'scanner', visible: true, laneDirection: tsDir };
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -18033,6 +18281,49 @@ async function calcPair(symbol,tf){
   // else: _result already holds the complete legacy bundle from (3) —
   // nothing further to assign.
 
+  // ── TDAS V5.4.0C — 4H Risk-Geometry Authority Consolidation ──────────────
+  // NOT a new direction classifier and NOT a workaround — consumes the SAME
+  // existing TSE result (_result.trendState.direction) that
+  // buildCanonicalEval() copies onto d.eval.technicalState.direction a few
+  // hundred lines below: the one strategic 4H technical direction. Sits
+  // deliberately AFTER the V5.3.1C block just above (which only ever
+  // corrects for the live-vs-confirmed-candle timing gap, gated on
+  // `_result.signal !== signal`/`v51SharedCoreLive`) because that is a
+  // SEPARATE, independent divergence source from the one this block fixes:
+  // a 4H PULLBACK (or any state where TSE holds an established regime
+  // direction through a TEMA crossover the raw crossLong/crossShort
+  // formula alone does not) can disagree with `_result.signal` even when
+  // the live-vs-confirmed switch changed nothing at all — proven
+  // empirically during the V5.4.0C audit (a PULLBACK fixture with
+  // trendState.direction==='LONG' produced legacy signal==='neutral', a
+  // straightforward crossLong===false/aboveMA===true non-match; see the
+  // V5.4.0C delivery report). Left unfixed, that reachable case would let
+  // a card the pivot now DISPLAYS as canonical LONG receive inverted
+  // legacy-direction geometry (short-side stop above price, short-side
+  // target below price) — a direct violation of the established V5.3.1C
+  // invariant that displayed strategic direction and geometry direction
+  // must be identical. This block is the fix, run unconditionally
+  // whenever 4H TSE authority is live and trendState resolved a genuine
+  // directional thesis, superseding whichever value the block above left
+  // in place. EXACT SAME formula shapes as every stop15/target2
+  // computation in this function — the identical ATR-based stop, the
+  // identical Fib-1.618-based directional target against the same
+  // already-computed swingH50/swingL50/fibRange, the identical ATR-based
+  // neutral-case target — no formula, multiplier, ATR basis, or precision
+  // change anywhere, only the direction input. When TSE and legacy
+  // directions already agree (the common case), this recomputation
+  // produces byte-identical numeric values — this is an authority-SOURCE
+  // consolidation, not a change to risk strategy or geometry maths.
+  // Standalone 1H is completely untouched (gated on _result.tf==='4h').
+  if (DIAG.fourHTseAuthorityLive === true && _result.tf === '4h' && _result.trendState) {
+    const _tseGeometryDir = _result.trendState.direction === 'LONG' ? 'long'
+      : _result.trendState.direction === 'SHORT' ? 'short' : 'neutral';
+    _result.stop15 = _tseGeometryDir === 'long' ? price - 1.5 * atr : price + 1.5 * atr;
+    _result.target2 = _tseGeometryDir !== 'neutral'
+      ? (_tseGeometryDir === 'short' ? swingL50 - fibRange * 0.618 : swingH50 + fibRange * 0.618)
+      : (_tseGeometryDir === 'long' ? price + 2.5 * atr : price - 2.5 * atr);
+  }
+
   // ── TDAS V5.2.1 — Market Evidence TSE shadow attachment ──────────────────
   // Runs AFTER the atomic select above so _result.evidence is the final
   // legacy Market Evidence bundle (whichever the flag chose), and after
@@ -18213,6 +18504,49 @@ async function calcPair(symbol,tf){
       },
     });
   }
+
+  // ── TDAS V5.4.0B/C — Canonical d.eval assembly (V5.4.0C: lifecycle is now
+  // LIVE, consumed by Scanner/Setups/persistence below) ─────────────────────
+  // Runs LAST, after every authoritative input it reads is already final for
+  // this cycle (trendState, v51Evidence, tradeReadyV1TseShadow,
+  // counterHtfShadow, and _result.lifecycle just above). Does not reorder or
+  // recompute anything — pure read of already-final _result fields plus the
+  // already-known `symbol` parameter and resolveJournalEntry(symbol), the
+  // SAME already-existing lookup classifyLifecycle() (just above) already
+  // uses. Wrapped so a failure here can never affect the live scan result,
+  // same convention as every other shadow/additive attachment in this
+  // function.
+  // ── TDAS V5.4.0B/C — Canonical d.eval assembly (V5.4.0C: lifecycle is now
+  // LIVE, consumed by Scanner/Setups/persistence below) ─────────────────────
+  // Runs LAST, after every authoritative input it reads is already final for
+  // this cycle (trendState, v51Evidence, tradeReadyV1TseShadow,
+  // counterHtfShadow, and _result.lifecycle just above). Does not reorder or
+  // recompute anything — pure read of already-final _result fields plus the
+  // already-known `symbol` parameter, resolveJournalEntry(symbol) (the SAME
+  // already-existing lookup classifyLifecycle() (just above) already uses,
+  // for symbol-wide openTrade — matching the existing documented "Active
+  // Trade suppresses every timeframe" doctrine), and
+  // isExactSymbolTfWatched(symbol,'4h') (the SAME already-authoritative,
+  // already-TF-exact Watch predicate isScannerSymbolSuppressed() itself
+  // uses — deliberately NOT the symbol-only openWatch field, per the
+  // V5.4.0C delivery report §1 audit). Wrapped so a failure here can never
+  // affect the live scan result, same convention as every other shadow/
+  // additive attachment in this function.
+  try {
+    const _evalEntry = resolveJournalEntry(symbol);
+    _result.eval = buildCanonicalEval(_result, symbol, {
+      openTrade: _evalEntry.openTrade,
+      hasWatchOwnership: (typeof isExactSymbolTfWatched === 'function') ? isExactSymbolTfWatched(symbol, '4h') : false,
+    });
+  } catch (_evalErr) {
+    _result.eval = {
+      meta: { tf: _result.tf || null, symbol: symbol || null, confirmedBarId: null,
+        rulesetVersion: TREND_STATE_RULESET_VERSION, completeness: 'unavailable' },
+      evidence: null, technicalState: null, advisoryState: null, lifecycle: null,
+      errorMessage: (_evalErr && _evalErr.message) ? _evalErr.message : String(_evalErr),
+    };
+  }
+
   return _result;
 }
 
@@ -18259,8 +18593,24 @@ function buildSnapshot(symbol) {
   // Status
   const openTrade = journal.find(function(j){ return !j.deleted && j.symbol===symbol && j.decision==='took' && !j.outcome; });
   const watching  = journal.find(function(j){ return j.symbol===symbol && isActiveWatch(j); });
-  const status    = openTrade ? 'Active Trade' : watching ? 'Watch' : d.signal !== 'neutral' ? 'Signal' : 'Neutral';
-  const direction = d.signal === 'long' ? 'Long' : d.signal === 'short' ? 'Short' : '-';
+  // TDAS V5.4.0C — Full Analysis audit (owner doctrine §16): this text
+  // export's own "Status"/"Direction" lines are a final-conclusion
+  // consumer that would otherwise visibly contradict the canonical 4H
+  // Technical/Advisory boxes above it in the same snapshot. Repointed
+  // narrowly to the canonical direction authority — _fourHCanonicalLane
+  // Direction(d) self-gates to d.tf==='4h' and returns d.signal unchanged
+  // for standalone 1H, so 1H snapshot text is byte-identical to before.
+  // TDAS V5.4.0C follow-up — the canonical helper is unconditionally
+  // defined in this same bundle; a typeof-guard implying "fall back to
+  // legacy d.signal if the helper is missing" was dead defensive code
+  // that could never fire, and (per owner review) is exactly the kind of
+  // seam that must not exist for 4H. _fourHCanonicalLaneDirection(d)
+  // itself already handles 1H correctly (returns d.signal unchanged
+  // there) and fails honest to 'neutral' for 4H if canonical data is
+  // ever genuinely unavailable — no d.signal fallback for 4H.
+  const _snapshotDir = _fourHCanonicalLaneDirection(d);
+  const status    = openTrade ? 'Active Trade' : watching ? 'Watch' : _snapshotDir !== 'neutral' ? 'Signal' : 'Neutral';
+  const direction = _snapshotDir === 'long' ? 'Long' : _snapshotDir === 'short' ? 'Short' : '-';
 
   // Scores — read from d.states (TDAS Phase 0) with inline fallback
   const _bsSt    = (d.states && typeof d.states === 'object') ? d.states : null;
@@ -19528,7 +19878,16 @@ function buildFilterLineHtml(d, tfLabel){
   const rsi = (st.rsi!=null && isFinite(st.rsi)) ? st.rsi : null;
   const adx = (st.adx!=null && isFinite(st.adx)) ? st.adx : null;
   const aboveMA = (typeof st.aboveMA==='boolean') ? st.aboveMA : null;
-  const signal = d && d.signal;
+  // TDAS V5.4.0C follow-up — this directly determines whether RSI/200MA
+  // evidence is coloured green/amber/red (supportive/opposing) relative
+  // to setup direction, for BOTH timeframes: a genuine 4H entry-side
+  // evidence-interpretation authority site, not a cosmetic label. Legacy
+  // d.signal could disagree with the card's own displayed canonical
+  // direction (e.g. a PULLBACK card showing canonical LONG with legacy
+  // signal=='neutral' would grey out RSI/200MA instead of colouring them
+  // relative to the real LONG thesis). Repointed to the canonical
+  // accessor, which itself already returns d.signal unchanged for 1H.
+  const signal = d && _fourHCanonicalLaneDirection(d);
   const tf = (tfLabel||'').toUpperCase();
 
   let rsiColor, rsiText;
@@ -19666,7 +20025,15 @@ function renderCard(symbol,d){
   const _advStateClass = _advisoryStateClass(_advisory);
   const advisoryHtml = buildEvaluationSummaryHtml(d, _advisory);
 
-  el.className=`card ${signal} ${_advStateClass}`.trim();
+  // TDAS V5.4.0C — Category D fix (formal d.signal inventory finding):
+  // this token drives the card's own left-border colour class
+  // ('long'/'short'/'neutral') — directly adjacent to the pill further
+  // below, which also uses the canonical accessor (_pillSignal, computed
+  // later in this function). Calls the same canonical accessor directly
+  // here rather than hoisting/reordering _pillSignal's own computation —
+  // both resolve to the identical value for the same d, so the border
+  // colour and the pill text can never contradict each other.
+  el.className=`card ${_fourHCanonicalLaneDirection(d)} ${_advStateClass}`.trim();
   // TDAS V4.5.7 HTF Pill Fix — root cause diagnosis: normal scanner cards'
   // HTF pill used d.htfAlign directly, which requires htfLong/htfShort to
   // BOTH agree (HTF SMA200 position AND HTF TEMA cross direction) before
@@ -19856,7 +20223,14 @@ function renderCard(symbol,d){
   // except the narrow rescued subset. Display-only — d.signal itself, and
   // the `signal` local used throughout the rest of this function, are
   // both untouched.
-  const _pillSignal = _fourHTseLaneDirection(d);
+  // TDAS V5.4.0C — repointed from the retired _fourHTseLaneDirection()
+  // rescue helper to the canonical 4H direction authority. For 4H this
+  // now ALWAYS reflects d.eval.lifecycle.laneDirection (TSE's own
+  // resolved direction) rather than preferring legacy d.signal first —
+  // this is the exact fix for "LONG SIGNAL + BULLISH STRUCTURE —
+  // DETERIORATING + AVOID LONG" (owner doctrine §9). 1H unchanged
+  // (returns d.signal, exactly as before).
+  const _pillSignal = _fourHCanonicalLaneDirection(d);
   const pillClass = isOpenTrade
     ? 'pill-trade'
     : _pillSignal==='long' ? 'pill-long'
@@ -20710,7 +21084,17 @@ function _buildFullAnalysisCopyText(d, symbol) {
 
   // ── Signal Summary ────────────────────────────────────────────────────
   heading('SIGNAL SUMMARY');
-  row('Signal', d.signal ? capWord(d.signal) : 'Neutral');
+  // TDAS V5.4.0C — Full Analysis audit (owner doctrine §16): repointed
+  // narrowly, same reasoning as buildSnapshot() above. Diagnostic rows
+  // below (Confirm count/Action bias/Setup quality/evaluation detail)
+  // are untouched — they remain legacy diagnostic content, not final
+  // direction authority.
+  // TDAS V5.4.0C follow-up — same reasoning as buildSnapshot()'s
+  // _snapshotDir above: the canonical helper is unconditionally defined
+  // in this bundle, so the typeof-guarded d.signal fallback was a dead
+  // 4H legacy-authority seam. Removed; _fourHCanonicalLaneDirection(d)
+  // itself already returns d.signal unchanged for 1H.
+  row('Signal', capWord(_fourHCanonicalLaneDirection(d)));
   row('Score', d.score);
   if (d.evaluation) {
     row('Confirm count', d.evaluation.confirmCount);
@@ -22014,21 +22398,33 @@ function buildV1Entry(symbol, d, decision, overrides) {
   const _now     = new Date().toISOString();
   const _tf      = overrides.tf || d.tf || (document.getElementById('tf') ? document.getElementById('tf').value : '4h');
   const _htf     = d.htf || HTF[_tf] || '1d';
-  // TDAS V5.3.1 — TSE-authoritative direction override, narrowly scoped.
-  // d.signal (the legacy confirmed-signal formula) can genuinely read
-  // 'neutral' for a TSE-authoritative counter-HTF setup — exactly the
-  // ADA/BNB-shaped case this whole build exists for — even though the
-  // card the user just clicked "Paper Trade" on said TRADE READY LONG/
-  // SHORT. Without this, the saved entry's own signal/stop/target fields
-  // would silently record the wrong (neutral) direction. Only applies
-  // when _tradeReadyModalContext matches THIS symbol (the same gate
-  // saveEntry() already uses below for its own metadata) and carries a
-  // resolved direction; d.signal itself is never modified, and every
-  // other buildV1Entry() call site (Watch, Skip, direct Log Decision —
-  // none of which set _tradeReadyModalContext) is completely unaffected.
-  const _tseDir  = (_tradeReadyModalContext && _tradeReadyModalContext.symbol === symbol && _tradeReadyModalContext.tradeReadyDirection)
-    ? _tradeReadyModalContext.tradeReadyDirection : null;
-  const _effectiveSignal = _tseDir || d.signal;
+  // TDAS V5.4.0C — widened from the narrow V5.3.1 TSE-modal-only override
+  // (which only fired for the Trade-Ready-modal decision path) to the
+  // general canonical 4H direction authority (owner doctrine §17): for
+  // ANY 4H decision (Watch, Trade, Skip, Miss, direct Log Decision...),
+  // the persisted Signal now reflects the SAME canonical direction
+  // Scanner's own pill/lane already show — d.signal can genuinely read
+  // 'neutral' for a TSE-authoritative directional setup (the exact
+  // ADA/BNB-shaped case the old narrow override existed to fix, now
+  // generalised rather than modal-gated).
+  //
+  // TDAS V5.4.0D — tightened. The V5.4.0C delivery report's buildV1Entry()
+  // call-site inventory proved all three real production callers either
+  // (a) pass a genuine calcPair()-sourced 4H `d` that always carries
+  // d.eval, or (b) are inherently 1H-only (confLogTrade(), which always
+  // passes tf:'1h') and never reach the 4H branch at all. No real
+  // production path currently supplies a d.tf==='4h' object without
+  // d.eval. Per owner doctrine (§5, "fail honestly for malformed 4H data
+  // rather than resurrecting d.signal"), a 4H d without valid canonical
+  // lifecycle data now degrades to 'neutral' — never a silent resurrection
+  // of legacy d.signal authority for 4H, matching the same no-fallback
+  // principle _fourHCanonicalLaneDirection() already enforces for live
+  // routing. Standalone 1H is completely untouched: falls straight to
+  // d.signal, exactly as before this build and before V5.4.0C.
+  const _canonicalPersistedSignal = (d.tf === '4h')
+    ? ((d.eval && d.eval.lifecycle && (d.eval.lifecycle.laneDirection === 'long' || d.eval.lifecycle.laneDirection === 'short' || d.eval.lifecycle.laneDirection === 'neutral')) ? d.eval.lifecycle.laneDirection : 'neutral')
+    : null;
+  const _effectiveSignal = _canonicalPersistedSignal !== null ? _canonicalPersistedSignal : d.signal;
   // TDAS Phase 0: read pre-computed states from d.states where available.
   // Falls back to inline derivation for entries built from stale/non-calcPair data.
   const _st      = (d.states && typeof d.states === 'object') ? d.states : null;
@@ -22094,23 +22490,21 @@ function buildV1Entry(symbol, d, decision, overrides) {
     // Price state at decision time
     signalPrice:    d.price || null,
     entryPrice:     decision === 'took' ? (overrides.entryPrice || null) : null,
-    // stop15/target2 are ATR-based levels calculated in calcPair using
-    // legacy d.signal — for a TSE-authoritative trade (_tseDir set) those
-    // values were computed off the WRONG direction whenever d.signal
-    // disagreed with the TSE-authoritative direction (calcPair's own
-    // signal==='long'?...:... ternary silently takes the short-direction
-    // branch for a neutral signal), so d.stop15/d.target2 are NOT trusted
-    // in that case — always recomputed here from d.price/d.atr using
-    // _effectiveSignal instead. When _tseDir is not set (the overwhelming
-    // majority of entries — every non-Trade-Ready-Card save), behaviour is
-    // byte-identical to before this build: d.stop15/d.target2 preferred,
-    // same inline fallback formula, same fallback trigger condition.
-    stopPrice:      _tseDir ? ((d.price && d.atr) ? (_effectiveSignal==='long' ? d.price-1.5*d.atr : d.price+1.5*d.atr) : null)
-                  : d.stop15 != null ? d.stop15
+    // TDAS V5.4.0C — the narrow _tseDir-gated recomputation this comment
+    // used to describe is now RETIRED, not just unused: calcPair()'s own
+    // V5.4.0C risk-geometry authority-consolidation block (see that
+    // block's header comment) now makes d.stop15/d.target2 canonically
+    // correct at the source for EVERY 4H card once fourHTseAuthorityLive
+    // is live, not merely the narrow trade-ready-modal case _tseDir used
+    // to detect. Persisting d.stop15/d.target2 directly is therefore
+    // always correct for 4H now, and was already correct for 1H (never
+    // affected by _tseDir). Falls back to the same inline formula only
+    // when d.stop15/d.target2 are genuinely absent — unchanged fallback
+    // shape/trigger from before this build.
+    stopPrice:      d.stop15 != null ? d.stop15
                   : (d.price && d.atr) ? (_effectiveSignal==='long' ? d.price-1.5*d.atr : d.price+1.5*d.atr)
                   : null,
-    targetPrice:    _tseDir ? ((d.price && d.atr) ? (_effectiveSignal==='long' ? d.price+2.5*d.atr : d.price-2.5*d.atr) : null)
-                  : d.target2 != null ? d.target2
+    targetPrice:    d.target2 != null ? d.target2
                   : (d.price && d.atr) ? (_effectiveSignal==='long' ? d.price+2.5*d.atr : d.price-2.5*d.atr)
                   : null,
     atr:            d.atr || null,
@@ -22310,7 +22704,13 @@ function openModalFull(symbol,decision){
   document.getElementById('modalTitle').textContent='Log: '+decLabels[decision];
   document.getElementById('modalPair').textContent=`${LABELS[symbol]} · ${modalData.tf.toUpperCase()}`;
   document.getElementById('modalMeta').innerHTML=
-    `Price: ${fmt(d.price)} &nbsp;·&nbsp; ${d.signal} &nbsp;·&nbsp; Strength: ${d.score}% &nbsp;·&nbsp; RSI: ${d.rsi?d.rsi.toFixed(1):'—'}`;
+    // TDAS V5.4.0C — Category D fix (formal d.signal inventory finding):
+    // this modal meta line is user-facing text shown on the very
+    // Log-Decision modal used to Watch/Trade/Skip a setup — the same
+    // "leaks legacy authority into entry-side presentation" concern
+    // already fixed for buildSnapshot()/_buildFullAnalysisCopyText().
+    // 1H unchanged (the helper returns d.signal there).
+    `Price: ${fmt(d.price)} &nbsp;·&nbsp; ${_fourHCanonicalLaneDirection(d)} &nbsp;·&nbsp; Strength: ${d.score}% &nbsp;·&nbsp; RSI: ${d.rsi?d.rsi.toFixed(1):'—'}`;
   document.getElementById('modalNote').value='';
   document.getElementById('modalRating').value=3;
   setRating(3);
@@ -23262,7 +23662,16 @@ function closeWatch(id){
 // Watch creates an open entry — same as modal watch, but without prompting.
 function autoLogDecision(symbol, decision, overrides) {
   const d = currentScanData[symbol];
-  if(!d || d.error || d.signal === 'neutral') return;
+  // TDAS V5.4.0C — Category D fix (formal d.signal inventory finding):
+  // this neutral-guard decides whether a user's explicit Skip/Miss/Watch
+  // click (no modal) proceeds at all. Using legacy d.signal here meant a
+  // genuinely canonical-directional 4H card (e.g. a TSE PULLBACK/WATCH
+  // with legacy signal==='neutral') would silently do nothing when the
+  // user clicked Watch on it, even though the card's own Advisory said
+  // WATCH LONG/SHORT — the same class of contradiction this build exists
+  // to remove. Repointed to the canonical direction authority; 1H
+  // unchanged (the helper returns d.signal there).
+  if(!d || d.error || _fourHCanonicalLaneDirection(d) === 'neutral') return;
   overrides = overrides || {};
   const entry = buildV1Entry(symbol, d, decision, overrides);
   if(decision === 'took') entry.journalId = entry.id;
@@ -23584,8 +23993,16 @@ function _setupsTradeReadyCandidates(){
 // header (symbol, direction, technical summary) is added above it for the
 // "normal useful setup context" this page is required to show.
 function buildSetupsCardHtml(sym, d){
-  const dirWord = d.signal==='long' ? 'LONG' : (d.signal==='short' ? 'SHORT' : 'NEUTRAL');
-  const dirClass = d.signal==='long' ? 'long' : (d.signal==='short' ? 'short' : '');
+  // TDAS V5.4.0C — Setups is exclusively 4H (see _latestFourHSetupsSnapshot's
+  // own tf==='4h' gate), so this function never needs a 1H branch. Direction
+  // now comes from d.eval.lifecycle.laneDirection (owner doctrine §9) —
+  // the SAME canonical value that qualified this candidate for Setups
+  // membership in the first place (a Trade-Ready-qualified candidate always
+  // has a resolved long/short laneDirection per resolveCanonicalLifecycle()'s
+  // own Trade Ready branch) — never d.signal.
+  const _setupsDir = (d.eval && d.eval.lifecycle && d.eval.lifecycle.laneDirection) || null;
+  const dirWord = _setupsDir==='long' ? 'LONG' : (_setupsDir==='short' ? 'SHORT' : 'NEUTRAL');
+  const dirClass = _setupsDir==='long' ? 'long' : (_setupsDir==='short' ? 'short' : '');
   const priceStr = d.price!=null ? fmt(d.price) : '\u2014';
   let techSummary = '';
   try { techSummary = (typeof buildTechnicalSummaryHtml==='function') ? buildTechnicalSummaryHtml(d) : ''; } catch(e) { techSummary = ''; }
@@ -25448,7 +25865,13 @@ async function _tdSignalRefresh(){
         // is initial scan == live repaint == ownership reconciliation for
         // the same 4H authority state. Still 4H-only (self-gated inside
         // _isFourHTseDirectional()); still never touches d.signal.
-        const _isNeutral2 = (!_d2 || _d2.error || _d2.signal === 'neutral') && !_isFourHTseDirectional(_d2);
+        // TDAS V5.4.0C — repointed to the canonical direction authority
+        // (owner doctrine §8/§9): _fourHCanonicalLaneDirection(_d2) is
+        // 'neutral' for 4H iff d.eval.lifecycle.laneDirection is neutral
+        // (TSE's own resolved direction), never re-consulting d.signal.
+        // 1H unchanged — the helper returns d.signal there, so this
+        // reduces to the exact original `signal === 'neutral'` check.
+        const _isNeutral2 = !_d2 || _d2.error || _fourHCanonicalLaneDirection(_d2) === 'neutral';
         _isNeutral2 ? renderNeutralCompact(sym, _d2) : renderCard(sym, _d2);
       }
     });
@@ -27136,8 +27559,8 @@ function renderSummary(results, tf){
   // _fourHTseLaneDirection(v) returns v.signal unchanged — no behavior
   // change outside the narrow rescued subset, and 1H is a complete no-op
   // (the helper self-gates to 4H).
-  const longs=valid.filter(v=>_fourHTseLaneDirection(v)==='long').length;
-  const shorts=valid.filter(v=>_fourHTseLaneDirection(v)==='short').length;
+  const longs=valid.filter(v=>_fourHCanonicalLaneDirection(v)==='long').length;
+  const shorts=valid.filter(v=>_fourHCanonicalLaneDirection(v)==='short').length;
   const aligned=valid.filter(v=>v.htfAlign==='aligned').length;
   // sigPairs/avgScore deliberately LEFT ON raw v.signal — "Avg strength"
   // is a legacy-score metric (v.score), a different question from lane
@@ -27261,7 +27684,9 @@ function reconcileScannerOwnership(){
       // repaint as neutral even at this site. Still 4H-only; still never
       // touches d.signal.
       const _d = currentScanData[sym];
-      const _isNeutral = (!_d || _d.error || _d.signal === 'neutral') && !_isFourHTseDirectional(_d);
+      // TDAS V5.4.0C — repointed to the canonical direction authority, same
+      // reasoning as the twin site above (_isNeutral2).
+      const _isNeutral = !_d || _d.error || _fourHCanonicalLaneDirection(_d) === 'neutral';
       try{ _isNeutral ? renderNeutralCompact(sym, _d) : renderCard(sym, _d); }
       catch(err){ console.warn('[reconcileScannerOwnership] render failed for',sym,err); }
     }
@@ -27279,7 +27704,7 @@ function reconcileScannerOwnership(){
   // shape as the lane router — a rescued card is now counted exactly
   // once, consistent with being visible exactly once.
   const sigs = results.filter((r,i)=>{
-    if(r.status!=='fulfilled'||_fourHTseLaneDirection(r.value)==='neutral') return false;
+    if(r.status!=='fulfilled'||_fourHCanonicalLaneDirection(r.value)==='neutral') return false;
     return !isScannerSymbolSuppressed(PAIRS[i], tf);
   }).length;
   const _statusEl = document.getElementById('status');
@@ -27811,9 +28236,18 @@ async function runScan(auto){
   // genuine zero-candidate scan were indistinguishable (both produce an
   // empty filtered list), incorrectly wiping good retained state on a
   // transient network error.
+  // TDAS V5.4.0C — Setups membership is now sourced from canonical
+  // Advisory (owner doctrine §11, the known authority defect this build
+  // is required to fix), not legacy tradeReadyV1. A candidate qualifies
+  // iff d.eval.advisoryState.action is TRADE_READY or COUNTER_HTF (the
+  // SAME canonical result Scanner/Narrative/Advisory already display for
+  // this cycle) — Setups can no longer independently disagree with what
+  // the card itself shows. Direction comes from d.eval.advisoryState.
+  // direction, never legacy tradeReadyV1.direction/d.signal.
   if (tf === '4h' && results.some((r) => r.status === 'fulfilled')) {
     _latestFourHSetupsSnapshot = indexed
-      .filter(({r}) => r.status === 'fulfilled' && r.value && r.value.tradeReadyV1 && r.value.tradeReadyV1.status === 'TRADE_READY')
+      .filter(({r}) => r.status === 'fulfilled' && r.value && r.value.eval && r.value.eval.advisoryState
+        && (r.value.eval.advisoryState.action === 'TRADE_READY' || r.value.eval.advisoryState.action === 'COUNTER_HTF'))
       .map(({r, sym}) => ({ sym, d: r.value }));
   }
 
@@ -27910,12 +28344,18 @@ async function runScan(auto){
   const signalItems  = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
     if(isScannerSymbolSuppressed(sym, tf)) return false;
-    return !!(v && (v.signal!=='neutral' || _isFourHTseDirectional(v)));
+    // TDAS V5.4.0C — repointed to the canonical direction authority (owner
+    // doctrine §8): a 4H card is directional iff
+    // d.eval.lifecycle.laneDirection is long/short. 1H unchanged (helper
+    // returns d.signal there, so this reduces to the original v.signal
+    // !== 'neutral' check).
+    return !!(v && _fourHCanonicalIsDirectional(v));
   });
   const neutralItems = indexed.filter(({r,sym}) => {
     const v = r.status==='fulfilled' ? r.value : null;
     if(isScannerSymbolSuppressed(sym, tf)) return false;
-    return !v || (v.signal==='neutral' && !_isFourHTseDirectional(v));
+    // TDAS V5.4.0C — repointed, same reasoning as signalItems above.
+    return !v || !_fourHCanonicalIsDirectional(v);
   });
   // TDAS V5.3.3B (ADA routing-authority correction) — a rescued card's own
   // v.signal is still the legacy 'neutral' that made the rescue necessary
@@ -27924,8 +28364,8 @@ async function runScan(auto){
   // unchanged for every ordinary legacy-directional card (the vast
   // majority) and only falls through to TSE's own direction for the
   // narrow rescued subset — see that helper's own comment.
-  const shortItems = signalItems.filter(({r}) => _fourHTseLaneDirection(r.value) === 'short');
-  const longItems  = signalItems.filter(({r}) => _fourHTseLaneDirection(r.value) === 'long');
+  const shortItems = signalItems.filter(({r}) => _fourHCanonicalLaneDirection(r.value) === 'short');
+  const longItems  = signalItems.filter(({r}) => _fourHCanonicalLaneDirection(r.value) === 'long');
 
 
   if(!auto){
@@ -28037,7 +28477,7 @@ async function runScan(auto){
   // line keeps its documented "always matches Longs+Shorts exactly"
   // invariant true for a TSE-rescued directional card too.
   const sigs=results.filter((r,i)=>{
-    if(r.status!=='fulfilled'||_fourHTseLaneDirection(r.value)==='neutral') return false;
+    if(r.status!=='fulfilled'||_fourHCanonicalLaneDirection(r.value)==='neutral') return false;
     const sym=PAIRS[i];
     return !isScannerSymbolSuppressed(sym, tf);
   }).length;
