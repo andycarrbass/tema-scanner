@@ -708,6 +708,19 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .htf-badge.conflict{background:var(--red-bg);color:var(--red-text);}
 .htf-badge.neutral{background:var(--bg4);color:var(--text3);}
 .sl-be-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--amber-bg);color:var(--amber-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
+/* TDAS V5.4.0P2 (P2.4) — NOT SYNCED top-row badge. Same shape/sizing
+   family as .sl-be-pill immediately above (inline pill, non-clickable),
+   reusing the existing TDAS yellow warning/advisory palette
+   (--amber-bg/--amber-text, the same pair .htf-badge.supportive and
+   .sl-be-pill already use) rather than a new arbitrary colour. Owner
+   decision: lives in the top otc-face-header-row, immediately before the
+   copy icon (.snap-btn's margin-left:auto pushes it to the far right, so
+   whatever sits directly before it — this badge — lands immediately to
+   its left). flex-shrink:0 so it is never squeezed on narrow/mobile
+   widths (.otc-symbol truncates first — see that rule's own comment);
+   white-space:nowrap so the two-word text never wraps onto a second
+   line, single line always. */
+.otc-not-synced-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--amber-bg);color:var(--amber-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
 /* TDAS V4.7.0 — persistent break-even stop confirmation pill states.
    .sl-be-clickable: the actionable "SL to BE" prompt becomes clickable
    (opens the confirm dialog) — layered on the base amber pill, unchanged
@@ -2102,6 +2115,47 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   </div>
 </div>
 
+<!-- TDAS V5.4.0P2 (P2.5) — Journal Edit Entry modal. Mirrors the Close
+     trade modal's shell/visual language exactly (same .outcome-modal-
+     overlay/.outcome-modal classes, same .out-fields grid, same
+     .out-modal-btns/.btn-cancel/.btn-save footer) — no new CSS, reusing
+     existing modal conventions per spec. Only user-owned trade-record
+     fields are editable here (Entry Price, Stop Price, Target Price,
+     Entry Timestamp, Trade Type, Notes) — Journal ID, symbol, direction,
+     TF/HTF, provenance, linked ids, and all schema/technical-evidence
+     fields are never touched by this modal; see saveEditEntry()'s own
+     header comment for the exact allow-list. -->
+<div class="outcome-modal-overlay" id="editEntryOverlay" style="display:none;" onclick="if(event.target===this)closeEditEntryModal()">
+  <div class="outcome-modal">
+    <h4 id="editEntryTitle">Edit entry</h4>
+    <div class="sub" id="editEntrySub"></div>
+    <div class="out-fields">
+      <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:4px;">Entry price</label><input type="number" id="editEntryPrice" placeholder="e.g. 8.889" step="any"></div>
+      <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:4px;">Stop price</label><input type="number" id="editStopPrice" placeholder="e.g. 8.50" step="any"></div>
+    </div>
+    <div class="out-fields">
+      <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:4px;">Target price</label><input type="number" id="editTargetPrice" placeholder="e.g. 9.50" step="any"></div>
+      <div><label style="font-size:10px;color:var(--text3);display:block;margin-bottom:4px;">Entry date/time</label><input type="datetime-local" id="editEntryTimestamp"></div>
+    </div>
+    <div style="margin:2px 0 10px;">
+      <label style="font-size:10px;color:var(--text3);display:block;margin-bottom:4px;">Trade type</label>
+      <div style="display:flex;gap:8px;">
+        <button type="button" id="editTypePaperBtn" onclick="_setEditTradeType('paper')"
+          style="flex:1;padding:8px;font-size:13px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg4);color:var(--text2);cursor:pointer;">📝 Paper</button>
+        <button type="button" id="editTypeRealBtn" onclick="_setEditTradeType('real')"
+          style="flex:1;padding:8px;font-size:13px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text3);cursor:pointer;">💰 Real</button>
+      </div>
+      <input type="hidden" id="editTradeTypeVal" value="paper">
+    </div>
+    <label style="font-size:10px;color:var(--text3);display:block;margin-bottom:4px;">Notes</label>
+    <textarea class="out-note-area" id="editEntryNotes" placeholder="Trade notes..."></textarea>
+    <div class="out-modal-btns">
+      <button class="btn-cancel" onclick="closeEditEntryModal()">Cancel</button>
+      <button class="btn-save" onclick="saveEditEntry()">Save changes</button>
+    </div>
+  </div>
+</div>
+
 <!-- TDAS V4.7.1 — reusable compact confirmation modal. Mirrors the Close
      trade modal's shell/visual language (same overlay treatment, same
      .btn-cancel/.btn-save button classes, same .out-modal-btns footer)
@@ -2149,7 +2203,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0F1';
+const APP_BUILD = 'V5.4.0P2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -2259,13 +2313,17 @@ const DEVICE_ID = (()=>{
 
 // ── Sync state ────────────────────────────────────────────────────────────
 let _syncLock   = false;   // prevents overlapping sync operations
-// TDAS V5.4.0P1 (P1.6) — _syncDirty is set on a failed push (pushToSheets(),
-// syncJournal()) but is not read anywhere in this file. No automatic retry
-// consumes it. Left in place as a truthful "not yet confirmed" bookkeeping
-// flag only — automatic retry is explicitly deferred to a later build (see
-// V5.4.0P1 scope notes) and must not be assumed to exist from this flag's
-// presence. Do not treat setting this flag as "retry is scheduled".
-let _syncDirty  = false;   // true when local changes haven't been confirmed synced — NOT currently consumed by any retry logic
+// TDAS V5.4.0P1 (P1.6) — _syncDirty was set on a failed push
+// (pushToSheets(), syncJournal()) but not consumed by any retry logic.
+// TDAS V5.4.0P2 (P2.2) — automatic retry now exists (see _scheduleRetry()/
+// _retryTick() below), but it authoritatively checks dirtyCount() (live,
+// derived from actual journal state) rather than this flag — a boolean
+// that must be imperatively kept in sync at every call site is a weaker
+// signal than recomputing "is there genuinely pending work" directly.
+// _syncDirty itself is left exactly as P1 wrote it: still set on failure,
+// still not read by the retry loop, in case a future consumer wants a
+// cheap "was there ever unconfirmed state this session" flag.
+let _syncDirty  = false;   // true when local changes haven't been confirmed synced — NOT read by the P2 retry loop (see above)
 let _sheetsOk   = true;    // circuit breaker — disabled after repeated failures
 let _failCount  = 0;       // consecutive failure counter
 const MAX_FAILS = 3;       // circuit breaker threshold
@@ -3169,6 +3227,50 @@ async function pullFromSheets(){
   const sessionEntries = journal.filter(j => sessionDirtyIds.has(j.id));
   sessionEntries.forEach(j => remoteMap.set(String(j.id), { ...j, syncStatus: 'pending' }));
 
+  // TDAS V5.4.0P2 (P2.1) — reload survival for genuinely unacknowledged
+  // local records, covering BOTH shapes of the problem:
+  //   (a) the id doesn't exist in Sheets at all yet (new record, e.g. the
+  //       original LINK incident — write never reached the server);
+  //   (b) the id DOES exist in Sheets, but as the OLDER pre-edit row,
+  //       because a local edit to that same record failed to push before
+  //       reload (the P2.5 Journal-editing case this fix extends to).
+  // sessionDirtyIds is memory-only and starts empty on every fresh page
+  // load, so either shape would otherwise be silently lost right here —
+  // case (a) because remoteMap has nothing to overwrite anyway, case (b)
+  // because remoteMap DOES have an entry for that id (the stale
+  // acknowledged copy) and the old code explicitly skipped preservation
+  // whenever remoteMap already had the id.
+  //
+  // Rule, exactly as scoped: a local record with syncStatus !== 'synced'
+  // is treated as an unacknowledged mutation for that record id and is
+  // preserved unconditionally — remoteMap.has(id) or not makes no
+  // difference — until it is positively acknowledged (a future push
+  // marks it 'synced') or deliberately discarded by an explicit future
+  // user action. This is NOT timestamp-based last-write-wins: an
+  // acknowledged remote row, however new, never silently overwrites a
+  // still-pending local mutation of the same id, because "pending" itself
+  // is the signal that the remote copy hasn't caught up yet — that is the
+  // entire reason it's pending. Reusing _isPreReset() (the same predicate
+  // mergeEntry()'s own local-only branch already relies on) keeps the one
+  // safety exception intact: an entry that predates a deliberate journal
+  // reset is never resurrected, remote-present or not.
+  //
+  // Deliberately narrow, not a general local-wins merge: only entries
+  // with syncStatus !== 'synced' are ever affected. An already-synced
+  // local snapshot that's now missing from Sheets (e.g. legitimately
+  // deleted by another device) is untouched by this block and simply
+  // isn't in the final journal — exactly as Sheets-authoritative replace
+  // already handled it before this fix. Entries already re-applied by the
+  // sessionDirtyIds pass above are skipped via the sessionDirtyIds.has()
+  // check, not reprocessed.
+  journal.forEach(j => {
+    if(j.syncStatus === 'synced') return;
+    if(sessionDirtyIds.has(j.id)) return; // already handled by the pass above
+    if(_isPreReset(j)) return; // never resurrect pre-reset data, remote-present or not
+    remoteMap.set(String(j.id), { ...j, syncStatus: 'pending' });
+    sessionDirtyIds.add(j.id); // restore into the dirty/pending sync + retry workflow
+  });
+
   journal = [...remoteMap.values()].sort((a,b) => b.id - a.id);
   saveJournal();
 
@@ -3199,6 +3301,127 @@ async function pushToSheets(){
     _syncDirty = false;
   }
   return ok;
+}
+
+// TDAS V5.4.0P2 (P2.2) — bounded background retry for pending Journal
+// state. Deliberately NOT a queue/service-worker architecture — a single
+// self-rescheduling setTimeout, gated on genuinely-pending state
+// (dirtyCount() > 0), using the exact same pushToSheets()/sheetsPost()
+// acknowledgement contract P1 verified (expectedCount-checked count,
+// unreadable/unverified response is failure, no destructive chunk
+// fallback — none of that is touched or duplicated here, this function
+// only decides WHEN to call the existing pushToSheets() again).
+//
+// Backoff: starts at 5s, doubles on each consecutive failure, capped at
+// 60s — "modest backoff", never a tight loop. Resets to 5s the moment a
+// push succeeds or there is nothing left pending.
+//
+// Lock discipline: never calls pushToSheets() while _syncLock or
+// _commitLock is already held (a user-triggered commitJournalChange()/
+// syncJournal() in flight) — reschedules at the current backoff instead
+// of racing it, so a retry can never overlap a foreground push.
+//
+// Toast discipline: _retryFailureNotified suppresses re-issuing the
+// persistent "⚠ Sync write failed" status text on every failed retry
+// tick — it's set once when a retry streak starts failing and only
+// cleared on success (or when nothing is pending), so the visible
+// warning stays exactly as P1.4 left it (persistent, not auto-clearing)
+// without refreshing/flashing on every retry attempt.
+let _retryTimer = null;
+let _retryDelayMs = 5000;
+const _RETRY_MIN_DELAY_MS = 5000;
+const _RETRY_MAX_DELAY_MS = 60000;
+let _retryFailureNotified = false;
+
+function _scheduleRetry(){
+  if(_retryTimer) return; // already scheduled — never duplicate
+  _retryTimer = setTimeout(_retryTick, _retryDelayMs);
+}
+
+function _cancelRetry(){
+  if(_retryTimer){ clearTimeout(_retryTimer); _retryTimer = null; }
+  _retryDelayMs = _RETRY_MIN_DELAY_MS;
+  _retryFailureNotified = false;
+}
+
+async function _retryTick(){
+  _retryTimer = null;
+
+  if(dirtyCount() === 0){
+    _retryDelayMs = _RETRY_MIN_DELAY_MS;
+    _retryFailureNotified = false;
+    return; // nothing pending — stop naturally, no reschedule
+  }
+
+  if(_syncLock || _commitLock){
+    // A foreground sync/commit is already in flight — never overlap it.
+    // Reschedule at the current backoff rather than hammering.
+    _scheduleRetry();
+    return;
+  }
+
+  if(!_sheetsOk){
+    // Circuit breaker open — back off further rather than retrying into
+    // a server that's already been marked unhealthy this session.
+    _retryDelayMs = Math.min(_retryDelayMs * 2, _RETRY_MAX_DELAY_MS);
+    _scheduleRetry();
+    return;
+  }
+
+  _syncLock = true;
+  let ok = false;
+  try{
+    // TDAS V5.4.0P2 — refresh remote state before each retry push, rather
+    // than repeatedly pushing an increasingly stale local snapshot.
+    // saveJournal() on the server remains a full-table rewrite, so a
+    // blind pushToSheets() during backoff could silently clobber a
+    // legitimate concurrent change from another device (a closed trade,
+    // a new entry, an edit) that landed during the wait. Calling
+    // pullFromSheets() first brings the local journal back in line with
+    // whatever else changed remotely; the pending-mutation preservation
+    // rule pullFromSheets() itself now applies (see that function's own
+    // comment) guarantees this record's still-unacknowledged edit
+    // survives that refresh rather than being overwritten by its own
+    // stale remote copy. This reuses the two functions that already
+    // exist for exactly this — refresh, then push — sequenced together
+    // for the retry path specifically; it does not add new conflict-
+    // resolution architecture, and two devices genuinely racing to edit
+    // the identical record at the identical moment is unchanged,
+    // pre-existing, out-of-scope behaviour. If the refresh itself fails
+    // (network still down), there's nothing safe to push against this
+    // cycle — treat the tick as failed and back off, same as before.
+    const refreshed = await pullFromSheets();
+    if(refreshed === false){
+      ok = false;
+    } else if(dirtyCount() === 0){
+      // The refresh alone resolved everything — e.g. another tab/device
+      // already pushed this exact record while we were backing off.
+      ok = true;
+    } else {
+      ok = await pushToSheets();
+    }
+  }
+  finally{ _syncLock = false; }
+
+  if(ok){
+    // TDAS V5.4.0P2 (P2.3) — successful retry must repaint automatically:
+    // pushToSheets() already stamped the acknowledged entries synced and
+    // persisted locally; render immediately so the NOT SYNCED badge and
+    // every other Journal-dependent surface clear without a manual
+    // reload/tab-change.
+    _retryDelayMs = _RETRY_MIN_DELAY_MS;
+    _retryFailureNotified = false;
+    _setSyncStatus('✓ Synced');
+    renderAllJournalDependentUI();
+    if(dirtyCount() > 0) _scheduleRetry(); // more pending remains — keep going
+  } else {
+    if(!_retryFailureNotified){
+      _setSyncStatus('⚠ Sync write failed', true);
+      _retryFailureNotified = true;
+    }
+    _retryDelayMs = Math.min(_retryDelayMs * 2, _RETRY_MAX_DELAY_MS);
+    _scheduleRetry();
+  }
 }
 
 // ── Canonical post-write render ──────────────────────────────────────────
@@ -3243,6 +3466,11 @@ async function commitJournalChange(reason, changedEntryId){
       // runs unconditionally on the next successful commit).
       _setSyncStatus('\u26a0 Sync busy — change not yet pushed', true);
       renderAllJournalDependentUI(); // TDAS V5.0.0H8B — reconcile local state; the caller's mutation already happened before this call
+      // TDAS V5.4.0P2 (P2.2) — this record is still pending; make sure the
+      // background retry cycle is running so it gets picked up without
+      // requiring the trader to trigger another write.
+      _retryFailureNotified = true;
+      if(dirtyCount() > 0) _scheduleRetry();
       return false;
     }
   }
@@ -3266,6 +3494,12 @@ async function commitJournalChange(reason, changedEntryId){
       // superseded by a subsequent status update, not auto-clear after 3s.
       _setSyncStatus('⚠ Sync paused', true);
       renderAllJournalDependentUI(); // TDAS V5.0.0H8B — reconcile local state; do not depend on push succeeding first
+      // TDAS V5.4.0P2 (P2.2) — circuit breaker will close on its own after
+      // a future successful sheetsPost() call resets _failCount; keep the
+      // retry cycle alive so a pending record is picked up the moment it
+      // does (the retry tick itself re-checks _sheetsOk each attempt).
+      _retryFailureNotified = true;
+      if(dirtyCount() > 0) _scheduleRetry();
       return false;
     }
 
@@ -3291,6 +3525,12 @@ async function commitJournalChange(reason, changedEntryId){
       // that survives even if this toast is dismissed by navigation.
       _setSyncStatus('\u26a0 Sync write failed', true);
       renderAllJournalDependentUI(); // TDAS V5.0.0H8B — reconcile local state; do not depend on push succeeding first
+      // TDAS V5.4.0P2 (P2.2/P2.9) — this is the exact "normal sync attempt
+      // does not acknowledge" case: hand off to the background retry
+      // cycle so the trader never needs to manually trigger another write
+      // (or open DevTools) for this record to eventually succeed.
+      _retryFailureNotified = true;
+      if(dirtyCount() > 0) _scheduleRetry();
       return false;
     }
 
@@ -3369,9 +3609,19 @@ async function loadFromSheets(){
   try{
     const pulled = await pullFromSheets();
     if(pulled === 'reset'){ renderJournal(); updateJournalCount(); updateTradeCount(); }
+    // TDAS V5.4.0P2 (P2.2) — kick off the background retry cycle whenever
+    // startup/reload leaves genuinely pending Journal state. Covers both
+    // P2.1's reload-survived entries (just restored into
+    // sessionDirtyIds/pending by pullFromSheets() above) and any pending
+    // entries left over from a pull that itself failed (pulled === false,
+    // journal untouched — whatever was pending before this call is still
+    // pending). _scheduleRetry() is idempotent — a timer already running
+    // is left alone, never duplicated.
+    if(dirtyCount() > 0) _scheduleRetry();
     return !!pulled;
   }catch(e){
     console.warn('[SYNC] loadFromSheets error:', e.message);
+    if(dirtyCount() > 0) _scheduleRetry();
     return false;
   }
 }
@@ -23172,9 +23422,15 @@ function renderLedgerRow(e, filter){
   // completed/cancelled) row — open trades and active watches — where it
   // is most consequential; a completed/closed row's sync state is no
   // longer operationally relevant here.
+  // TDAS V5.4.0P2 (P2.4) — colour aligned with the Trade card's own badge
+  // (--amber-bg/--amber-text, the existing TDAS yellow warning/advisory
+  // palette) so the same underlying fact doesn't read as two different
+  // severities in two places. Position/size unchanged — this row's own
+  // compact layout, not the card header, was never part of the P2.4
+  // placement change.
   const _notSynced = !!(e.syncStatus && e.syncStatus !== 'synced') && !isCancelled && !isCompleted;
   const notSyncedBadgeHtml = _notSynced
-    ? '<span class="lr-not-synced-pill" title="Not yet durably confirmed in Google Sheets" style="display:inline-block;margin-left:6px;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:0.3px;color:#fff;background:var(--red-text, #ef4444);">\u26a0 NOT SYNCED</span>'
+    ? '<span class="lr-not-synced-pill" title="Not yet durably confirmed in Google Sheets" style="display:inline-block;margin-left:6px;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:700;letter-spacing:0.3px;white-space:nowrap;color:var(--amber-text);background:var(--amber-bg);">\u26a0 NOT SYNCED</span>'
     : '';
 
   // ── Row col 5: status ─────────────────────────────────────────
@@ -23287,6 +23543,11 @@ function renderLedgerRow(e, filter){
     +(isOpen?'<button onclick="event.stopPropagation();goToTradeCard('+e.id+')" style="color:var(--blue-text);">→ Trade desk</button>':'')
     +(isCompleted?'<button onclick="event.stopPropagation();openOutcomeModal('+e.id+',null)">Edit outcome</button>':'')
     +(isWatch?'<button onclick="event.stopPropagation();showTab(\'trade\')">→ Trade desk</button>':'')
+    // TDAS V5.4.0P2 (P2.5) — retrospective Journal correction, available
+    // for any 'took' record (open or completed) — the fields it edits
+    // (Entry/Stop/Target price, Entry timestamp, Trade type, Notes) are
+    // trade-specific and don't apply to a Watch that hasn't been taken.
+    +((isOpen||isCompleted)?'<button onclick="event.stopPropagation();openEditEntryModal('+e.id+')" style="color:var(--text2);">✎ Edit entry</button>':'')
     +'<button onclick="event.stopPropagation();copySnapshotFromJournal('+e.id+',this)" style="color:var(--text3);">⎘ Snapshot</button>'
     +'<button onclick="event.stopPropagation();deleteEntry('+e.id+')" style="color:var(--text3);">Delete</button>';
 
@@ -23552,6 +23813,199 @@ function saveOutcome(){
   });
 }
 function openOutcomeEdit(id){openOutcomeModal(id,null);}
+
+// ── TDAS V5.4.0P2 (P2.5–P2.7) — Journal Edit Entry ──────────────────────
+//
+// Retrospective correction of user-owned trade-record fields on an
+// EXISTING Journal entry, found and updated by id — never a replacement/
+// duplicate record. Reuses the exact same commit path every other
+// journal write action uses (stampUpdate -> sessionDirtyIds -> saveJournal
+// -> commitJournalChange), so P1's acknowledgement contract (verified
+// count, no destructive chunking, unreadable/unverified response is
+// failure), the P2.4 yellow NOT SYNCED badge, the P2.1 reload-survival
+// rule, and the P2.2 automatic retry all apply to an edit exactly as they
+// already apply to every other write — there is no separate "edit sync"
+// path to keep in sync with those.
+//
+// Editable allow-list (matches the spec exactly): entryPrice, stopPrice,
+// targetPrice, entryTimestamp, tradeType, note. Every other field on the
+// entry — id, symbol, tf, htf, signal (direction), decision,
+// parentWatchId, linkedTradeId, tradeReady* provenance, schemaVersion,
+// mgmtSchemaVersion, and every BE/SL confirmation field — is read here
+// only for DISPLAY (the modal's subtitle/defaults) and is never assigned.
+// signalPrice is deliberately NOT included: unlike entryPrice/stopPrice/
+// targetPrice (grouped under buildV1Entry()'s "Price state" — user-
+// facing trade-record data), signalPrice lives in buildV1Entry()'s
+// "Signal state at decision time" section alongside score/setupStatus/
+// htfAlignment/temaState — a technical snapshot of market state at the
+// moment of decision, not user-entered trade data — so it stays outside
+// the "ordinary user-owned record data" the spec's conditional clause
+// requires before Signal Price could be made editable.
+//
+// TDAS V5.4.0P2 (P2.6) — audited finding, reported rather than silently
+// resolved: beStopLevel / slConfirmedLevel (when source==='BE') are
+// SNAPSHOTTED numeric values captured once at confirmBeStop()/
+// confirmStopPlacement() time (see those functions' own assignments) —
+// not a live formula re-derived from entry.entryPrice on every render.
+// If a trade's break-even stop has already been confirmed and the trader
+// then corrects Entry Price here, beStopLevel does NOT automatically
+// follow — it stays at the OLD entry price, even though "BE stop equals
+// entry price" is the system's own stated invariant (see the Apps Script
+// v8.7 schema comment: "BE Stop Level is always the trade's entry
+// price"). This is a genuine, concrete case of an edit making existing
+// management state internally inconsistent. Per this build's explicit
+// instruction, the policy is: do NOT automatically clear or rewrite
+// beStopConfirmed/beStopLevel/slConfirmed/slConfirmedLevel/
+// slRecommendedLevel/mgmtSchemaVersion — none of them are in the
+// allow-list below, and none are touched by this modal under any
+// circumstances. A trader who edits Entry Price after confirming BE
+// must explicitly Undo BE confirmation and re-confirm it if they want
+// the confirmed level to reflect the correction — TDAS does not infer or
+// automate that for them. Stop-price edits are lower-risk by comparison:
+// slConfirmedLevel already represents "what the trader actually placed
+// on the exchange" (which may legitimately differ from TDAS's
+// recommended stopPrice — that divergence, source:'MANUAL', is already a
+// normal, pre-existing state), so editing the recommended stopPrice
+// after a manual confirmation is not a new contradiction, merely an
+// already-anticipated one.
+let editEntryId = null;
+
+// datetime-local <input> uses "YYYY-MM-DDTHH:mm" in the browser's local
+// timezone, with no seconds/offset — these two helpers are the minimal
+// round-trip TDAS needs for entryTimestamp (stored as ISO 8601
+// elsewhere), not a general date-utility addition.
+function _isoToDatetimeLocalValue(iso){
+  const d = new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  const pad = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+}
+function _datetimeLocalValueToIso(val){
+  if(!val) return null;
+  const d = new Date(val); // parsed in the browser's local timezone, matching the input's own semantics
+  if(isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
+function openEditEntryModal(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry) return;
+  editEntryId = id;
+  const label = (typeof LABELS!=='undefined' && LABELS[entry.symbol]) ? LABELS[entry.symbol] : entry.symbol;
+  const titleEl = document.getElementById('editEntryTitle');
+  if(titleEl) titleEl.textContent = 'Edit entry \u2014 '+label+' '+(entry.tf||'').toUpperCase();
+  const subEl = document.getElementById('editEntrySub');
+  if(subEl) subEl.textContent = (entry.signal==='long'?'\u25b2 Long':entry.signal==='short'?'\u25bc Short':'')
+    + (entry.decision==='took'?' \u00b7 Trade':entry.decision==='watching'?' \u00b7 Watch':'');
+
+  const _entryPx = entry.entryPrice!=null ? entry.entryPrice : (entry.actualEntry!=null ? entry.actualEntry : null);
+  const _stopPx  = entry.stopPrice!=null  ? entry.stopPrice  : (entry.stop!=null   ? entry.stop   : null);
+  const _tgtPx   = entry.targetPrice!=null? entry.targetPrice: (entry.target!=null ? entry.target : null);
+  document.getElementById('editEntryPrice').value  = _entryPx!=null ? _entryPx : '';
+  document.getElementById('editStopPrice').value   = _stopPx!=null  ? _stopPx  : '';
+  document.getElementById('editTargetPrice').value = _tgtPx!=null   ? _tgtPx   : '';
+  document.getElementById('editEntryTimestamp').value = entry.entryTimestamp ? _isoToDatetimeLocalValue(entry.entryTimestamp) : '';
+  document.getElementById('editEntryNotes').value = entry.note || '';
+  _setEditTradeType(entry.tradeType==='real' ? 'real' : 'paper');
+  document.getElementById('editEntryOverlay').style.display='flex';
+}
+function closeEditEntryModal(){
+  // Cancel must make no mutation — this only hides the modal and clears
+  // the in-progress edit id; nothing on `journal` is ever touched here.
+  document.getElementById('editEntryOverlay').style.display='none';
+  editEntryId = null;
+}
+function _setEditTradeType(t){
+  document.getElementById('editTradeTypeVal').value = t;
+  const paperBtn = document.getElementById('editTypePaperBtn'), realBtn = document.getElementById('editTypeRealBtn');
+  if(paperBtn){ paperBtn.style.background = t==='paper' ? 'var(--bg4)' : 'var(--bg3)'; paperBtn.style.color = t==='paper' ? 'var(--text2)' : 'var(--text3)'; }
+  if(realBtn){ realBtn.style.background  = t==='real'  ? 'var(--green-dim, var(--bg4))' : 'var(--bg3)'; realBtn.style.color = t==='real' ? 'var(--green-text)' : 'var(--text3)'; }
+}
+
+// Async and returns the commit outcome (true/false) — a small,
+// non-breaking addition over saveOutcome()'s fire-and-forget pattern:
+// the onclick="saveEditEntry()" call site still doesn't await it (click
+// handlers never do), so production behaviour is identical, but it lets
+// callers that DO care about the outcome (tests, or any future caller)
+// observe it directly instead of re-deriving it from side effects.
+async function saveEditEntry(){
+  if(!editEntryId){ alert('No entry selected.'); return false; }
+  const entry = journal.find(j=>j.id===editEntryId);
+  if(!entry){ alert('Entry not found.'); return false; }
+
+  // ── Validation — numeric price fields ────────────────────────────────
+  // Blank stays genuinely blank (null), never coerced to 0.
+  function _parsePriceField(elId, label){
+    const raw = document.getElementById(elId).value;
+    if(raw === '' || raw == null) return { ok:true, value:null };
+    const n = parseFloat(raw);
+    if(!isFinite(n)) return { ok:false, error: label+' must be a valid number.' };
+    return { ok:true, value:n };
+  }
+  const _entryRes = _parsePriceField('editEntryPrice', 'Entry price');
+  if(!_entryRes.ok){ alert(_entryRes.error); return false; }
+  const _stopRes = _parsePriceField('editStopPrice', 'Stop price');
+  if(!_stopRes.ok){ alert(_stopRes.error); return false; }
+  const _tgtRes = _parsePriceField('editTargetPrice', 'Target price');
+  if(!_tgtRes.ok){ alert(_tgtRes.error); return false; }
+
+  // ── Validation — entry date/time ─────────────────────────────────────
+  const _tsRaw = document.getElementById('editEntryTimestamp').value;
+  let _tsIso = entry.entryTimestamp || null;
+  if(_tsRaw){
+    _tsIso = _datetimeLocalValueToIso(_tsRaw);
+    if(!_tsIso){ alert('Entry date/time is not a valid date.'); return false; }
+  }
+
+  // ── Validation — trade type ──────────────────────────────────────────
+  const _typeRaw = document.getElementById('editTradeTypeVal').value;
+  const _tradeType = (_typeRaw==='real') ? 'real' : 'paper'; // only two supported values, per setTradeType()
+
+  const _notes = document.getElementById('editEntryNotes').value;
+
+  // ── Apply — ONLY the editable allow-list, by the existing id ─────────
+  // Every field not listed here (id, symbol, tf, htf, signal, decision,
+  // parentWatchId, linkedTradeId, tradeReady* provenance, schema/
+  // mgmtSchemaVersion, every BE/SL confirmation field, createdAt) is left
+  // completely untouched — see this feature's own header comment above
+  // for the audited BE-invariant finding and why management state is
+  // deliberately never rewritten here.
+  entry.entryPrice = _entryRes.value;
+  entry.actualEntry = entry.entryPrice; // keep the transitional alias in sync — see saveEntry()'s own "Transitional aliases" block
+  entry.stopPrice = _stopRes.value;
+  entry.stop = entry.stopPrice;
+  entry.targetPrice = _tgtRes.value;
+  entry.target = entry.targetPrice;
+  entry.entryTimestamp = _tsIso;
+  entry.tradeType = _tradeType;
+  entry.note = _notes;
+
+  Object.assign(entry, stampUpdate(entry));
+  sessionDirtyIds.add(entry.id);
+  saveJournal();
+
+  const _sym = entry.symbol, _id = entry.id;
+  const liveData = currentScanData[_sym];
+  closeEditEntryModal();
+  // TDAS V5.4.0P2 (P2.7) — repaint immediately from the corrected local
+  // values before persistence is even attempted, matching the required
+  // ordering (repaint, then attempt acknowledged persistence) rather than
+  // waiting on the network round-trip to show the correction. This is
+  // the intended UX: the trader sees their correction reflected right
+  // away; remote acknowledgement follows asynchronously. If it fails,
+  // commitJournalChange() itself (unchanged, the exact same P1 contract
+  // every other write already uses) leaves the corrected local values
+  // exactly as they are, marks the record pending, shows the persistent
+  // yellow NOT SYNCED warning, and the P2.2 automatic retry mechanism
+  // owns recovery from there — the edit itself is never rolled back
+  // merely because the network write failed.
+  renderAllJournalDependentUI();
+  if(liveData) renderCard(_sym, liveData);
+  console.log('[WRITE] action started: saveEditEntry', _sym);
+  const _committed = await commitJournalChange('saveEditEntry:'+_sym, _id);
+  if(currentScanData[_sym]) renderCard(_sym, currentScanData[_sym]);
+  return _committed;
+}
 
 // ── TDAS V4.7.1 — Reusable TDAS-styled confirmation modal (Task 2) ─────────
 // Replaces native browser confirm() dialogs with an in-app modal matching
@@ -24768,9 +25222,19 @@ function renderOrderTicketCard(e){
   // syncStatus:'synced' (see normaliseSheets()), so this is false for the
   // overwhelming majority of renders and true only while an entry is
   // pending/unconfirmed.
+  // TDAS V5.4.0P2 (P2.4) — owner UI decision: moved to the top-row header,
+  // immediately before the copy icon (previously beside the price/
+  // LONG ACTIVE pill, which the owner found too cramped). Reuses the
+  // existing TDAS yellow warning/advisory palette (--amber-bg/
+  // --amber-text via .otc-not-synced-pill, same family as .sl-be-pill)
+  // instead of the prior red pill — this is a persistent-but-recoverable
+  // state, not an error, and P1's own copy already reads "NOT SYNCED"
+  // rather than an error message. No permanent SYNCED badge is added —
+  // the normal successful state renders nothing here at all, exactly as
+  // before.
   const _notSynced = !!(e.syncStatus && e.syncStatus !== 'synced');
   const notSyncedBadgeHtml = _notSynced
-    ? `<span class="otc-not-synced-pill" title="This trade has not yet been durably confirmed in Google Sheets. It may only exist on this device." style="display:inline-block;margin-left:6px;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:700;letter-spacing:0.3px;color:#fff;background:var(--red-text, #ef4444);">\u26a0 NOT SYNCED</span>`
+    ? `<span class="otc-not-synced-pill" title="This trade has not yet been durably confirmed in Google Sheets. It may only exist on this device.">\u26a0 NOT SYNCED</span>`
     : '';
   // TDAS V4.10.4G — Timeframe-Isolated Active Trade Data Migration.
   // liveData now comes from the exact symbol+trade.tf (setup timeframe)
@@ -24923,7 +25387,16 @@ function renderOrderTicketCard(e){
     : '';
 
   const cardClass=`order-card twin-sided ${isLong?'active-long':'active-short'} ${stateClass}`;
-  const ts=new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+new Date(e.id).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  // TDAS V5.4.0P2 (P2.6) — prefer entry.entryTimestamp (the user-editable,
+  // semantically-correct "when this trade was actually entered" field —
+  // see saveEditEntry()) over the record id's own creation moment, which
+  // is what this line displayed before and does not change when the
+  // trader corrects an entry timestamp retrospectively (the id is, and
+  // remains, a protected identity field). Falls back to the id-derived
+  // date for older records / entries that predate this field being set,
+  // exactly matching this line's own prior behaviour.
+  const _tsSource = e.entryTimestamp ? new Date(e.entryTimestamp) : new Date(e.id);
+  const ts=_tsSource.toLocaleDateString('en-GB',{day:'2-digit',month:'short'})+' '+_tsSource.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 
   // Risk & Levels — recommended (TDAS ATR stop) vs actual (user-confirmed
   // exchange stop). Risk %/points correspond to the confirmed actual stop
@@ -24999,6 +25472,7 @@ function renderOrderTicketCard(e){
         <div class="otc-face-header-row">
           <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
           <span class="htf-badge ${_htfState}">${htfText}</span>
+          ${notSyncedBadgeHtml}
           ${copyBtnHtml}
         </div>
         <div class="otc-face-header-row meta-row">
@@ -25014,7 +25488,6 @@ function renderOrderTicketCard(e){
         <div class="price-pill-row">
           <span class="price">${livePrice?fmt(livePrice):'—'}</span>
           <span class="sig-pill pill-trade-${isLong?'long':'short'}">${dirArrow} ${dirWord} ACTIVE</span>
-          ${notSyncedBadgeHtml}
         </div>
       </div>
       <div class="otc-entered-line">Entered ${ts}</div>
@@ -25033,9 +25506,9 @@ function renderOrderTicketCard(e){
         <div class="otc-face-header-row">
           <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
           <span class="sig-pill pill-trade-${isLong?'long':'short'}">${dirArrow} ${dirWord} ACTIVE</span>
+          ${notSyncedBadgeHtml}
           ${copyBtnHtml}
         </div>
-        ${notSyncedBadgeHtml ? `<div class="otc-face-header-row meta-row">${notSyncedBadgeHtml}</div>` : ''}
       </div>
       ${pnlHtml}
       <div style="font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:0.6px;margin:6px 0 4px;">Risk &amp; Levels</div>
