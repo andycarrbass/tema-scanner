@@ -2203,7 +2203,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0P2';
+const APP_BUILD = 'V5.4.0F2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -5471,21 +5471,62 @@ function getTradeAgeHours(d, tf) {
 // that threshold is TEMA-specific and untouched by this addition.
 const MA200_SLOPE_FLAT_TOLERANCE_PCT = 0.02;
 
-// TDAS V4.9 T1 — measured SMA200 slope from a current/prior value pair.
-// Mirrors the existing tema92Slope pattern (compare current vs one-bar-
-// prior value already computed in calcPair, no new indicator maths).
-// Insufficient/malformed data returns 'unknown' — never fabricated
-// support, per doctrine ("unknown must never imply support").
+// TDAS V5.4.0F2 — canonical ma200Direction producer. Consolidates what
+// were previously two independent implementations of the SAME bar-over-
+// bar SMA200 comparison: (1) this function, previously returning only the
+// ±0.02%-deadbanded `state` and consumed by display/legacy regime paths,
+// and (2) an inline strict-sign ternary duplicated inside
+// buildV51Evidence() (two call sites, setup + adjacent), consumed by TSE/
+// V5.1 regime derivation. F0D (V5.4.0F0D_EVIDENCE_CENSUS.md §B) proved
+// both were computed from the identical closed-candle SMA200/prevSMA200
+// pair with zero sign disagreement across 9,360 real bars — the
+// deadband was the only difference. This function now returns BOTH
+// readings from one computation; every consumer is repointed to whichever
+// reading it already used (never the other), so no consumer's behaviour
+// changes. `strictDirection` never returns the string 'flat' — an exact
+// tie now reads 'equal' instead, per the accepted F2 contract; this is
+// behaviourally inert for every existing consumer because
+// _ma200RegimeFromInputs() only ever special-cases the literal strings
+// 'rising'/'falling' (see its own definition) — 'equal' and the prior
+// 'flat' both fall through to the identical non-confirming branch.
+// Insufficient/malformed data returns 'unknown' for both readings — never
+// fabricated support, per doctrine ("unknown must never imply support").
 function _ma200SlopeFromValues(cur, prev) {
   if (cur == null || !isFinite(cur) || prev == null || !isFinite(prev) || prev === 0) {
-    return { state: 'unknown', delta: null, deltaPct: null };
+    return {
+      delta: null, deltaPct: null,
+      strictDirection: 'unknown', directionState: 'unknown',
+      flatTolerancePct: MA200_SLOPE_FLAT_TOLERANCE_PCT, complete: false,
+    };
   }
   const delta = cur - prev;
   const deltaPct = (delta / prev) * 100;
-  const state = Math.abs(deltaPct) <= MA200_SLOPE_FLAT_TOLERANCE_PCT
+  const strictDirection = delta > 0 ? 'rising' : (delta < 0 ? 'falling' : 'equal');
+  const directionState = Math.abs(deltaPct) <= MA200_SLOPE_FLAT_TOLERANCE_PCT
     ? 'flat'
     : (delta > 0 ? 'rising' : 'falling');
-  return { state, delta, deltaPct };
+  return { delta, deltaPct, strictDirection, directionState, flatTolerancePct: MA200_SLOPE_FLAT_TOLERANCE_PCT, complete: true };
+}
+
+// TDAS V5.4.0F2 — canonical priceVsMa200 producer. Consolidates the
+// repeated `price > ma200 ? 'above' : (price < ma200 ? 'below' : X)`
+// comparison that previously existed as separate inline ternaries at each
+// of buildV51Evidence()'s setup/adjacent regime derivations and inside
+// the staged-1H confirmed-evidence builder. Returns the full 4-value
+// enum; each existing consumer reduces it to its OWN historically-exact
+// shape immediately at the call site (see call sites for the exact
+// reduction), because the two pre-F2 implementations disagreed on the
+// (essentially unreachable with real float closes) exact-tie case: the
+// enum-style regime inputs previously mapped a tie to 'unknown', while
+// the boolean-style TR3/1H path previously mapped a tie to `false`. This
+// function does not resolve that discrepancy — it exposes the raw
+// comparison once so each consumer can keep applying its own existing
+// reduction rather than each consumer re-deriving the comparison itself.
+function _priceVsMa200FromValues(price, ma200) {
+  if (price == null || !isFinite(price) || ma200 == null || !isFinite(ma200)) return 'unknown';
+  if (price > ma200) return 'above';
+  if (price < ma200) return 'below';
+  return 'equal';
 }
 
 // TDAS V4.9 T1 — TEMA 92 vs SMA200 relation. Reuses the existing,
@@ -7297,7 +7338,7 @@ function _marketEvidenceComponents(d, openTrade, strategicDirection) {
   // computeStates() — no re-derivation, no new fetch. Older cached
   // states objects without these fields (e.g. from before this task)
   // degrade safely to the same 'unknown'/null shape via the fallbacks.
-  const _unknownSlope = { state: 'unknown', delta: null, deltaPct: null };
+  const _unknownSlope = { delta: null, deltaPct: null, strictDirection: 'unknown', directionState: 'unknown', flatTolerancePct: MA200_SLOPE_FLAT_TOLERANCE_PCT, complete: false };
   // TDAS V4.9.1 T2 — safe all-unknown default for adxState/adjacentAdxState.slope
   const _unknownAdxSlope = { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false };
   // TDAS V4.9.2 T3 — chop state + canonical regime composition, setup +
@@ -7313,16 +7354,22 @@ function _marketEvidenceComponents(d, openTrade, strategicDirection) {
   const _unknownChop = { state: 'unknown', crossings: null, windowBars: MA200_CHOP_WINDOW_BARS, threshold: MA200_CHOP_CROSSING_THRESHOLD };
   const setupChop = (d && d.ma200ChopState) || _unknownChop;
   const adjacentChop = (d && d.htfMa200ChopState) || _unknownChop;
+  // TDAS V5.4.0F2 — reads .directionState (the ±0.02%-deadbanded reading,
+  // renamed from the pre-F2 .state field; same values, same computation).
+  // This is the legacy/display d.states regime path (owner doctrine Q3:
+  // "A-style descriptive/legacy/display consumers repoint to
+  // directionState") — NOT the TSE-authoritative regime, which lives in
+  // buildV51Evidence() and reads .strictDirection instead (see there).
   const setupRegimeState = _ma200RegimeFromInputs(
     setupMaRelation,
     st.tema92VsMa200 || 'unknown',
-    (st.ma200Slope && st.ma200Slope.state) || 'unknown',
+    (st.ma200Slope && st.ma200Slope.directionState) || 'unknown',
     setupChop.state
   );
   const adjacentRegimeState = _ma200RegimeFromInputs(
     adjacentMaRelation,
     st.htfTema92VsMa200 || 'unknown',
-    (st.htfMa200Slope && st.htfMa200Slope.state) || 'unknown',
+    (st.htfMa200Slope && st.htfMa200Slope.directionState) || 'unknown',
     adjacentChop.state
   );
   const ma200RegimeInputs = {
@@ -7474,14 +7521,22 @@ function buildEvidence(d, entry, strategicDirection) {
       adjacentAdxState: { value: null, state: 'unknown', slope: { state: 'unknown', delta: null, lookbackBars: ADX_SLOPE_LOOKBACK_BARS, highRollingOver: false } },
       rsiExtension: { value: null, state: 'unknown' },
       // TDAS V4.9 T1 / V4.9.2 T3 — additive, safe all-unknown default.
+      // TDAS V5.4.0F2 — shape completion: this hand-written literal never
+      // called the canonical producer, so it did not automatically pick
+      // up the .state -> .directionState rename. Zero behavioural impact
+      // either way (every consumer already falls back to 'unknown' via
+      // its own `|| 'unknown'` guard whether the old or new field name is
+      // present) — this is a pure shape-consistency completion, proven by
+      // test_t1_ma200_regime_evidence.js's "SAFE_DEFAULT includes
+      // ma200RegimeInputs with the same all-unknown shape" assertion.
       ma200RegimeInputs: {
         setup: {
-          slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown',
+          slope: { delta: null, deltaPct: null, strictDirection: 'unknown', directionState: 'unknown', flatTolerancePct: MA200_SLOPE_FLAT_TOLERANCE_PCT, complete: false }, tema92Relation: 'unknown',
           chop: { state: 'unknown', crossings: null, windowBars: MA200_CHOP_WINDOW_BARS, threshold: MA200_CHOP_CROSSING_THRESHOLD },
           regime: 'unknown',
         },
         adjacent: {
-          slope: { state: 'unknown', delta: null, deltaPct: null }, tema92Relation: 'unknown',
+          slope: { delta: null, deltaPct: null, strictDirection: 'unknown', directionState: 'unknown', flatTolerancePct: MA200_SLOPE_FLAT_TOLERANCE_PCT, complete: false }, tema92Relation: 'unknown',
           chop: { state: 'unknown', crossings: null, windowBars: MA200_CHOP_WINDOW_BARS, threshold: MA200_CHOP_CROSSING_THRESHOLD },
           regime: 'unknown',
         },
@@ -7605,7 +7660,16 @@ function _shadowEvaluate(ev) {
   const setupRegime = setupRegimeObj.regime || 'unknown';
   const adjacentRegime = adjacentRegimeObj.regime || 'unknown';
   const setupChopState = (setupRegimeObj.chop && setupRegimeObj.chop.state) || 'unknown';
-  const setupMa200Slope = (setupRegimeObj.slope && setupRegimeObj.slope.state) || 'unknown';
+  // TDAS V5.4.0F2 — reads .directionState (the ±0.02%-deadbanded reading,
+  // renamed from the pre-F2 .state field on this same object; see
+  // computeStates()/ma200RegimeInputs header comment for the full
+  // rationale). This is the legacy Evaluation Engine's own stage
+  // classifier (SHADOW_MODEL_VERSION) — a hidden fifth consumer of this
+  // object not caught by the initial consumer sweep, which only checked
+  // buildV51Evidence/computeStates/the display grid. Same object, same
+  // renamed field, same values as those three — this was a migration
+  // omission, not a new adapter.
+  const setupMa200Slope = (setupRegimeObj.slope && setupRegimeObj.slope.directionState) || 'unknown';
   const setupTema92Relation = setupRegimeObj.tema92Relation || 'unknown';
   const setupAdxValue = (comp.adxState && comp.adxState.value != null && isFinite(comp.adxState.value)) ? comp.adxState.value : null;
   const setupAdxSlope = (comp.adxState && comp.adxState.slope) || { state: 'unknown', highRollingOver: false };
@@ -7883,7 +7947,10 @@ function _shadowEvaluate(ev) {
       const adjacentChopState = (adjacentRegimeObj.chop && adjacentRegimeObj.chop.state) || 'unknown';
       const adjacentUtDirection = (comp.utDirection && comp.utDirection.adjacentDirection) || 'unknown';
       const adjacentTemaDirection = (comp.temaStructure && comp.temaStructure.adjacentDirection) || 'unknown';
-      const adjacentMa200SlopeState = (adjacentRegimeObj.slope && adjacentRegimeObj.slope.state) || 'unknown';
+      // TDAS V5.4.0F2 — same migration-omission fix as setupMa200Slope
+      // above (see that line's comment); reads .directionState, not the
+      // retired .state field.
+      const adjacentMa200SlopeState = (adjacentRegimeObj.slope && adjacentRegimeObj.slope.directionState) || 'unknown';
       const adjacentTema92Relation = adjacentRegimeObj.tema92Relation || 'unknown';
       const adjacentRegimeConfirmed = (direction === 'long' && adjacentRegime === 'confirmed_bullish') || (direction === 'short' && adjacentRegime === 'confirmed_bearish');
 
@@ -14446,27 +14513,37 @@ function buildV51Evidence(ctx) {
 
   const adjacentChopState = adjacentIndicators.complete ? v51ChopState(hc) : { state: 'unknown', crossings: null };
 
-  // Adjacent regime — reuses the SAME _ma200RegimeFromInputs() pure function
-  // already used for the setup-tf regime elsewhere in this codebase
-  // (unchanged, called here with the confirmed adjacent-tf inputs).
+  // TDAS V5.4.0F2 — canonical ma200Direction/priceVsMa200 producers.
+  // Previously this block contained its OWN independent inline
+  // strict-sign ternary (concept "B") duplicating _ma200SlopeFromValues()
+  // (concept "A", used by the legacy d.states regime path above) and its
+  // own inline price-vs-MA200 ternary. Both are now sourced from the one
+  // canonical producer each; this is the TSE-authoritative regime path,
+  // so it reads .strictDirection (never .directionState — that reading is
+  // reserved for the legacy/display regime in computeStates() above).
+  // maRelation/temaRelation preserve their exact pre-F2 tie-handling
+  // ('equal' reduced to 'unknown') via the explicit ternary below — the
+  // canonical producer intentionally does not bake in that reduction
+  // itself, since the TR3/1H boolean consumer needs the opposite
+  // reduction (see _calcConfirmedEvidenceFromKlines() below).
+  const setupMa200Direction = _ma200SlopeFromValues(confirmedIndicators.ma200, confirmedIndicators.prevMa200);
+  const setupPriceVsMa200 = _priceVsMa200FromValues(confirmedIndicators.lastClosedPrice, confirmedIndicators.ma200);
   const setupRegime = confirmedIndicators.complete
     ? _ma200RegimeFromInputs(
-        confirmedIndicators.lastClosedPrice > confirmedIndicators.ma200 ? 'above' : (confirmedIndicators.lastClosedPrice < confirmedIndicators.ma200 ? 'below' : 'unknown'),
+        setupPriceVsMa200 === 'equal' ? 'unknown' : setupPriceVsMa200,
         confirmedIndicators.t92 > confirmedIndicators.ma200 ? 'above' : (confirmedIndicators.t92 < confirmedIndicators.ma200 ? 'below' : 'unknown'),
-        confirmedIndicators.ma200 != null && confirmedIndicators.prevMa200 != null
-          ? (confirmedIndicators.ma200 > confirmedIndicators.prevMa200 ? 'rising' : (confirmedIndicators.ma200 < confirmedIndicators.prevMa200 ? 'falling' : 'flat'))
-          : 'unknown',
+        setupMa200Direction.strictDirection,
         chopState.state === 'transitional' ? 'clear' : chopState.state
       )
     : 'unknown';
 
+  const adjacentMa200Direction = _ma200SlopeFromValues(adjacentIndicators.ma200, adjacentIndicators.prevMa200);
+  const adjacentPriceVsMa200 = _priceVsMa200FromValues(adjacentIndicators.lastClosedPrice, adjacentIndicators.ma200);
   const adjacentRegime = adjacentIndicators.complete
     ? _ma200RegimeFromInputs(
-        adjacentIndicators.lastClosedPrice > adjacentIndicators.ma200 ? 'above' : (adjacentIndicators.lastClosedPrice < adjacentIndicators.ma200 ? 'below' : 'unknown'),
+        adjacentPriceVsMa200 === 'equal' ? 'unknown' : adjacentPriceVsMa200,
         adjacentIndicators.t92 > adjacentIndicators.ma200 ? 'above' : (adjacentIndicators.t92 < adjacentIndicators.ma200 ? 'below' : 'unknown'),
-        adjacentIndicators.ma200 != null && adjacentIndicators.prevMa200 != null
-          ? (adjacentIndicators.ma200 > adjacentIndicators.prevMa200 ? 'rising' : (adjacentIndicators.ma200 < adjacentIndicators.prevMa200 ? 'falling' : 'flat'))
-          : 'unknown',
+        adjacentMa200Direction.strictDirection,
         adjacentChopState.state === 'transitional' ? 'clear' : adjacentChopState.state
       )
     : 'unknown';
@@ -14556,12 +14633,17 @@ function buildV51Evidence(ctx) {
       extension,
       sma: smaState,
       oneHExecution,
-      // TDAS V5.1.1A — additive 4H SMA200 slope, same ATR-normalised
-      // formula and lookback as the new 1H evidence contract. Does not
+      // TDAS V5.1.1A — additive 4H displacement, same ATR-normalised
+      // formula and lookback as the 1H evidence contract. Does not
       // replace or alter the existing regime engine (evidence.regime
       // above, unchanged) — a distinct, additional signal for the future
-      // Trade Ready classifier to use alongside it.
-      sma200Slope: confirmedIndicators.complete ? v511FourHSma200Slope(closedCloses, closedHighs, closedLows) : { sma200: null, sma200Previous: null, sma200SlopeDelta: null, sma200SlopeAtr: null, sma200SlopeState: 'unknown', complete: false },
+      // Trade Ready classifier to use alongside it. TDAS V5.4.0F2 —
+      // renamed from evidence.sma200Slope to evidence.ma200Displacement,
+      // now sourced from the single canonical producer
+      // (_ma200DisplacementFromCloses(), formerly v511FourHSma200Slope());
+      // identical formula, identical numeric output, identical ±0.20 ATR
+      // threshold — see that function's own header for the full rationale.
+      ma200Displacement: confirmedIndicators.complete ? _ma200DisplacementFromCloses(closedCloses, closedHighs, closedLows) : { lookbackBars: V511_SMA200_SLOPE_LOOKBACK_BARS, sma200: null, sma200Previous: null, delta: null, displacementAtr: null, band: 'unknown', thresholdAtr: V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR, complete: false },
       // TDAS V5.1.0D — additive raw scalar values, needed by the shared-
       // pipeline shadow comparison layer to construct a shape-compatible
       // confirmed-bar `d` view for calling the real computeStates()/
@@ -14723,13 +14805,16 @@ function buildTrendState(ctx) {
 
   const regimeConfirmed = (regimeDir === 'LONG' && regime === 'confirmed_bullish')
     || (regimeDir === 'SHORT' && regime === 'confirmed_bearish');
-  // Note: this is the SEPARATE, ATR-normalised, 10-bar-lookback slope
-  // (evidence.sma200Slope.sma200SlopeState) — not the single-bar-over-bar
-  // slope already baked into _ma200RegimeFromInputs()'s own regime
-  // derivation. The two are genuinely independent calculations; a
-  // 'confirmed_bullish' regime can co-occur with a non-'rising' ATR-slope
-  // reading here, which is exactly the "crossed vs. genuinely rotating"
-  // distinction owner doctrine §9 asks this engine to make.
+  // Note: this is the SEPARATE, ATR-normalised, 10-bar-lookback
+  // displacement measure (TDAS V5.4.0F2: evidence.ma200Displacement.band,
+  // translated to this function's own unchanged rising/flat/falling ctx
+  // vocabulary by _bandToLegacySlopeState() at the call site) — not the
+  // single-bar-over-bar direction already baked into
+  // _ma200RegimeFromInputs()'s own regime derivation. The two are
+  // genuinely independent calculations; a 'confirmed_bullish' regime can
+  // co-occur with a non-'rising' displacement reading here, which is
+  // exactly the "crossed vs. genuinely rotating" distinction owner
+  // doctrine §9 asks this engine to make.
   const slopeSupportive = (regimeDir === 'LONG' && sma200SlopeState === 'rising')
     || (regimeDir === 'SHORT' && sma200SlopeState === 'falling');
 
@@ -16084,18 +16169,23 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
   }
 
   const lastClosedPrice = closedC[closedC.length - 1];
-  const sma200 = sma(closedC, 200);
-  const sma200Previous = sma(closedC.slice(0, closedC.length - V511_SMA200_SLOPE_LOOKBACK_BARS), 200);
+  // TDAS V5.4.0F2 — this block previously duplicated the 200MA
+  // displacement computation inline (its own sma()/calcATR() calls and its
+  // own ±0.20 ATR banding), independently of the 4H evidence path's
+  // v511FourHSma200Slope() (F0D confirmed both computed the identical
+  // formula from the identical closed-candle basis). Both are now the
+  // same canonical call; sma200SlopeDelta/sma200SlopeAtr/sma200SlopeState
+  // field NAMES on this returned object are unchanged (TR3 and other
+  // existing readers of this evidence object are untouched) — only the
+  // computation backing them is now shared, and their VALUES are
+  // numerically identical to before (see _bandToLegacySlopeState()).
   const atr = calcATR(closedH, closedL, closedC, 14);
-
-  let sma200SlopeDelta = null, sma200SlopeAtr = null, sma200SlopeState = 'unknown';
-  if (sma200 != null && sma200Previous != null && atr != null && atr > 0) {
-    sma200SlopeDelta = sma200 - sma200Previous;
-    sma200SlopeAtr = Math.round((sma200SlopeDelta / atr) * 1000) / 1000;
-    if (sma200SlopeAtr >= V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR) sma200SlopeState = 'rising';
-    else if (sma200SlopeAtr <= -V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR) sma200SlopeState = 'falling';
-    else sma200SlopeState = 'flat';
-  }
+  const _ma200Displacement = _ma200DisplacementFromCloses(closedC, closedH, closedL);
+  const sma200 = _ma200Displacement.sma200;
+  const sma200Previous = _ma200Displacement.sma200Previous;
+  const sma200SlopeDelta = _ma200Displacement.delta;
+  const sma200SlopeAtr = _ma200Displacement.displacementAtr;
+  const sma200SlopeState = _bandToLegacySlopeState(_ma200Displacement.band);
   const priceAboveSma200 = sma200 != null ? lastClosedPrice > sma200 : null;
 
   const sma135 = sma(closedC, 135);
@@ -16160,25 +16250,58 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
   };
 }
 
-// ── 4H SMA200 slope — same formula, additive to confirmed 4H evidence ──────
-// Pure. Takes the already-fetched confirmed 4H closed arrays calcPair()
-// already has in scope — no new fetch, no new indicator implementation
-// (reuses sma()/calcATR() exactly as the shared 1H calculator does).
-function v511FourHSma200Slope(closedCloses, closedHighs, closedLows) {
+// ── TDAS V5.4.0F2 — canonical ma200Displacement producer ───────────────────
+// Timeframe-neutral (was named v511FourHSma200Slope, despite already being
+// called on 1H closes by the staged-1H evidence path before F2 — the name
+// was misleading, not the behaviour). This is the SOLE remaining producer
+// of the 10-bar-lookback, ATR-normalised 200MA displacement measure;
+// F2 deletes the previously-duplicated inline computation inside
+// _calcConfirmedEvidenceFromKlines() (below) and repoints it to call this
+// function instead — identical formula, identical rounding, identical
+// ±0.20 ATR threshold, now computed exactly once per call site instead of
+// twice per codebase.
+//
+// V5.4.0F0/F0D established this measures 200-bar-window DISPLACEMENT
+// (mean of the newest 10 closes vs the mean of the 10 closes that just
+// left the 200-bar window), not instantaneous MA curvature — hence the
+// rename away from "slope". `band` deliberately uses positive/neutral/
+// negative rather than rising/flat/falling: those words describe motion,
+// which this fact does not measure (see TDAS_V5.4.0F0D_EVIDENCE_CENSUS.md
+// §H.2 and the accepted F0D→F2 architecture review). This is a pure
+// truthfulness rename — the underlying arithmetic and gate threshold are
+// byte-for-byte unchanged; see _bandToLegacySlopeState() immediately
+// below for how existing rising/flat/falling-typed consumers (TSE's own
+// buildTrendState() ctx param, and the 1H staged-evidence contract) keep
+// reading their pre-F2 vocabulary unmodified, so neither's tested output
+// contract changes shape or value.
+function _ma200DisplacementFromCloses(closedCloses, closedHighs, closedLows) {
   if (!Array.isArray(closedCloses) || closedCloses.length < (200 + V511_SMA200_SLOPE_LOOKBACK_BARS)) {
-    return { sma200: null, sma200Previous: null, sma200SlopeDelta: null, sma200SlopeAtr: null, sma200SlopeState: 'unknown', complete: false };
+    return { lookbackBars: V511_SMA200_SLOPE_LOOKBACK_BARS, sma200: null, sma200Previous: null, delta: null, displacementAtr: null, band: 'unknown', thresholdAtr: V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR, complete: false };
   }
   const sma200 = sma(closedCloses, 200);
   const sma200Previous = sma(closedCloses.slice(0, closedCloses.length - V511_SMA200_SLOPE_LOOKBACK_BARS), 200);
   const atr = calcATR(closedHighs, closedLows, closedCloses, 14);
   if (sma200 == null || sma200Previous == null || atr == null || !(atr > 0)) {
-    return { sma200, sma200Previous, sma200SlopeDelta: null, sma200SlopeAtr: null, sma200SlopeState: 'unknown', complete: false };
+    return { lookbackBars: V511_SMA200_SLOPE_LOOKBACK_BARS, sma200, sma200Previous, delta: null, displacementAtr: null, band: 'unknown', thresholdAtr: V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR, complete: false };
   }
-  const sma200SlopeDelta = sma200 - sma200Previous;
-  const sma200SlopeAtr = Math.round((sma200SlopeDelta / atr) * 1000) / 1000;
-  const sma200SlopeState = sma200SlopeAtr >= V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR ? 'rising'
-    : sma200SlopeAtr <= -V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR ? 'falling' : 'flat';
-  return { sma200, sma200Previous, sma200SlopeDelta, sma200SlopeAtr, sma200SlopeState, complete: true };
+  const delta = sma200 - sma200Previous;
+  const displacementAtr = Math.round((delta / atr) * 1000) / 1000;
+  const band = displacementAtr >= V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR ? 'positive'
+    : displacementAtr <= -V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR ? 'negative' : 'neutral';
+  return { lookbackBars: V511_SMA200_SLOPE_LOOKBACK_BARS, sma200, sma200Previous, delta, displacementAtr, band, thresholdAtr: V511_SMA200_SLOPE_ALIGNED_FLOOR_ATR, complete: true };
+}
+
+// TDAS V5.4.0F2 — the ONLY place old rising/flat/falling vocabulary is
+// reconstructed from the new canonical positive/neutral/negative band, and
+// it exists solely so two pre-existing, independently-tested contracts
+// (buildTrendState()'s own ctx.sma200SlopeState parameter and internal
+// slopeSupportive comparison, and the 1H staged-evidence object's
+// sma200SlopeState field read by TR3) do not have to change their own
+// value vocabulary as a side effect of the evidence-layer rename. Neither
+// of those two call sites is itself a duplicate calculation — this is a
+// pure boundary translation, not a second displacement implementation.
+function _bandToLegacySlopeState(band) {
+  return band === 'positive' ? 'rising' : band === 'negative' ? 'falling' : band === 'neutral' ? 'flat' : 'unknown';
 }
 
 // ── Staged-acquisition prefilter ────────────────────────────────────────────
@@ -18483,7 +18606,14 @@ async function calcPair(symbol,tf){
           tf,
           regime: _tseEv.regime,
           chopState: _tseEv.chop && _tseEv.chop.state,
-          sma200SlopeState: _tseEv.sma200Slope && _tseEv.sma200Slope.sma200SlopeState,
+          // TDAS V5.4.0F2 — evidence.sma200Slope renamed to
+          // evidence.ma200Displacement (band vocabulary positive/neutral/
+          // negative); translated back to buildTrendState()'s own
+          // untouched rising/flat/falling ctx contract via
+          // _bandToLegacySlopeState() so buildTrendState()'s internal
+          // slopeSupportive comparison and TSE output shape are both
+          // byte-unchanged by this rename.
+          sma200SlopeState: _bandToLegacySlopeState(_tseEv.ma200Displacement && _tseEv.ma200Displacement.band),
           utDirection: (utBot && utBot.direction === 1) ? 'bullish' : (utBot && utBot.direction === -1) ? 'bearish' : 'unknown',
           utBarsSinceFlip: utBot ? utBot.barsAgoFlip : null,
           temaDirection: (_tseEv.tema && _tseEv.tema.maturity) ? _tseEv.tema.maturity.direction : 'unknown',
@@ -21709,8 +21839,8 @@ function buildMarketEvidenceDiagnosticHtml(d){
     const _uDcomp = comp.utDirection || {};
     const _m200 = comp.ma200Relation || {};
     const _regimeInputs = comp.ma200RegimeInputs || {};
-    const _setupSlopeState = ((_regimeInputs.setup || {}).slope || {}).state;
-    const _adjSlopeState = ((_regimeInputs.adjacent || {}).slope || {}).state;
+    const _setupSlopeState = ((_regimeInputs.setup || {}).slope || {}).directionState;
+    const _adjSlopeState = ((_regimeInputs.adjacent || {}).slope || {}).directionState;
     const _setupTema92Rel = (_regimeInputs.setup || {}).tema92Relation;
     const _adjTema92Rel = (_regimeInputs.adjacent || {}).tema92Relation;
     const _structureGrid = _apTfComparisonGrid([
