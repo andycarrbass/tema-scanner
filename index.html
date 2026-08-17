@@ -2203,7 +2203,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0F2';
+const APP_BUILD = 'V5.4.0F2H';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -6977,7 +6977,253 @@ function _marketEvidenceHtfContext(direction, htfTrendContext, htfUtBot) {
   return 'neutral'; // mixed — one supports, one opposes
 }
 
-// ── §3.6 trendQuality — quality only, never direction ──────────────────────
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.0F2H — Canonical Daily Structural State & HTF Relationship    ║
+// ║                                                                          ║
+// ║  Replaces the legacy TEMA-heavy htfTrendContext as the BASIC Daily      ║
+// ║  structural-bias input to the card-facing HTF pill (owner doctrine §5): ║
+// ║  "Basic Daily structural bias is determined by confirmed Daily price    ║
+// ║  relative to the Daily 200MA + confirmed Daily 200MA direction." Daily  ║
+// ║  UT provides directional confirmation/challenge on top of that basic    ║
+// ║  structure. Daily TEMA (htfTrendContext) is deliberately NOT consumed   ║
+// ║  here — it remains available elsewhere as contextual evidence only.     ║
+// ║                                                                          ║
+// ║  Reuses the SAME canonical fact definitions F2 already established for  ║
+// ║  the setup timeframe (_ma200SlopeFromValues/_priceVsMa200FromValues) —  ║
+// ║  applied here to the confirmed Daily SMA200/price pair calcPair()       ║
+// ║  already computes (htfMa200/htfPrevMa200/hc[]) with NO new fetch and NO ║
+// ║  alternate 200MA calculation. Uses the existing ±0.02% directionState   ║
+// ║  deadband unchanged (F2's own provisional constant — not retuned here). ║
+// ║                                                                          ║
+// ║  Two-stage, matching the schema's own direction-free/setup-relative     ║
+// ║  split: _dailyStructuralState() is pure and direction-free (computed    ║
+// ║  once per Daily bar, reusable for any setup direction or timeframe —    ║
+// ║  see the 1H-reuse note below); _deriveHtfRelation() combines that fixed ║
+// ║  structural fact with a caller-supplied setup direction via an explicit ║
+// ║  decision table (no numeric score) to produce the setup-relative        ║
+// ║  aligned/supportive/neutral/conflict relation, always with a structured ║
+// ║  `reasons` array so presentation never has to re-derive why.            ║
+// ║                                                                          ║
+// ║  1H reuse (design now, do not activate — owner doctrine §14): both      ║
+// ║  functions are timeframe-agnostic by construction (no '4h'/'1d' literal ║
+// ║  anywhere in the decision logic) — a future standalone-1H build can     ║
+// ║  call _dailyStructuralState() on 4H-as-HTF-of-1H facts and              ║
+// ║  _deriveHtfRelation() unchanged. Nothing in this build wires that path. ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Pure. price/ma200/prevMa200 are the CONFIRMED (already-closed) values for
+// whichever HTF is under consideration — calcPair() supplies the Daily
+// values today (htfMa200/htfPrevMa200/hc[last]). utDirection is the raw
+// numeric UT Bot direction already computed for that same HTF (1/-1/other).
+// Never reads d directly — every input is passed explicitly so this can be
+// unit-tested and eventually reused for other HTF pairs without change.
+//
+// TDAS V5.4.0F2H rev2 (owner decision) — structuralState is now a LITERAL
+// factual enum (above_rising/above_falling/above_flat/below_rising/
+// below_falling/below_flat/unresolved), not an interpreted label. Naming a
+// "regime" or "challenged" is a trader-facing INTERPRETATION step, kept
+// entirely inside _deriveHtfRelation()/presentation — the evidence layer
+// itself stays factual, per owner doctrine.
+function _dailyStructuralState(price, ma200, prevMa200, utDirectionRaw) {
+  const direction = _ma200SlopeFromValues(ma200, prevMa200); // { directionState, strictDirection, ... }
+  const priceVsMa200 = _priceVsMa200FromValues(price, ma200);
+  const utDirection = utDirectionRaw === 1 ? 'bullish' : utDirectionRaw === -1 ? 'bearish' : 'unknown';
+
+  // 'equal' (exact tie) is astronomically rare for real closes but handled
+  // honestly rather than coerced — treated as unresolved, never guessed,
+  // same as 'unknown'.
+  if (priceVsMa200 === 'unknown' || priceVsMa200 === 'equal' || direction.directionState === 'unknown') {
+    return {
+      structuralState: 'unresolved', priceVsMa200, ma200DirectionState: direction.directionState, utDirection,
+      completeness: (priceVsMa200 === 'unknown' || direction.directionState === 'unknown') ? 'unavailable' : 'complete',
+    };
+  }
+
+  const structuralState = priceVsMa200 + '_' + direction.directionState; // above_rising | above_falling | above_flat | below_rising | below_falling | below_flat
+  return { structuralState, priceVsMa200, ma200DirectionState: direction.directionState, utDirection, completeness: 'complete' };
+}
+
+// Pure decision table — owner doctrine §7/§8, corrected per the approved
+// V5.4.0F2H semantic review. No numeric score anywhere; every branch is an
+// explicit condition with an explicit reason code appended to `reasons`
+// from the approved vocabulary (STRUCTURE_SUPPORTS/STRUCTURE_OPPOSES/
+// REGIME_CHALLENGED/STRUCTURE_NON_TRENDING/UT_CONFIRMS/UT_OPPOSES/
+// UT_UNAVAILABLE/NO_DIRECTIONAL_THESIS/EVIDENCE_INCOMPLETE), so
+// presentation/hover can explain the glyph without re-deriving the
+// decision (owner doctrine §8/§12).
+//
+// The "regime" a Daily structural state implies is named by the 200MA
+// DIRECTION alone (rising -> bullish-implied regime, falling ->
+// bearish-implied regime, flat -> no regime/non-trending) — price side
+// then determines whether that regime is clean (price agrees) or
+// challenged (price disagrees), per owner doctrine §1: "name the
+// incumbent regime implied by the 200MA direction, with price action
+// described as challenging it."
+//
+// Corrected UT-unavailable behaviour (owner doctrine §4): a flat/non-
+// trending structure with no UT data is neutral (it never had a
+// directional edge to begin with); a clean OR challenged directional
+// structure with no UT data still carries its own structural edge and is
+// reported supportive/conflict on that structural fact alone — it simply
+// never reaches 'aligned' without UT's own confirmation.
+//
+// Corrected reason completeness (owner doctrine §5): UT's actual
+// contribution (UT_CONFIRMS/UT_OPPOSES) is now reported in every branch
+// where it was actually evaluated — never omitted, never mislabelled.
+//
+// Owner doctrine §3: UT may neutralise a clean structural conflict but
+// never converts it directly into a structural tailwind — a clean
+// opposing structure with UT now supporting the thesis returns 'neutral',
+// never 'supportive'.
+function _deriveHtfRelation(setupDirection, structural) {
+  const reasons = [];
+  if (setupDirection !== 'long' && setupDirection !== 'short') {
+    reasons.push('NO_DIRECTIONAL_THESIS');
+    return { relation: 'neutral', reasons };
+  }
+  if (structural.completeness !== 'complete' || structural.structuralState === 'unresolved') {
+    reasons.push('EVIDENCE_INCOMPLETE');
+    return { relation: 'neutral', reasons };
+  }
+
+  const s = structural.structuralState;
+  const ut = structural.utDirection; // 'bullish' | 'bearish' | 'unknown'
+  const isLong = setupDirection === 'long';
+
+  const regimeDir = s.endsWith('_rising') ? 'bullish' : s.endsWith('_falling') ? 'bearish' : 'flat';
+  const priceSide = s.indexOf('above') === 0 ? 'above' : 'below';
+  const clean = (regimeDir === 'bullish' && priceSide === 'above') || (regimeDir === 'bearish' && priceSide === 'below');
+  const challenged = (regimeDir === 'bullish' && priceSide === 'below') || (regimeDir === 'bearish' && priceSide === 'above');
+  const flat = regimeDir === 'flat';
+
+  const structureSupports = isLong ? regimeDir === 'bullish' : regimeDir === 'bearish';
+  const structureOpposes = isLong ? regimeDir === 'bearish' : regimeDir === 'bullish';
+  const utSupports = (isLong && ut === 'bullish') || (!isLong && ut === 'bearish');
+  const utOpposes = (isLong && ut === 'bearish') || (!isLong && ut === 'bullish');
+  const utAvailable = ut !== 'unknown';
+
+  // Flat/non-trending: no structural edge of its own — owner doctrine §2,
+  // can reach 'supportive' only via genuine UT confirmation, never
+  // 'aligned', never merely from price side alone.
+  if (flat) {
+    reasons.push('STRUCTURE_NON_TRENDING');
+    if (!utAvailable) { reasons.push('UT_UNAVAILABLE'); return { relation: 'neutral', reasons }; }
+    if (utSupports) { reasons.push('UT_CONFIRMS'); return { relation: 'supportive', reasons }; }
+    reasons.push('UT_OPPOSES');
+    return { relation: 'neutral', reasons };
+  }
+
+  if (structureSupports) {
+    reasons.push('STRUCTURE_SUPPORTS');
+    if (challenged) reasons.push('REGIME_CHALLENGED');
+    if (!utAvailable) {
+      reasons.push('UT_UNAVAILABLE');
+      return { relation: 'supportive', reasons }; // structural edge alone, never 'aligned' without UT's own confirmation
+    }
+    if (utSupports) {
+      reasons.push('UT_CONFIRMS');
+      return { relation: clean ? 'aligned' : 'supportive', reasons }; // 'aligned' requires BOTH clean structure AND UT confirmation
+    }
+    reasons.push('UT_OPPOSES');
+    return { relation: clean ? 'supportive' : 'neutral', reasons }; // clean structure alone still supportive despite UT opposing; challenged structure + opposing UT is no longer a clear edge
+  }
+
+  if (structureOpposes) {
+    reasons.push('STRUCTURE_OPPOSES');
+    if (challenged) reasons.push('REGIME_CHALLENGED');
+    if (!utAvailable) {
+      reasons.push('UT_UNAVAILABLE');
+      return { relation: 'conflict', reasons }; // structural headwind alone still a headwind without UT data to soften it
+    }
+    if (utSupports) {
+      reasons.push('UT_CONFIRMS');
+      // Owner doctrine §3: UT neutralises a clean conflict, never converts
+      // it into a tailwind. A challenged (already-weakened) opposing
+      // structure with UT now supporting the thesis IS a genuine tailwind.
+      return { relation: clean ? 'neutral' : 'supportive', reasons };
+    }
+    reasons.push('UT_OPPOSES');
+    return { relation: 'conflict', reasons };
+  }
+
+  // Unreachable given regimeDir/flat partition every case above, but kept
+  // as an honest fallback rather than assuming.
+  reasons.push('STRUCTURE_NON_TRENDING');
+  return { relation: 'neutral', reasons };
+}
+
+// Top-level assembly — owner-approved schema (V5.4.0F2H rev2), separating
+// factual Daily evidence (meta/facts/structuralState) from setup-relative
+// interpretation (relation). confirmedBarId is the Daily confirmed bar
+// identity already established by calcPair's own existing adjacent-bar-
+// identity convention (v51Evidence.confirmedBars.adjacent.barId) — no new
+// bar-identity concept invented.
+function buildHtfContext(setupDirection, confirmedBarId, price, ma200, prevMa200, utDirectionRaw) {
+  const structural = _dailyStructuralState(price, ma200, prevMa200, utDirectionRaw);
+  const rel = _deriveHtfRelation(setupDirection, structural);
+  return {
+    meta: { tf: '1d', confirmedBarId: confirmedBarId || null, completeness: structural.completeness },
+    facts: { priceVsMa200: structural.priceVsMa200, ma200Direction: structural.ma200DirectionState, utDirection: structural.utDirection },
+    structuralState: structural.structuralState,
+    relation: { state: rel.relation, reasons: rel.reasons },
+  };
+}
+
+const HTF_RELATION_GLYPH = { aligned: '\u2713', supportive: '\u25d0', neutral: '\u2013', conflict: '\u2717' };
+
+// TDAS V5.4.0F2H — deterministic hover text for the canonical HTF pill.
+// Consumes ONLY the already-computed structured relation/reasons (owner
+// doctrine §5/§12) — never re-derives or re-interprets the decision. Plain
+// factual sentences, not F3-style Narrative prose (owner doctrine §12).
+// TDAS V5.4.0F2H — deterministic hover text for the canonical HTF pill.
+// Consumes ONLY the already-computed structured relation/reasons/facts
+// (owner doctrine §3/§12) — never re-derives or re-interprets the
+// decision. Plain factual sentences, not F3-style Narrative prose (owner
+// doctrine §12). Regime naming matches _deriveHtfRelation()'s own
+// regimeDir/priceSide/clean/challenged logic exactly (derived from the
+// SAME structuralState string, never a second interpretation) — a flat
+// 200MA is described as non-trending/consolidative, never as a "weak"
+// bullish/bearish regime (owner doctrine §2); a clean-vs-challenged
+// disagreement between price side and 200MA direction is named after the
+// INCUMBENT regime implied by 200MA direction, with price described as
+// challenging it (owner doctrine §3) — e.g. price above a still-falling
+// 200MA is "BEARISH REGIME — CHALLENGED", never described as bullish.
+function _formatHtfPillHover(htfState, setupDirectionWord) {
+  if (!htfState) return '';
+  const rel = htfState.relation;
+  const dirWord = setupDirectionWord === 'LONG' ? 'LONG' : setupDirectionWord === 'SHORT' ? 'SHORT' : null;
+  if (!dirWord) return 'No active directional 4H thesis to compare with the Daily timeframe.';
+  if (rel.reasons.indexOf('EVIDENCE_INCOMPLETE') !== -1) return 'Daily 200MA evidence is not yet available.';
+
+  const facts = htfState.facts;
+  const s = htfState.structuralState;
+  const regimeDir = s.endsWith('_rising') ? 'bullish' : s.endsWith('_falling') ? 'bearish' : 'flat';
+  const priceSide = s.indexOf('above') === 0 ? 'above' : 'below';
+
+  let structureClause;
+  if (regimeDir === 'flat') {
+    structureClause = 'Daily structure is non-trending (200MA flat); price is ' + priceSide + ' the 200MA.';
+  } else {
+    const regimeLabel = regimeDir === 'bullish' ? 'BULLISH REGIME' : 'BEARISH REGIME';
+    const clean = (regimeDir === 'bullish' && priceSide === 'above') || (regimeDir === 'bearish' && priceSide === 'below');
+    structureClause = clean
+      ? 'Daily structure: ' + regimeLabel + ' (price ' + priceSide + ' a ' + regimeDir + ' 200MA).'
+      : 'Daily structure: ' + regimeLabel + ' \u2014 CHALLENGED (price ' + priceSide + ' a still-' + (regimeDir === 'bullish' ? 'rising' : 'falling') + ' 200MA).';
+  }
+
+  const utClause = facts.utDirection === 'unknown' ? 'Daily UT Bot is unavailable.'
+    : 'Daily UT Bot is ' + facts.utDirection + '.';
+
+  let verdict;
+  if (rel.state === 'aligned') verdict = 'Both confirm the current 4H ' + dirWord + ' thesis.';
+  else if (rel.state === 'supportive') verdict = 'This leans supportive for the current 4H ' + dirWord + ' thesis, but is incomplete or challenged.';
+  else if (rel.state === 'conflict') verdict = 'This remains a meaningful headwind against the current 4H ' + dirWord + ' thesis.';
+  else verdict = 'This provides no clear directional edge for the current 4H ' + dirWord + ' thesis.';
+
+  return structureClause + ' ' + utClause + ' ' + verdict;
+}
+
+
 // Reuses the existing adxTrending (adx>=25) / adxStrong (adx>=40) states
 // already calculated by TDAS — no second ADX threshold system. This
 // codebase has no independent signal distinguishing 'weak' (ADX low but
@@ -10018,33 +10264,79 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
 // interpretation from raw d.evaluation/d.regime). N/A only when the
 // underlying fact is genuinely unknown, never merely because legacy
 // ev.tradeBias === 'NEUTRAL'.
-function _fourHNarrativeDotState(ctx) {
-  if (!ctx || ctx.meta.completeness === 'unavailable') return { regimeCls: 'na', htfCls: 'na', temaCls: 'na', utCls: 'na' };
-  const dirWord = ctx.trend.direction;
-  if (dirWord === 'neutral') return { regimeCls: 'na', htfCls: 'na', temaCls: 'na', utCls: 'na' };
+// TDAS V5.4.0F2H — 4H card evidence-dot row (owner doctrine §1/§9/§10/§11).
+// Replaces the prior Regime/HTF/TEMA/UT row (_fourHNarrativeDotState,
+// ctx-based, retired — see below) with Trend/SMA80/TEMA/UT. Reads `d`
+// DIRECTLY (never routes through the Narrative context/composer layer —
+// a strategic dot must never depend on a presentation-prose intermediary's
+// own decisions, which is itself F3 territory). Trend and SMA80 are pure,
+// standalone, independently testable functions; TEMA/UT are unchanged in
+// meaning, just read directly from d.trendState instead of via ctx.
+//
+// Trend dot (owner doctrine §9) — ONLY canonical 4H priceVsMa200,
+// ma200Direction.directionState, chopState, and canonical 4H TSE direction.
+// No TEMA/UT/SMA80/ADX/RSI/displacement. Precedence, settled:
+//   grey  — no canonical TSE direction; genuine chop; evidence incomplete.
+//   red   — price side AND 200MA direction both clearly oppose the thesis.
+//   green — price side AND 200MA direction both clearly support the thesis,
+//           AND chop is clear.
+//   amber — everything else (challenged either way, MA flat, or an
+//           otherwise-clean-supporting read where chop is transitional).
+function _fourHTrendDotState(d) {
+  if (!d || d.tf !== '4h' || !d.trendState) return 'grey';
+  const ts = d.trendState;
+  const direction = ts.direction; // 'LONG' | 'SHORT' | 'NEUTRAL'
+  if (direction !== 'LONG' && direction !== 'SHORT') return 'grey';
+  const chop = ts.chopState; // clear | transitional | chop | unknown
+  if (chop === 'chop' || chop === 'unknown' || !chop) return 'grey';
+  const raw = d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.raw;
+  if (!raw || !raw.complete) return 'grey';
+  const priceVsMa200 = raw.priceVsMa200; // above | below | equal | unknown
+  const maDir = raw.ma200DirectionState; // rising | falling | flat | unknown
+  if (priceVsMa200 === 'unknown' || priceVsMa200 === 'equal' || maDir === 'unknown') return 'grey';
+  const isLong = direction === 'LONG';
+  const priceSupports = isLong ? priceVsMa200 === 'above' : priceVsMa200 === 'below';
+  const maSupports = isLong ? maDir === 'rising' : maDir === 'falling';
+  const priceOpposes = isLong ? priceVsMa200 === 'below' : priceVsMa200 === 'above';
+  const maOpposes = isLong ? maDir === 'falling' : maDir === 'rising';
+  if (priceOpposes && maOpposes) return 'red';
+  if (priceSupports && maSupports && chop === 'clear') return 'green';
+  return 'amber';
+}
 
-  const regimeState = ctx.structure.ma200.regime;
-  let regimeDirWord = 'unknown';
-  if (regimeState === 'confirmed_bullish' || regimeState === 'bullish_transitional') regimeDirWord = 'bullish';
-  else if (regimeState === 'confirmed_bearish' || regimeState === 'bearish_transitional') regimeDirWord = 'bearish';
-  const regimeCls = regimeDirWord === 'unknown' ? 'na' : (regimeDirWord === dirWord ? 'ok' : 'no');
+// SMA80 dot (owner doctrine §10) — reuses the existing direction-relative
+// v51SmaStateMachine() state machine unchanged, zero new tolerance. That
+// state machine is already called with the resolved setup direction baked
+// in, so its own state enum is already "supportive/opposing" in meaning —
+// this is a pure relabel to dot colour, not a new interpretation.
+function _fourHSma80DotState(d) {
+  if (!d || d.tf !== '4h') return 'grey';
+  const sma = d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.sma;
+  if (!sma || !sma.complete) return 'grey';
+  if (sma.state === 'Holding' || sma.state === 'Reclaimed') return 'green';
+  if (sma.state === 'Testing') return 'amber';
+  if (sma.state === 'Lost') return 'red';
+  return 'grey';
+}
 
-  const htfKey = ctx.htf.relation;
-  let htfCls = 'na';
-  if (htfKey && htfKey !== 'unknown') {
-    const bullishKeys = ['bullish', 'bullish-weak', 'mixed-bullish'];
-    const bearishKeys = ['bearish', 'bearish-weak', 'mixed-bearish'];
-    const htfDirWord = bullishKeys.indexOf(htfKey) !== -1 ? 'bullish' : bearishKeys.indexOf(htfKey) !== -1 ? 'bearish' : 'neutral';
-    htfCls = htfDirWord === 'neutral' ? 'warn' : (htfDirWord === dirWord ? 'ok' : 'no');
-  }
+function _fourHCardDotState(d) {
+  const na = { trendCls: 'na', sma80Cls: 'na', temaCls: 'na', utCls: 'na' };
+  if (!d || d.tf !== '4h' || !d.trendState) return na;
+  const ts = d.trendState;
+  const dirWord = ts.direction === 'LONG' ? 'bullish' : ts.direction === 'SHORT' ? 'bearish' : 'neutral';
+  if (dirWord === 'neutral') return na;
 
-  const temaPhase = ctx.momentum.tema.phase;
+  const dotColourToCls = { green: 'ok', amber: 'warn', red: 'no', grey: 'na' };
+  const trendCls = dotColourToCls[_fourHTrendDotState(d)] || 'na';
+  const sma80Cls = dotColourToCls[_fourHSma80DotState(d)] || 'na';
+
+  const temaPhase = ts.temaPhase;
   const temaCls = temaPhase === 'aligned' ? 'ok' : temaPhase === 'opposing' ? 'warn' : 'na';
 
-  const utDirWord = ctx.momentum.ut.direction;
+  const utDirWord = ts.utDirection;
   const utCls = (!utDirWord || utDirWord === 'unknown') ? 'na' : (utDirWord === dirWord ? 'ok' : 'no');
 
-  return { regimeCls: regimeCls, htfCls: htfCls, temaCls: temaCls, utCls: utCls };
+  return { trendCls, sma80Cls, temaCls, utCls };
 }
 
 // ── Rollback seams (V5.3.3B) ──────────────────────────────────────────────
@@ -11271,7 +11563,7 @@ function buildCanonicalEval(d, symbol, entry) {
         tf: tf || null, symbol: symbol || null, confirmedBarId: null,
         rulesetVersion: TREND_STATE_RULESET_VERSION, completeness: 'not_applicable_tf',
       },
-      evidence: null, technicalState: null, advisoryState: null, lifecycle: null,
+      evidence: null, technicalState: null, advisoryState: null, lifecycle: null, htfState: null,
     };
   }
 
@@ -11379,8 +11671,29 @@ function buildCanonicalEval(d, symbol, entry) {
   // routing doctrine.
   const lifecycle = resolveCanonicalLifecycle(d, { meta, evidence, technicalState, advisoryState }, entry);
 
-  return { meta, evidence, technicalState, advisoryState, lifecycle };
+  // TDAS V5.4.0F2H — canonical setup-relative HTF relationship (owner
+  // doctrine §6/§7). Combines the direction-free Daily structural fact
+  // already computed and attached by calcPair (d.dailyStructuralFact —
+  // computed once, before any setup direction is known) with the
+  // canonical 4H TSE direction (ts.direction, available only here) via
+  // the pure decision table in _deriveHtfRelation(). This is the ONE
+  // canonical HTF relationship result — downstream presentation (Scanner
+  // pill, Trade Ready rear, Watch) reads this, never buildHtfBadgeState()
+  // or legacy htfTrendContext, for any surface migrated in this build.
+  const _htfSetupDirection = ts && ts.direction === 'LONG' ? 'long' : ts && ts.direction === 'SHORT' ? 'short' : null;
+  const _dailyFact = d.dailyStructuralFact || { structuralState: 'unresolved', priceVsMa200: 'unknown', ma200DirectionState: 'unknown', utDirection: 'unknown', completeness: 'unavailable' };
+  const _htfRel = _deriveHtfRelation(_htfSetupDirection, _dailyFact);
+  const _dailyBarId = (v51 && v51.confirmedBars && v51.confirmedBars.adjacent) ? v51.confirmedBars.adjacent.barId : null;
+  const htfState = {
+    meta: { tf: '1d', confirmedBarId: _dailyBarId, completeness: _dailyFact.completeness },
+    facts: { priceVsMa200: _dailyFact.priceVsMa200, ma200Direction: _dailyFact.ma200DirectionState, utDirection: _dailyFact.utDirection },
+    structuralState: _dailyFact.structuralState,
+    relation: { state: _htfRel.relation, reasons: _htfRel.reasons },
+  };
+
+  return { meta, evidence, technicalState, advisoryState, lifecycle, htfState };
 }
+
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║  TDAS V5.4.0C — Canonical 4H Lifecycle Resolver (owner doctrine §4-§7)   ║
@@ -12523,9 +12836,23 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
 
   const rows = [];
   const cautions = [];
-  // HTF — canonical four-state badge, byte-identical function/inputs to
-  // the front card's own HTF badge (renderCard() -> buildHtfBadgeState).
-  const _htfState = (typeof buildHtfBadgeState === 'function') ? buildHtfBadgeState(d, dirLower) : 'neutral';
+  // TDAS V5.4.0F2H — HTF row migrated to the canonical F2H relationship
+  // for 4H setups only (owner doctrine §8): same d.eval.htfState the front
+  // pill/Watch card already read, re-applied here via the same pure
+  // _deriveHtfRelation() decision table using canonical ADVISORY direction
+  // (this checklist only renders when advisory.tradeReady is true, so
+  // advisory.direction is the validated, already-resolved direction — not
+  // re-anchored to a live/legacy signal). 1H standalone setups are
+  // completely untouched and keep the exact pre-F2H buildHtfBadgeState()
+  // path (owner doctrine: "Do not migrate ... standalone-1H consumers").
+  const _isFourHCanonicalRear = d && d.tf === '4h' && d.eval && d.eval.htfState;
+  const _htfState = _isFourHCanonicalRear
+    ? _deriveHtfRelation(dirLower, {
+        structuralState: d.eval.htfState.structuralState,
+        completeness: d.eval.htfState.meta.completeness,
+        utDirection: d.eval.htfState.facts.utDirection,
+      }).relation
+    : (typeof buildHtfBadgeState === 'function') ? buildHtfBadgeState(d, dirLower) : 'neutral';
   if (_htfState === 'aligned') rows.push('HTF aligned');
   else if (_htfState === 'supportive') cautions.push('HTF partially aligned \u2014 not fully confirmed');
   // TEMA structure — direction-aware, matches the trade direction being
@@ -14655,6 +14982,13 @@ function buildV51Evidence(ctx) {
         prevT17: confirmedIndicators.t17a[confirmedIndicators.t17a.length - 2],
         prevT92: confirmedIndicators.t92a[confirmedIndicators.t92a.length - 2],
         ma200: confirmedIndicators.ma200, prevMa200: confirmedIndicators.prevMa200,
+        // TDAS V5.4.0F2H — additive canonical setup-tf direction/price-side
+        // facts (owner doctrine §9 Trend dot). Same canonical producers/
+        // values already computed above for TSE regime derivation
+        // (setupMa200Direction.strictDirection/setupPriceVsMa200) — exposed
+        // here unchanged so the Trend dot never re-derives them.
+        ma200DirectionState: setupMa200Direction.directionState,
+        priceVsMa200: setupPriceVsMa200,
         sma80: confirmedIndicators.sma80, sma135: confirmedIndicators.sma135,
         sma80SlopeAtr: confirmedIndicators.sma80SlopeAtr, sma80WindowSlopeAtr: confirmedIndicators.sma80WindowSlopeAtr, sma80SlopeState: confirmedIndicators.sma80SlopeState,
         priceAboveSma80: confirmedIndicators.sma80 != null ? confirmedIndicators.lastClosedPrice > confirmedIndicators.sma80 : null,
@@ -17541,6 +17875,23 @@ async function calcPair(symbol,tf){
     }
   }
 
+  // TDAS V5.4.0F2H — canonical Daily structural fact (owner doctrine §5/§6).
+  // ONE additive structured field (not a family of parallel raw scalars —
+  // owner doctrine §6 explicitly permits reusing htfMa200/htfPrevMa200/
+  // htfUtBot as transitional inputs, which is exactly what this does).
+  // Calls the SAME canonical producers F2 already established
+  // (_ma200SlopeFromValues/_priceVsMa200FromValues) on the confirmed Daily
+  // close/SMA200 pair already computed above (hc[last]/_htfSma200/
+  // _htfPrevSma200) — no new fetch, no alternate 200MA calculation.
+  // Direction-free by design (see _dailyStructuralState's own header) —
+  // the setup-relative interpretation is deliberately deferred to
+  // buildCanonicalEval(), where the canonical TSE direction first becomes
+  // available. Legacy htfTrendContext (above) is completely untouched and
+  // remains available for existing contextual/legacy consumers.
+  const dailyStructuralFact = sma200ok
+    ? _dailyStructuralState(hc[hc.length - 1], _htfSma200, _htfPrevSma200, htfUtBot && typeof htfUtBot.direction === 'number' ? htfUtBot.direction : null)
+    : { structuralState: 'unresolved', priceVsMa200: 'unknown', ma200DirectionState: 'unknown', utDirection: 'unknown', completeness: 'unavailable' };
+
   if(DEBUG_MODE) console.debug('[calcPair HTF]',symbol,tf,{
     htf,rawH:rawH.length,closed:hc.length,sma200ok,
     htfAbove,ht17:ht17?.toFixed(2),ht92:ht92?.toFixed(2),
@@ -18456,6 +18807,12 @@ async function calcPair(symbol,tf){
     // the pre-existing trailing literal test_ma200_adjacent_context.js
     // asserts verbatim (see that literal's own comment below).
     htfLong,htfShort,
+    // TDAS V5.4.0F2H — additive canonical Daily structural fact (see its
+    // own computation above, right after htfWidening). Placed here for the
+    // same reason htfLong/htfShort are placed here rather than near
+    // htfTrendContext — preserves the pre-existing trailing literal
+    // test_ma200_adjacent_context.js asserts verbatim, unbroken.
+    dailyStructuralFact,
     tradeStage,tradeAgeHours,
     // TDAS V4.9.2 T3 — additive 200MA chop-detection state (setup).
     // Already computed above via _ma200ChopFromCloses(closes) — no
@@ -19020,7 +19377,7 @@ async function calcPair(symbol,tf){
     _result.eval = {
       meta: { tf: _result.tf || null, symbol: symbol || null, confirmedBarId: null,
         rulesetVersion: TREND_STATE_RULESET_VERSION, completeness: 'unavailable' },
-      evidence: null, technicalState: null, advisoryState: null, lifecycle: null,
+      evidence: null, technicalState: null, advisoryState: null, lifecycle: null, htfState: null,
       errorMessage: (_evalErr && _evalErr.message) ? _evalErr.message : String(_evalErr),
     };
   }
@@ -20283,24 +20640,30 @@ function buildDecisionDotsHtml(d){
   let regimeCls='na', htfCls='na', temaCls='na', utCls='na';
 
   // TDAS V5.3.3B — 4H evidence-strip narrative override (audit §6/§19/§20).
-  // Deliberately does NOT depend on `hasBias` (legacy ev.tradeBias) at all
-  // when engaged — a TSE Trade Ready/Watch card must not render meaningless
-  // N/A dots merely because the legacy classifier has no bias (the source-
-  // proven "blank strip" hazard the audit identified). No-op for any
-  // non-4H card, or when the flag is off — falls through unchanged to the
-  // exact V5.3.3 legacy dots logic below.
+  // TDAS V5.4.0F2H — dot identities changed from Regime/HTF to Trend/SMA80
+  // (owner doctrine §1/§3/§10): reads `d` directly via _fourHCardDotState()
+  // rather than routing through the Narrative context/composer
+  // (buildFourHNarrativeContext), since a strategic dot must never depend
+  // on a presentation-prose intermediary's own decisions. TEMA/UT keep
+  // their exact prior meaning (still trendState-sourced), only the read
+  // path changed from ctx.momentum.* to d.trendState.* directly — same
+  // values. Deliberately does NOT depend on `hasBias` (legacy
+  // ev.tradeBias) at all when engaged — a TSE Trade Ready/Watch card must
+  // not render meaningless N/A dots merely because the legacy classifier
+  // has no bias (the source-proven "blank strip" hazard the audit
+  // identified). No-op for any non-4H card, or when the flag is off —
+  // falls through unchanged to the exact V5.3.3 legacy dots logic below.
   if (DIAG.evidenceStripNarrativeLive === true && d && d.tf === '4h') {
     try {
-      const _stripCtx = buildFourHNarrativeContext(d);
-      const _dots = _fourHNarrativeDotState(_stripCtx);
+      const _dots = _fourHCardDotState(d);
       return '<div class="dot-row dot-row-lg">'
-        + item(_dots.regimeCls,'Regime') + item(_dots.htfCls,'HTF')
+        + item(_dots.trendCls,'Trend') + item(_dots.sma80Cls,'SMA80')
         + item(_dots.temaCls,'TEMA') + item(_dots.utCls,'UT')
         + '</div>';
     } catch (e) {
-      if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildDecisionDotsHtml] 4H narrative strip threw, degrading to all-na', e);
+      if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildDecisionDotsHtml] 4H card dot row threw, degrading to all-na', e);
       return '<div class="dot-row dot-row-lg">'
-        + item('na','Regime') + item('na','HTF') + item('na','TEMA') + item('na','UT')
+        + item('na','Trend') + item('na','SMA80') + item('na','TEMA') + item('na','UT')
         + '</div>';
     }
   }
@@ -20501,7 +20864,18 @@ function renderCard(symbol,d){
   // renderCard) so the card's left-rail colour and the Evaluation block box
   // always agree — single source of truth, not two separate computations.
   const _advStateClass = _advisoryStateClass(_advisory);
-  const advisoryHtml = buildEvaluationSummaryHtml(d, _advisory);
+  // TDAS V5.4.0F2H — Trade Ready presentation hierarchy (owner doctrine
+  // §13). Trade Ready overrides the normal presentation hierarchy, not the
+  // evidence/strategy underneath it: advisory.tradeReady/action/detail are
+  // completely untouched (eligibility/routing unchanged) — only the FRONT
+  // CARD suppresses the redundant "TRADE READY" Advisory headline block
+  // once the dominant, actionable CTA (buildTradeReadyFrontButtonHtml,
+  // computed below) is already present, so the same fact is never stated
+  // twice on one card. Technical context (technicalSummaryHtml) and the
+  // canonical back-face checklist are both completely unaffected. Applies
+  // identically to COUNTER_HTF (same advisory.tradeReady gate, same CTA
+  // path) without changing its meaning.
+  const advisoryHtml = (_advisory && _advisory.tradeReady) ? '' : buildEvaluationSummaryHtml(d, _advisory);
 
   // TDAS V5.4.0C — Category D fix (formal d.signal inventory finding):
   // this token drives the card's own left-border colour class
@@ -20536,9 +20910,21 @@ function renderCard(symbol,d){
   // unchanged, still untouched) whenever a concrete direction is known.
   // Neutral-signal fallback to htfAlign is completely unchanged — this
   // task does not redesign neutral-signal handling.
-  const _htfPillState = (signal==='long'||signal==='short')
-    ? buildHtfBadgeState(d, signal)
-    : htfAlign;
+  // TDAS V5.4.0F2H — 4H canonical HTF relationship (owner doctrine §7).
+  // Compares confirmed Daily context against CANONICAL 4H TSE direction
+  // (d.eval.technicalState.direction), never legacy d.signal, never
+  // htfAlign. Hard invariant: same canonical 4H TSE direction + same
+  // confirmed Daily bar => same pill, proven by
+  // test_v54f2h_htf_pill_stability.js. 1H cards are completely untouched —
+  // standalone 1H canonical authority does not exist yet (owner doctrine
+  // §14) — and keep the exact pre-F2H buildHtfBadgeState()/htfAlign path.
+  const _isFourHCanonicalPill = d && d.tf === '4h' && d.eval && d.eval.htfState;
+  const _htfPillState = _isFourHCanonicalPill
+    ? d.eval.htfState.relation.state
+    : (signal==='long'||signal==='short') ? buildHtfBadgeState(d, signal) : htfAlign;
+  const _htfPillHover = _isFourHCanonicalPill
+    ? _formatHtfPillHover(d.eval.htfState, d.eval.technicalState.direction)
+    : '';
   const htfText = HTF_BADGE_GLYPH[_htfPillState]
     ? `HTF ${htf.toUpperCase()} ${HTF_BADGE_GLYPH[_htfPillState]}`
     : `HTF ${htf.toUpperCase()} \u2013`;
@@ -20811,7 +21197,7 @@ function renderCard(symbol,d){
     <div class="tdas-card-front">
     <div class="cz cz-top card-top">
       <div class="pair">${LABELS[symbol]}${_authoritativeHighConvictionForStar?' \u2b50':''}</div>
-      <span class="htf-badge ${_htfPillState}">${htfText}</span>
+      <span class="htf-badge ${_htfPillState}"${_htfPillHover ? ` title="${_htfPillHover.replace(/"/g,'&quot;')}"` : ''}>${htfText}</span>
       <button class="snap-btn" type="button" title="Copy snapshot" data-sym="${symbol}" onclick="event.stopPropagation();event.preventDefault();copySnapshot(this.dataset.sym,this);"><span class="snap-icon"></span></button>
     </div>
     <div class="cz" style="padding-top:8px;padding-bottom:8px;">
@@ -20823,7 +21209,7 @@ function renderCard(symbol,d){
     <div class="cz-price" style="padding-bottom:10px;">
       <div class="price-pill-row">
         <span class="price">${fmt(price)}</span>
-        <span class="sig-pill ${pillClass}${advisoryHtml?' pill-demoted':''}">${pillText}</span>
+        <span class="sig-pill ${pillClass}${_advisory?' pill-demoted':''}">${pillText}</span>
       </div>
     </div>
     ${technicalSummaryHtml?'<div class="cz" style="padding-top:0;padding-bottom:10px;">'+technicalSummaryHtml+'</div>':''}
@@ -25120,7 +25506,29 @@ function renderWatchCard(e){
   // ── Front face fields — same HTF badge / session-candle source fields
   // as the Trade front (renderOrderTicketCard) and the Scanner active
   // placeholder, all reading the same liveData shape. ──────────────────
-  const _htfState = (typeof buildHtfBadgeState==='function' && liveData) ? buildHtfBadgeState(liveData, e.signal) : 'unknown';
+  // TDAS V5.4.0F2H — 4H canonical HTF relationship (owner doctrine §8/§10).
+  // A Watch entry represents a specific persisted thesis the user chose to
+  // monitor — compares confirmed Daily context against e.signal (the
+  // PERSISTED watch direction), never a subsequently-flipped live TSE
+  // direction, so the pill can never silently turn a watched SHORT thesis
+  // into a LONG one. Reads the CANONICAL d.eval.htfState's own factual
+  // fields (never the raw d.dailyStructuralFact producer output directly —
+  // owner doctrine §10) and re-applies the SAME pure _deriveHtfRelation()
+  // decision table with the watch's own persisted direction — never a
+  // second classifier, never an independent reconstruction. 1H watch
+  // entries are completely untouched (standalone 1H canonical authority
+  // does not exist yet, owner doctrine §14) and keep the exact pre-F2H
+  // path.
+  const _watchHtfState = liveData && liveData.eval && liveData.eval.htfState;
+  const _isFourHCanonicalWatchPill = e && e.tf === '4h' && liveData && liveData.tf === '4h' && _watchHtfState;
+  const _watchSetupDirection = e && (e.signal === 'long' || e.signal === 'short') ? e.signal : null;
+  const _htfState = _isFourHCanonicalWatchPill
+    ? _deriveHtfRelation(_watchSetupDirection, {
+        structuralState: _watchHtfState.structuralState,
+        completeness: _watchHtfState.meta.completeness,
+        utDirection: _watchHtfState.facts.utDirection,
+      }).relation
+    : (typeof buildHtfBadgeState==='function' && liveData) ? buildHtfBadgeState(liveData, e.signal) : 'unknown';
   const htfText = liveData ? `HTF ${(liveData.htf||'').toUpperCase()} ${HTF_BADGE_GLYPH[_htfState]||''}` : '';
   const _hasCandleTimer = liveData && liveData.minsRemaining!=null && liveData.secsRemaining!=null;
   const countdownUrgent = _hasCandleTimer && liveData.candleClosePct>=90;
