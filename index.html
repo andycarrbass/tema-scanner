@@ -2203,7 +2203,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0F2H';
+const APP_BUILD = 'V5.4.0F3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -7205,14 +7205,15 @@ function _formatHtfPillHover(htfState, setupDirectionWord) {
     structureClause = 'Daily structure is non-trending (200MA flat); price is ' + priceSide + ' the 200MA.';
   } else {
     const regimeLabel = regimeDir === 'bullish' ? 'BULLISH REGIME' : 'BEARISH REGIME';
+    const maDirWord = regimeDir === 'bullish' ? 'rising' : 'falling';
     const clean = (regimeDir === 'bullish' && priceSide === 'above') || (regimeDir === 'bearish' && priceSide === 'below');
     structureClause = clean
-      ? 'Daily structure: ' + regimeLabel + ' (price ' + priceSide + ' a ' + regimeDir + ' 200MA).'
+      ? 'Daily structure: ' + regimeLabel + ' (price ' + priceSide + ' a ' + maDirWord + ' 200MA).'
       : 'Daily structure: ' + regimeLabel + ' \u2014 CHALLENGED (price ' + priceSide + ' a still-' + (regimeDir === 'bullish' ? 'rising' : 'falling') + ' 200MA).';
   }
 
-  const utClause = facts.utDirection === 'unknown' ? 'Daily UT Bot is unavailable.'
-    : 'Daily UT Bot is ' + facts.utDirection + '.';
+  const utClause = facts.utDirection === 'unknown' ? 'Daily UT is unavailable.'
+    : 'Daily UT is ' + facts.utDirection + '.';
 
   let verdict;
   if (rel.state === 'aligned') verdict = 'Both confirm the current 4H ' + dirWord + ' thesis.';
@@ -9524,7 +9525,25 @@ function _deriveHtf1dRelation(dir, htfTrendContext) {
 // object, already attached elsewhere in calcPair()), not from legacy
 // evaluation/score. Legacy score/actionBias/blockers are no longer read
 // anywhere in this function.
-function _buildCounterHtfShadow(d) {
+// TDAS V5.4.0F2H1 — Counter-HTF eligibility now reads the canonical
+// F2H HTF relationship (passed in from calcPair as `canonicalHtfRelation`,
+// computed exactly once per cycle — see calcPair's own "compute once"
+// comment at the call site) instead of the legacy TEMA-driven
+// _deriveHtf1dRelation()/d.htfTrendContext. Eligibility condition is now
+// exactly: existing Trade Ready prerequisites (status/direction, both
+// unchanged below) AND canonicalHtfRelation.relation === 'conflict'.
+// legacy d.htfTrendContext is untouched and remains available for
+// deferred legacy/Full Analysis consumers — this function simply no
+// longer reads it for eligibility. Outward contract preserved: same
+// field names/shape as before. `htf1dKey` is kept for diagnostic
+// continuity (still sourced from the legacy classifier, informational
+// only, no longer authoritative). headline/detail text unchanged except
+// removing the now-unsupported "strongly opposing" gradation, which has
+// no canonical equivalent (canonical relation is a flat 4-state enum with
+// no severity gradation within 'conflict') — not new wording, a removal
+// forced by the changed input vocabulary. Full language pass is deferred
+// to F3 per owner instruction.
+function _buildCounterHtfShadow(d, canonicalHtfRelation) {
   const tse = d && d.tradeReadyV1TseShadow;
   if (!tse) {
     return { eligible: false, relation: null, reason: 'TSE_TRADE_READY_SHADOW_UNAVAILABLE' };
@@ -9537,21 +9556,20 @@ function _buildCounterHtfShadow(d) {
     return { eligible: false, relation: null, reason: 'TSE_DIRECTION_UNKNOWN', tseStatus: tse.status };
   }
 
-  const htf1d = _deriveHtf1dRelation(dir, d.htfTrendContext);
-  if (htf1d.relation !== 'opposing' && htf1d.relation !== 'strongly_opposing') {
-    return { eligible: false, relation: htf1d.relation, reason: 'NOT_1D_DRIVEN', tseStatus: tse.status };
+  const rel = canonicalHtfRelation || { relation: 'neutral', reasons: ['CANONICAL_HTF_RELATION_UNAVAILABLE'] };
+  if (rel.relation !== 'conflict') {
+    return { eligible: false, relation: rel.relation, reason: 'NOT_1D_DRIVEN', tseStatus: tse.status };
   }
 
-  const strengthWord = htf1d.relation === 'strongly_opposing' ? 'strongly ' : '';
   const regimeSideWord = dir === 'LONG' ? 'bearish' : 'bullish';
   return {
     eligible: true,
     direction: dir,
-    relation: htf1d.relation,
-    htf1dKey: htf1d.key,
+    relation: rel.relation,
+    htf1dKey: (d.htfTrendContext && d.htfTrendContext.key) || null,
     tseStatus: tse.status,
     headline: 'TRADE READY \u2014 COUNTER-HTF ' + dir,
-    detail: 'Strong 4H structure and supportive 1H execution, but the daily trend remains ' + strengthWord + regimeSideWord + '. Treat as a counter-trend setup with reduced conviction.',
+    detail: 'Strong 4H structure and supportive 1H execution, but the daily trend remains ' + regimeSideWord + '. Treat as a counter-trend setup with reduced conviction.',
     reason: 'COUNTER_HTF_ELIGIBLE',
   };
 }
@@ -9853,7 +9871,7 @@ function _fourHCanonicalIsDirectional(d) {
 // to one of these ids via the `factIds` arrays the composers return — the
 // mechanism the non-duplication tests (T-D1/T-D2) check.
 const NARRATIVE_FACT_VOCAB_V1 = Object.freeze([
-  'MA200_SIDE','MA200_REGIME','MA200_SLOPE','CHOP_STATE','CHOP_CROSSINGS',
+  'MA200_SIDE','MA200_REGIME','MA200_SLOPE','MA200_DIRECTION','CHOP_STATE','CHOP_CROSSINGS',
   'TEMA_PHASE','TEMA_DIRECTION','TEMA_MATURITY','TEMA_SEPARATION','TEMA_TRAJECTORY',
   'UT_DIRECTION','UT_ALIGNMENT','UT_FRESHNESS',
   'ADX_VALUE','ADX_BAND','ADX_SLOPE','ADX_DECAY',
@@ -9911,11 +9929,34 @@ function _fourHNarrativeSituation(ts, v51ev) {
   // ts.state === 'UNRESOLVED'. buildTrendState() only preserves a real
   // direction here via its FINAL fallback (TSE_INSUFFICIENT_EVIDENCE_FOR_
   // PHASE) — its earlier chop/unknown-regime early-return always forces
-  // direction to 'NEUTRAL'. A resolved direction here therefore always
-  // means: transitional regime + UT known + UT opposing + chop not 'chop'
-  // — i.e. reversal pressure (S3). See audit §C.3 for the full proof.
+  // direction to 'NEUTRAL'. A resolved direction here always means one of
+  // two exhaustive, mutually exclusive families (owner-approved census,
+  // TDAS V5.4.0F3 §S3): UT opposing the resolved direction (S3, CHALLENGED
+  // — genuine reversal pressure) or UT agreeing with it while chop is
+  // merely transitional (S3U, UNSETTLED — nothing is actually opposing,
+  // chop just hasn't cleared). Distinguished here using ONLY ts.utDirection
+  // vs the resolved direction — no new evidence, no re-derivation.
   if (ts.direction === 'LONG' || ts.direction === 'SHORT') {
-    return { situationId: 'S3', direction: ts.direction, phaseModifier: 'reversal_pressure' };
+    const dirWordS3 = ts.direction === 'LONG' ? 'bullish' : 'bearish';
+    const utAgreesS3 = ts.utDirection && ts.utDirection !== 'unknown' && ts.utDirection === dirWordS3;
+    if (utAgreesS3) {
+      return { situationId: 'S3U', direction: ts.direction, phaseModifier: 'unsettled' };
+    }
+    return { situationId: 'S3', direction: ts.direction, phaseModifier: 'challenged' };
+  }
+  // TDAS V5.4.0F3 — S1/CHOP ZONE split (owner-approved, §S1). A genuinely
+  // unresolved regime (regimeState==='unresolved_chop') always stays
+  // CHOPPY ENVIRONMENT. Full chop (chopState==='chop') with a CONFIRMED
+  // incumbent regime earns the more specific CHOP ZONE family — the
+  // regime is real and known (ts.regimeState says so) even though
+  // ts.direction itself is forced NEUTRAL by the chop gate; the display
+  // direction word is derived from regimeState alone here, never from a
+  // new analytical direction field. A transitional regime does not have
+  // enough structural authority to earn directional CHOP ZONE ownership
+  // and stays CHOPPY ENVIRONMENT, per owner doctrine.
+  if (ts.chopState === 'chop' && (ts.regimeState === 'confirmed_bullish' || ts.regimeState === 'confirmed_bearish')) {
+    const chopZoneDir = ts.regimeState === 'confirmed_bullish' ? 'LONG' : 'SHORT';
+    return { situationId: 'S1B', direction: chopZoneDir, phaseModifier: 'chop_zone' };
   }
   if (ts.regimeState === 'unresolved_chop' || ts.chopState === 'chop') {
     return { situationId: 'S1', direction: 'neutral', phaseModifier: null };
@@ -9957,6 +9998,14 @@ function buildFourHNarrativeContext(d) {
 
   put('MA200_REGIME', ts.regimeState, '4h', 'trendState');
   put('MA200_SLOPE', ts.ma200SlopeState, '4h', 'trendState');
+  // TDAS V5.4.0F3 — canonical true 200MA direction (F2's own
+  // ma200Direction.directionState, already computed, exposed on the setup
+  // evidence's raw object since F2H's Trend-dot work). Distinct from
+  // MA200_SLOPE above, which is the ATR-normalised DISPLACEMENT band
+  // (owner doctrine §11) — MA200_SLOPE must never be used to claim
+  // whether the 200MA itself is rising/falling; MA200_DIRECTION is the
+  // only truthful source for that claim.
+  if (v51ev && v51ev.raw && v51ev.raw.ma200DirectionState) put('MA200_DIRECTION', v51ev.raw.ma200DirectionState, '4h', 'v51Evidence');
   put('CHOP_STATE', ts.chopState, '4h', 'trendState');
   if (v51ev && v51ev.chop && v51ev.chop.crossings != null) put('CHOP_CROSSINGS', v51ev.chop.crossings, '4h', 'v51Evidence');
 
@@ -10001,7 +10050,12 @@ function buildFourHNarrativeContext(d) {
     put('EXTENSION_DISTANCE', v51ev.extension.distanceAtr, '4h', 'v51Evidence');
   }
 
-  if (d.htfTrendContext && d.htfTrendContext.key) put('HTF_RELATION', d.htfTrendContext.key, '1d', 'd.htfTrendContext');
+  // TDAS V5.4.0F3 — HTF_RELATION now sources from the canonical F2H1
+  // d.eval.htfState.relation.state (owner doctrine §9), never legacy
+  // d.htfTrendContext. Same already-computed object the pill/Counter-HTF
+  // already consume — no re-derivation, no second HTF authority.
+  const _canonicalHtf = d.eval && d.eval.htfState;
+  if (_canonicalHtf) put('HTF_RELATION', _canonicalHtf.relation.state, '1d', 'd.eval.htfState');
   if (ch) put('HTF_COUNTER', { eligible: !!ch.eligible, relation: ch.relation || null }, '1d', 'counterHtfShadow');
 
   const execCheck = tr && tr.checks && tr.checks.executionRegime;
@@ -10052,7 +10106,7 @@ function buildFourHNarrativeContext(d) {
         trajectory: (v51ev && v51ev.tema && v51ev.tema.separation) ? v51ev.tema.separation.trajectory : 'unknown',
         consecutiveCount: (v51ev && v51ev.tema && v51ev.tema.separation) ? v51ev.tema.separation.consecutiveCount : 0,
       },
-      ut: { direction: ts.utDirection, aligned: utAligned === 'unknown' ? null : (utAligned === 'aligned'), barsSinceFlip: ts.utBarsSinceFlip, freshnessKey: null },
+      ut: { direction: ts.utDirection, aligned: utAligned === 'unknown' ? null : (utAligned === 'aligned'), barsSinceFlip: ts.utBarsSinceFlip, freshnessKey: ts.utBarsSinceFlip != null ? classifyUtFreshness(ts.utBarsSinceFlip).key : null },
     },
     quality: {
       adx: (v51ev && v51ev.adx && v51ev.adx.complete)
@@ -10061,7 +10115,7 @@ function buildFourHNarrativeContext(d) {
         : null,
     },
     extension: facts.EXTENSION_TIER ? { tier: facts.EXTENSION_TIER.value, distanceAtr: facts.EXTENSION_DISTANCE ? facts.EXTENSION_DISTANCE.value : null, tf: facts.EXTENSION_TIER.tf, anchor: 'TEMA92' } : null,
-    htf: { tf: '1d', relation: facts.HTF_RELATION ? facts.HTF_RELATION.value : 'unknown', counterHtf: !!(ch && ch.eligible), applicable: true },
+    htf: { tf: '1d', relation: facts.HTF_RELATION ? facts.HTF_RELATION.value : 'unknown', canonicalHtfState: _canonicalHtf || null, counterHtf: !!(ch && ch.eligible), applicable: true },
     decision: {
       authorityState: tr ? tr.status : 'unknown',
       authorityDirection: sit.direction,
@@ -10095,80 +10149,200 @@ function composeFourHTechnicalNarrative(ctx) {
   switch (t.situationId) {
     case 'S1': {
       use('CHOP_STATE');
-      const crossings = use('CHOP_CROSSINGS');
-      const windowBars = s.chop.windowBars || 20;
-      const detail = (crossings != null)
-        ? ('Price has crossed the 200MA ' + crossings + ' times in the last ' + windowBars + ' bars; no sustained directional regime has formed.')
-        : 'Price is oscillating across the 200MA; no sustained directional regime has formed.';
+      const detail = 'Price is oscillating around the 200MA with conflicting trend signals; no sustained direction is currently forming.';
       return { headline: 'CHOPPY ENVIRONMENT', detail: detail, factIds: factIds, colorCls: 'tech-weak' };
     }
+    case 'S1B': {
+      // TDAS V5.4.0F3 — CHOP ZONE (owner-approved S1 split). Confirmed
+      // incumbent regime only (situation classifier already guarantees
+      // this) — the display direction word came from regimeState, not a
+      // new analytical field.
+      use('MA200_REGIME'); use('CHOP_STATE');
+      const maWord = dirLower === 'bullish' ? 'rising' : 'falling';
+      const trendWord = dirLower === 'bullish' ? 'uptrend' : 'downtrend';
+      const detail = 'The ' + maWord + ' 200MA still supports the ' + trendWord + ', but price action has become rangebound and the shorter-term signals are conflicted.';
+      return { headline: DIR + ' REGIME \u2014 CHOP ZONE', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
     case 'S2': {
-      use('MA200_REGIME');
-      return { headline: 'NO REGIME ESTABLISHED', detail: 'Price is too close to the 200MA to honestly call a direction.', factIds: factIds, colorCls: 'tech-weak' };
+      // TDAS V5.4.0F3 — S2 is an evidence-completeness gate, not a market
+      // observation (owner-approved audit). Never infer a market state
+      // from whichever subset of evidence happens to be present.
+      const detail = 'TDAS does not have enough confirmed 4H evidence to assess the current trend reliably.';
+      return { headline: '4H EVIDENCE \u2014 INCOMPLETE', detail: detail, factIds: factIds, colorCls: 'tech-weak' };
     }
     case 'S3': {
-      // TDAS V5.4.0A — UT temporal wording now reflects the SAME freshness
-      // fact already carried on `ts` (UT_FRESHNESS/ts.utBarsSinceFlip),
-      // reusing the single central classifyUtFreshness() bucketing already
-      // used elsewhere in this file (no new threshold invented here). A
-      // genuinely fresh flip (classifyUtFreshness key 'fresh') reads "has
-      // turned"; any older-but-still-opposing UT state (recent/mature/
-      // stale/unknown-bars) reads "remains" — never claims a stale UT
-      // state just "turned" this cycle.
+      // TDAS V5.4.0F3 — CHALLENGED (owner-approved S3 Family A). Evidence-
+      // dependent by incumbent regime maturity: a confirmed incumbent gets
+      // "established structure being challenged" framing; a transitional
+      // incumbent must not claim a mature established trend. Literal
+      // rising/falling 200MA wording uses canonical MA200_DIRECTION, never
+      // the displacement-derived MA200_SLOPE (owner doctrine §11).
       use('MA200_REGIME');
+      const maDir = use('MA200_DIRECTION');
       const utDir = use('UT_DIRECTION');
       const utBars = use('UT_FRESHNESS');
       const isFresh = (typeof classifyUtFreshness === 'function') && classifyUtFreshness(utBars).key === 'fresh';
+      const utVerb = isFresh ? 'has turned' : 'remains';
       const utWord = utDir === 'bullish' ? 'bullish' : utDir === 'bearish' ? 'bearish' : 'against it';
-      const utPhrase = (isFresh ? 'UT has turned ' : 'UT remains ') + utWord;
-      const detail = 'Price is ' + sideWord + ' the 200MA, but ' + utPhrase + ' against the regime.';
-      return { headline: DIR + ' REGIME \u2014 REVERSAL PRESSURE', detail: detail, factIds: factIds, colorCls: colorCls };
+      const maWord = maDir === 'rising' ? 'rising' : maDir === 'falling' ? 'falling' : null;
+      const confirmed = s.ma200.regime === 'confirmed_bullish' || s.ma200.regime === 'confirmed_bearish';
+      const trendWord = dirLower === 'bullish' ? 'uptrend' : 'downtrend';
+      let detail;
+      if (confirmed) {
+        detail = dirLower === 'bearish'
+          ? ('Price remains ' + (maWord ? 'below a ' + maWord + ' 200MA' : 'below the 200MA') + ' but UT ' + utVerb + ' ' + utWord + '; ' + utWord + ' pressure is challenging the ' + trendWord + '.')
+          : ('Price remains ' + (maWord ? 'above a ' + maWord + ' 200MA' : 'above the 200MA') + ' but UT ' + utVerb + ' ' + utWord + '; ' + utWord + ' pressure is challenging the ' + trendWord + '.');
+      } else {
+        const sideWordLocal = dirLower === 'bearish' ? 'the downside' : 'the upside';
+        detail = 'Price and the ' + (maWord || '') + (maWord ? ' 200MA' : '200MA') + ' still favour ' + sideWordLocal + ', but UT ' + utVerb + ' ' + utWord + '; reversal pressure is increasing.';
+      }
+      return { headline: DIR + ' REGIME \u2014 CHALLENGED', detail: detail, factIds: factIds, colorCls: colorCls };
+    }
+    case 'S3U': {
+      // TDAS V5.4.0F3 — UNSETTLED (owner-approved S3 Families B+C). UT
+      // still confirms the incumbent direction here — never called
+      // CHALLENGED. Family split is TEMA opposed (B) vs aligned/
+      // unavailable (C). Transitional chop itself carries no improving/
+      // deteriorating direction — never described as resolving/clearing.
+      use('MA200_REGIME');
+      const maDir = use('MA200_DIRECTION');
+      use('UT_DIRECTION');
+      const temaPhase = use('TEMA_PHASE');
+      const maWord = maDir === 'rising' ? 'rising' : maDir === 'falling' ? 'falling' : (dirLower === 'bullish' ? 'rising' : 'falling');
+      const utWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
+      let detail;
+      if (temaPhase === 'opposing') {
+        const temaWord = dirLower === 'bullish' ? 'bearish' : 'bullish';
+        detail = 'The ' + maWord + ' 200MA and UT remain ' + utWord + ', but TEMA is ' + temaWord + ' and recent price action is still unsettled.';
+      } else {
+        detail = 'The ' + maWord + ' 200MA and UT remain ' + utWord + ', but recent price action is still unsettled.';
+      }
+      return { headline: DIR + ' REGIME \u2014 UNSETTLED', detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S4': {
-      use('MA200_REGIME'); use('MA200_SLOPE');
+      // TDAS V5.4.0F3 — EMERGING, branched on canonical true
+      // MA200_DIRECTION (owner-approved, §S4). Never uses the
+      // displacement-derived MA200_SLOPE for this claim. If MA200_DIRECTION
+      // is genuinely unavailable, the direction clause is honestly omitted
+      // rather than guessed.
+      use('MA200_REGIME');
+      const maDir = use('MA200_DIRECTION');
       const utDir = use('UT_DIRECTION');
       const utWord = utDir === 'bullish' ? 'UT bullish' : utDir === 'bearish' ? 'UT bearish' : 'UT aligned';
-      const slopeWord = dirLower === 'bullish' ? 'has not yet turned up' : dirLower === 'bearish' ? 'has not yet turned down' : 'has not yet confirmed';
-      const detail = 'Price is ' + sideWord + ' the 200MA with ' + utWord + ', but the 200MA slope ' + slopeWord + '.';
+      const beginWord = dirLower === 'bullish' ? 'an upward trend is beginning to form.' : 'a downward trend is beginning to form.';
+      const supportiveDir = dirLower === 'bullish' ? 'rising' : 'falling';
+      const opposingDir = dirLower === 'bullish' ? 'falling' : 'rising';
+      let detail;
+      if (maDir === supportiveDir) {
+        detail = 'Price is ' + sideWord + ' a ' + supportiveDir + ' 200MA with ' + utWord + '; ' + beginWord;
+      } else if (maDir === 'flat') {
+        detail = 'Price is ' + sideWord + ' a flat 200MA with ' + utWord + '; ' + beginWord;
+      } else if (maDir === opposingDir) {
+        detail = 'Price is ' + sideWord + ' the 200MA with ' + utWord + ', but the 200MA is still ' + opposingDir + '; ' + beginWord;
+      } else {
+        detail = 'Price is ' + sideWord + ' the 200MA with ' + utWord + '; ' + beginWord;
+      }
       return { headline: DIR + ' STRUCTURE \u2014 EMERGING', detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S5': {
-      use('MA200_REGIME'); use('TEMA_PHASE'); use('UT_DIRECTION');
-      let detail = 'Price is ' + sideWord + ' the 200MA with TEMA and UT aligned.';
-      if (s.intermediateSma) { use('SMA_INTERMEDIATE_SIDE'); detail += ' Intermediate structure is supportive.'; }
+      use('MA200_REGIME');
+      const maDir = use('MA200_DIRECTION');
+      use('UT_DIRECTION');
+      const maWord = maDir === 'rising' ? 'rising' : maDir === 'falling' ? 'falling' : (dirLower === 'bullish' ? 'rising' : 'falling');
+      const trendWord = dirLower === 'bullish' ? 'upward' : 'downward';
+      const utWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
+      const detail = 'Price is holding ' + sideWord + ' a ' + maWord + ' 200MA with UT ' + utWord + '; the ' + trendWord + ' trend remains well supported.';
       return { headline: DIR + ' TREND \u2014 ESTABLISHED', detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S6': {
-      use('MA200_REGIME'); use('UT_DIRECTION'); use('TEMA_PHASE');
-      const utWord = dirLower === 'bullish' ? 'UT bullish' : 'UT bearish';
-      const temaWord = dirLower === 'bullish' ? 'rotated lower' : 'rotated higher';
-      const detail = 'Price holds ' + sideWord + ' the 200MA with ' + utWord + '; TEMA has ' + temaWord + ' into the retracement.';
-      return { headline: DIR + ' TREND \u2014 PULLBACK', detail: detail, factIds: factIds, colorCls: colorCls };
+      use('MA200_REGIME'); use('UT_DIRECTION');
+      const maWord = dirLower === 'bullish' ? 'rising' : 'falling';
+      const utWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
+      const detail = dirLower === 'bullish'
+        ? ('Price is retracing within an established uptrend while the 200MA is still ' + maWord + ' and UT remains ' + utWord + '.')
+        : ('Price is rebounding within an established downtrend while the 200MA is still ' + maWord + ' and UT remains ' + utWord + '.');
+      const headline = dirLower === 'bullish' ? 'BULLISH TREND \u2014 PULLBACK' : 'BEARISH TREND \u2014 BOUNCE';
+      return { headline: headline, detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S7': {
       use('TEMA_SEPARATION'); use('UT_DIRECTION');
-      const utWord = dirLower === 'bullish' ? 'UT remains bullish' : 'UT remains bearish';
-      const oppWord = dirLower === 'bullish' ? 'bearish' : 'bullish';
-      const detail = 'The ' + oppWord + ' TEMA gap has narrowed for ' + m.tema.consecutiveCount + ' confirmed bars while ' + utWord + '.';
-      return { headline: DIR + ' TREND \u2014 PULLBACK LOSING MOMENTUM', detail: detail, factIds: factIds, colorCls: colorCls };
+      const maWord = dirLower === 'bullish' ? 'rising' : 'falling';
+      const utWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
+      const phaseWord = dirLower === 'bullish' ? 'pullback' : 'bounce';
+      const detail = 'The ' + phaseWord + ' remains active, but TEMA is moving back toward alignment; UT and the ' + maWord + ' 200MA remain ' + utWord + '.';
+      const headline = dirLower === 'bullish' ? 'BULLISH TREND \u2014 PULLBACK' : 'BEARISH TREND \u2014 BOUNCE';
+      return { headline: headline, detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S8': {
       use('TEMA_SEPARATION'); use('UT_DIRECTION');
-      const utWord = dirLower === 'bullish' ? 'UT remains bullish' : 'UT remains bearish';
-      const detail = 'The opposing TEMA gap is inside the noise band and still contracting; ' + utWord + '.';
-      return { headline: DIR + ' TREND \u2014 RESUMPTION DEVELOPING', detail: detail, factIds: factIds, colorCls: colorCls };
+      const maWord = dirLower === 'bullish' ? 'rising' : 'falling';
+      const turningWord = dirLower === 'bullish' ? 'turning bullish' : 'turning bearish';
+      const phaseWord = dirLower === 'bullish' ? 'pullback' : 'bounce';
+      const detail = 'The ' + phaseWord + ' remains active, but TEMA is close to ' + turningWord + '; UT and the ' + maWord + ' 200MA remain supportive.';
+      const headline = dirLower === 'bullish' ? 'BULLISH TREND \u2014 PULLBACK' : 'BEARISH TREND \u2014 BOUNCE';
+      return { headline: headline, detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S9': {
+      // TDAS V5.4.0F3 — RESUMING (owner-approved). Prefer the SMA80
+      // "reclaimed" phrasing when that is genuinely the stronger fact
+      // (state machine shows an actual reclaim this cycle); otherwise use
+      // the TEMA-led phrasing. Never forces TEMA into the sentence when
+      // another existing fact better describes the resumption.
       use('TEMA_MATURITY'); use('TEMA_SEPARATION'); use('UT_DIRECTION');
-      const detail = 'TEMA has re-crossed ' + dirLower + ' inside the established trend and its separation is expanding again.';
+      const maWord = dirLower === 'bullish' ? 'rising' : 'falling';
+      const utWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
+      const turnWord = dirLower === 'bullish' ? 'higher' : 'lower';
+      const smaState = s.intermediateSma ? use('SMA_STATE_MACHINE') : null;
+      let detail;
+      if (smaState && smaState.state === 'Reclaimed') {
+        detail = 'Price has reclaimed the SMA80 after the ' + (dirLower === 'bullish' ? 'pullback' : 'bounce') + ', with UT still ' + utWord + ' and the ' + maWord + ' 200MA intact.';
+      } else {
+        detail = 'Price is turning ' + turnWord + ' after the ' + (dirLower === 'bullish' ? 'pullback' : 'bounce') + '; TEMA has turned ' + utWord + ' while UT and the ' + maWord + ' 200MA remain supportive.';
+      }
       return { headline: DIR + ' TREND \u2014 RESUMING', detail: detail, factIds: factIds, colorCls: colorCls };
     }
     case 'S10': {
+      // TDAS V5.4.0F3 — DETERIORATING evidence-priority family (owner-
+      // approved). UT opposition always leads (it is the defining S10
+      // trigger, census-proven). Then the strongest available compounding/
+      // mitigating evidence from TEMA and SMA80, using the rising/falling
+      // 200MA as the broad anchor where useful. No severity score.
       use('MA200_REGIME');
+      const maDir = use('MA200_DIRECTION');
       const utDir = use('UT_DIRECTION');
-      const utWord = 'UT has flipped ' + (utDir === 'bullish' ? 'bullish' : utDir === 'bearish' ? 'bearish' : 'against it');
-      const detail = 'Price is still ' + sideWord + ' the 200MA, but ' + utWord + ' against the confirmed regime.';
-      return { headline: DIR + ' STRUCTURE \u2014 DETERIORATING', detail: detail, factIds: factIds, colorCls: colorCls };
+      const utBars = use('UT_FRESHNESS');
+      const isFresh = (typeof classifyUtFreshness === 'function') && classifyUtFreshness(utBars).key === 'fresh';
+      const utVerb = isFresh ? 'has turned' : 'remains';
+      const utWord = utDir === 'bullish' ? 'bullish' : 'bearish'; // utDir is opposing dirLower by S10's own construction
+      const maWord = dirLower === 'bullish' ? 'rising' : 'falling';
+      const trendWord = dirLower === 'bullish' ? 'uptrend' : 'downtrend';
+      const temaPhase = use('TEMA_PHASE');
+      const trajectory = use('TEMA_TRAJECTORY');
+      const smaState = s.intermediateSma ? use('SMA_STATE_MACHINE') : null;
+      const smaKnown = smaState && smaState.state && smaState.state !== 'Unknown';
+      const temaKnown = temaPhase && temaPhase !== 'unknown';
+      const temaAligned = temaPhase === 'aligned';
+      const temaOpposing = temaPhase === 'opposing';
+
+      let detail;
+      if (temaKnown && temaOpposing && smaKnown && (smaState.state === 'Lost')) {
+        detail = 'UT ' + utVerb + ' ' + utWord + ', TEMA is also ' + utWord + ' and price has lost the SMA80; only the ' + maWord + ' 200MA still supports the ' + trendWord + '.';
+      } else if (temaKnown && temaOpposing && smaKnown && (smaState.state === 'Holding' || smaState.state === 'Reclaimed')) {
+        detail = 'UT ' + utVerb + ' ' + utWord + ' and TEMA remains ' + utWord + ', but the SMA80 and ' + maWord + ' 200MA still support the ' + trendWord + '.';
+      } else if (temaKnown && temaOpposing && trajectory === 'contracting') {
+        detail = 'UT ' + utVerb + ' ' + utWord + ', but TEMA is moving back toward alignment and the ' + maWord + ' 200MA remains intact.';
+      } else if (temaKnown && temaOpposing && trajectory === 'expanding') {
+        detail = 'UT ' + utVerb + ' ' + utWord + ' and TEMA opposition is strengthening, although price is still ' + sideWord + ' the ' + maWord + ' 200MA.';
+      } else if (temaKnown && temaAligned && smaKnown && smaState.state === 'Lost') {
+        detail = 'UT ' + utVerb + ' ' + utWord + ' and price has lost the SMA80, but TEMA remains ' + (dirLower === 'bullish' ? 'bullish' : 'bearish') + ' and the ' + maWord + ' 200MA is intact.';
+      } else if (temaKnown && temaAligned) {
+        detail = 'UT ' + utVerb + ' ' + utWord + ', but TEMA remains ' + (dirLower === 'bullish' ? 'bullish' : 'bearish') + ' and price is still holding ' + sideWord + ' the ' + maWord + ' 200MA.';
+      } else if (smaKnown && smaState.state === 'Testing') {
+        detail = 'UT ' + utVerb + ' ' + utWord + ' and price is testing the SMA80, but the ' + maWord + ' 200MA remains intact.';
+      } else {
+        detail = 'UT ' + utVerb + ' ' + utWord + ' against the confirmed regime.';
+      }
+      return { headline: DIR + ' TREND \u2014 DETERIORATING', detail: detail, factIds: factIds, colorCls: colorCls };
     }
     default:
       return { headline: 'EVALUATION LIMITED', detail: 'The 4H trend phase could not be classified from current evidence.', factIds: factIds, colorCls: 'tech-weak' };
@@ -10191,30 +10365,67 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
 
   const sit = ctx.trend.situationId;
   const DIR = ctx.trend.direction === 'bullish' ? 'LONG' : ctx.trend.direction === 'bearish' ? 'SHORT' : null;
+  const dirLowerAdv = ctx.trend.direction;
 
   if (tseAuth && tseAuth.actionable) {
     if (tseAuth.counterHtf) {
       use('HTF_RELATION'); use('HTF_COUNTER');
+      // TDAS V5.4.0F3 — Counter-HTF's actual trader-facing warning is
+      // rendered directly on the front card in the existing Advisory slot
+      // (owner doctrine §8, renderCard()) — this composer's own text is
+      // not what displays there once that render-level branch exists.
+      // Kept honestly consistent here for any other consumer of this
+      // composer's output.
       return { displayHeadline: null, detail: 'Entry conditions pass, but the 1D trend opposes. Reduced conviction.', factIds: factIds };
     }
     use('TRADE_READY_STATUS');
     return { displayHeadline: null, detail: 'All entry conditions pass. Size to your risk.', factIds: factIds };
   }
 
+  // TDAS V5.4.0F3 — S10 DETERIORATING (owner-approved). Always dedicated —
+  // this is a Trade-Ready-reversed state (UT opposition against an
+  // already-confirmed regime), not a TR-blocker-pending state, so it never
+  // routes through the blocker table below.
   if (sit === 'S10') {
     if (ctx.decision.blocker) factIds.push('TRADE_READY_STATUS');
-    return { displayHeadline: DIR ? ('AVOID ' + DIR) : 'AVOID', detail: 'Trend authority has turned. Wait for UT to realign or the regime to reset.', factIds: factIds };
+    // TDAS V5.4.0F3 — UT_DIRECTION is genuinely consumed here: Advisory
+    // names it as the concrete recovery condition (a different job from
+    // Technical's use of the same fact to describe current deterioration
+    // — legitimate overlap, not restatement, per owner doctrine). Does
+    // NOT consume UT_FRESHNESS: the approved sentence text never varies
+    // by freshness (turnWord10 is derived solely from the thesis
+    // direction), so declaring it as consumed here would be a spurious
+    // provenance claim, not a genuine dependency.
+    use('UT_DIRECTION');
+    const turnWord10 = dirLowerAdv === 'bullish' ? 'bullish' : 'bearish';
+    return { displayHeadline: DIR ? ('AVOID ' + DIR) : 'AVOID', detail: 'Wait for UT to turn ' + turnWord10 + ' before reconsidering entry.', factIds: factIds };
   }
-  if (sit === 'S1' || sit === 'S2') {
-    return { displayHeadline: 'WAIT', detail: 'No directional structure to trade. Wait for price to hold one side of the 200MA.', factIds: factIds };
+  if (sit === 'S1') {
+    return { displayHeadline: 'AWAIT BREAKOUT', detail: 'Wait for price to establish a clear side of the 200MA and the trend signals to indicate direction before entry.', factIds: factIds };
+  }
+  if (sit === 'S1B') {
+    return { displayHeadline: 'AWAIT RESOLUTION', detail: 'Wait for price to break clear of the range and the trend signals to realign before entry.', factIds: factIds };
+  }
+  if (sit === 'S2') {
+    return { displayHeadline: 'WAIT', detail: 'Wait for the missing 4H evidence to become available before entry.', factIds: factIds };
   }
   if (sit === 'S3') {
-    return { displayHeadline: 'WAIT', detail: 'The ' + ctx.trend.direction + ' regime is unconfirmed. Wait for trend authority to resolve.', factIds: factIds };
+    const trendWordS3 = dirLowerAdv === 'bullish' ? 'uptrend' : 'downtrend';
+    return { displayHeadline: 'WAIT', detail: 'Wait for reversal confirmation or the ' + trendWordS3 + ' to reassert before entry.', factIds: factIds };
   }
-  if (sit === 'S4') {
-    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Structure is still forming. Wait for the regime to confirm.', factIds: factIds };
+  if (sit === 'S3U') {
+    const temaPhaseU = use('TEMA_PHASE');
+    if (temaPhaseU === 'opposing') {
+      const turnWordU = dirLowerAdv === 'bullish' ? 'bullish' : 'bearish';
+      return { displayHeadline: 'WAIT', detail: 'Wait for price action to settle and TEMA to turn ' + turnWordU + ' before entry.', factIds: factIds };
+    }
+    return { displayHeadline: 'WAIT', detail: 'Wait for price action to settle before entry.', factIds: factIds };
   }
 
+  // TDAS V5.4.0F3 — S4 EMERGING no longer short-circuits: if a concrete
+  // existing TR blocker is available, use the blocker-specific Advisory
+  // instead of the generic EMERGING fallback (owner doctrine §S4/§7).
+  // Falls through to the shared blocker table below like S5-S9 already do.
   const blocker = ctx.decision.blocker;
   if (blocker) {
     factIds.push('TRADE_READY_STATUS');
@@ -10224,23 +10435,51 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
         const adx = use('ADX_VALUE');
         const floor = (ctx.quality.adx && ctx.quality.adx.floor != null) ? ctx.quality.adx.floor : (blocker.threshold && blocker.threshold.adx);
         detail = (adx != null && floor != null)
-          ? ('ADX ' + Math.round(adx) + ' is below the ' + floor + ' floor. Wait for participation to strengthen.')
-          : 'ADX is below the required floor. Wait for participation to strengthen.';
+          ? ('ADX ' + Math.round(adx) + ' is below the ' + floor + ' floor. Wait for conviction to strengthen.')
+          : 'ADX is below the required floor. Wait for conviction to strengthen.';
         break;
       }
       case 'TR3':
         use('EXEC_1H_REGIME');
-        detail = '1H execution structure is not yet aligned. Wait for a cleaner entry regime.';
+        detail = '1H trend structure is not yet aligned. Wait for the 1H trend to align before entry.';
         break;
-      case 'TR4':
+      case 'TR4': {
+        // TDAS V5.4.0F3 — TR4 four-way split using the actual highest-
+        // priority reasonCode (owner-verified, not coarse — the check
+        // pushes TR4_SMA80_PRICE_OPPOSING / TR4_SMA80_SLOPE_OPPOSING /
+        // TR4_SMA135_PRICE_OPPOSING / TR4_SMA135_SLOPE_OPPOSING in a fixed
+        // priority order; reasonCodes[0] is always one of the four that
+        // genuinely fired). Never confused with the F2 200MA displacement
+        // fact — these are the existing SMA80/SMA135 intermediate-
+        // structure facts.
         use('EXEC_1H_SMA135');
-        detail = 'Intermediate structure is not yet supportive. Wait for structure to realign.';
+        const raw4 = blocker.raw || {};
+        const rc = blocker.reasonCode;
+        const isLong = DIR === 'LONG';
+        if (rc === 'TR4_SMA80_PRICE_OPPOSING') {
+          detail = isLong ? 'Wait for price to reclaim the 4H SMA80 before entry.' : 'Wait for price to break back below the 4H SMA80 before entry.';
+        } else if (rc === 'TR4_SMA135_PRICE_OPPOSING') {
+          detail = isLong ? 'Wait for price to reclaim the 1H SMA135 before entry.' : 'Wait for price to break back below the 1H SMA135 before entry.';
+        } else if (rc === 'TR4_SMA80_SLOPE_OPPOSING') {
+          const slopeState80 = raw4.sma80SlopeState;
+          detail = isLong
+            ? ('The 4H SMA80 is still ' + (slopeState80 || 'falling') + '. Wait for it to turn higher before entry.')
+            : ('The 4H SMA80 is still ' + (slopeState80 || 'rising') + '. Wait for it to turn lower before entry.');
+        } else if (rc === 'TR4_SMA135_SLOPE_OPPOSING') {
+          const slopeState135 = raw4.sma135SlopeState;
+          detail = isLong
+            ? ('The 1H SMA135 is still ' + (slopeState135 || 'falling') + '. Wait for it to turn higher before entry.')
+            : ('The 1H SMA135 is still ' + (slopeState135 || 'rising') + '. Wait for it to turn lower before entry.');
+        } else {
+          detail = 'Intermediate structure is not yet supportive. Wait for structure to realign.';
+        }
         break;
+      }
       case 'TR5': {
         const dist = use('EXTENSION_DISTANCE');
         detail = (dist != null)
-          ? ('1H price is ' + dist.toFixed(1) + ' ATR from TEMA92. Too extended for a fresh entry.')
-          : 'Price is too extended from TEMA92 for a fresh entry.';
+          ? ('1H price is ' + dist.toFixed(1) + ' ATR from TEMA92. Wait for price to reset before entry.')
+          : 'Price is too extended from TEMA92. Wait for price to reset before entry.';
         break;
       }
       default:
@@ -10249,13 +10488,20 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
     return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: detail, factIds: factIds };
   }
 
+  if (sit === 'S4') {
+    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Wait for the initial move to gain strength before entry.', factIds: factIds };
+  }
+
   // No hard-failing TR check found (LIMITED_EVALUATION / genuinely unknown
   // evidence) — fail honest, never a confident directional claim, never the
   // prohibited "not yet ready" vague fallback.
   if (sit === 'S7') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'The retracement is slowing but TEMA still opposes. Wait for the cross back.', factIds: factIds };
   if (sit === 'S8') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'TEMA is close to realigning. Wait for the confirmed cross.', factIds: factIds };
   if (sit === 'S9') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Execution is realigning with the trend. Wait for entry conditions to confirm.', factIds: factIds };
-  if (sit === 'S6') return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Trend intact. Wait for TEMA to turn back with the trend.', factIds: factIds };
+  if (sit === 'S6') {
+    const stabWord = dirLowerAdv === 'bullish' ? 'Wait for the pullback to stabilise and the uptrend to resume before entry.' : 'Wait for the bounce to stall and the downtrend to resume before entry.';
+    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: stabWord, factIds: factIds };
+  }
   return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Evaluation is limited this cycle \u2014 required entry evidence is not yet available.', factIds: factIds };
 }
 
@@ -10319,24 +10565,119 @@ function _fourHSma80DotState(d) {
   return 'grey';
 }
 
+// TDAS V5.4.0F3 — dot rollover hover text (owner doctrine §12/§19 J).
+// Short factual fragments only, never prose — selects from the SAME
+// already-computed evidence the color functions themselves use, never a
+// second interpretation. Exact approved copy, apart from natural
+// LONG/SHORT mirroring.
+function _fourHTrendDotHover(d) {
+  if (!d || d.tf !== '4h' || !d.trendState) return 'Evidence incomplete';
+  const ts = d.trendState;
+  const direction = ts.direction;
+  if (direction !== 'LONG' && direction !== 'SHORT') return 'No directional thesis';
+  const chop = ts.chopState;
+  if (chop === 'chop') return 'Chop \u2022 No clear trend';
+  if (chop === 'unknown' || !chop) return 'Evidence incomplete';
+  const raw = d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.raw;
+  if (!raw || !raw.complete) return 'Evidence incomplete';
+  const priceVsMa200 = raw.priceVsMa200;
+  const maDir = raw.ma200DirectionState;
+  if (priceVsMa200 === 'unknown' || priceVsMa200 === 'equal' || maDir === 'unknown') return 'Evidence incomplete';
+  const isLong = direction === 'LONG';
+  const priceSupports = isLong ? priceVsMa200 === 'above' : priceVsMa200 === 'below';
+  const maSupports = isLong ? maDir === 'rising' : maDir === 'falling';
+  const priceOpposes = isLong ? priceVsMa200 === 'below' : priceVsMa200 === 'above';
+  const maOpposes = isLong ? maDir === 'falling' : maDir === 'rising';
+  if (priceOpposes && maOpposes) return isLong ? 'Price + 200MA oppose LONG' : 'Price + 200MA oppose SHORT';
+  if (priceSupports && maSupports && chop === 'clear') return isLong ? 'Above rising 200MA \u2022 Bullish structure confirmed' : 'Below falling 200MA \u2022 Bearish structure confirmed';
+  // amber sub-reasons
+  if (maDir === 'flat') return '200MA flat \u2022 Structure transitional';
+  if (chop === 'transitional') return 'Chop \u2022 Transitional phase';
+  if (priceSupports && !maSupports) return isLong ? 'Above 200MA \u2022 MA still declining' : 'Below 200MA \u2022 MA still rising';
+  return isLong ? 'Above 200MA \u2022 MA still declining' : 'Below 200MA \u2022 MA still rising';
+}
+
+function _fourHSma80DotHover(d) {
+  if (!d || d.tf !== '4h') return 'SMA80 state unavailable';
+  const sma = d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.sma;
+  if (!sma || !sma.complete) return 'SMA80 state unavailable';
+  if (sma.state === 'Holding') return 'Holding SMA80 \u2022 Trend support intact';
+  if (sma.state === 'Reclaimed') return 'SMA80 reclaimed \u2022 Support restored';
+  if (sma.state === 'Testing') return 'Testing SMA80 \u2022 Direction unclear';
+  if (sma.state === 'Lost') return 'SMA80 lost \u2022 Structure weakened';
+  return 'SMA80 state unavailable';
+}
+
+function _fourHTemaDotHover(d, dirWord) {
+  const v51ev = d.v51Evidence && d.v51Evidence.evidence;
+  const temaPhase = d.trendState.temaPhase;
+  if (!temaPhase || temaPhase === 'unknown') return 'TEMA state unavailable';
+  const isLong = dirWord === 'bullish';
+  if (temaPhase === 'aligned') return isLong ? 'TEMA bullish \u2022 Averages aligned' : 'TEMA bearish \u2022 Averages aligned';
+  // opposing — split by trajectory (owner-approved presentation split)
+  const trajectory = v51ev && v51ev.tema && v51ev.tema.separation ? v51ev.tema.separation.trajectory : 'unknown';
+  if (trajectory === 'contracting') return isLong ? 'TEMA turning bullish \u2022 Momentum shifting' : 'TEMA turning bearish \u2022 Momentum shifting';
+  return isLong ? 'TEMA bearish \u2022 Opposes LONG' : 'TEMA bullish \u2022 Opposes SHORT';
+}
+
+function _fourHUtDotHover(d, dirWord) {
+  const utDirWord = d.trendState.utDirection;
+  if (!utDirWord || utDirWord === 'unknown') return 'UT state unavailable';
+  const isLong = dirWord === 'bullish';
+  const utMatches = utDirWord === dirWord;
+  if (utMatches) return isLong ? 'UT bullish \u2022 Confirms LONG' : 'UT bearish \u2022 Confirms SHORT';
+  return isLong ? 'UT bearish \u2022 Opposes LONG' : 'UT bullish \u2022 Opposes SHORT';
+}
+
 function _fourHCardDotState(d) {
-  const na = { trendCls: 'na', sma80Cls: 'na', temaCls: 'na', utCls: 'na' };
+  const na = { trendCls: 'na', sma80Cls: 'na', temaCls: 'na', utCls: 'na',
+    trendTitle: 'Evidence incomplete', sma80Title: 'SMA80 state unavailable', temaTitle: 'TEMA state unavailable', utTitle: 'UT state unavailable' };
   if (!d || d.tf !== '4h' || !d.trendState) return na;
   const ts = d.trendState;
   const dirWord = ts.direction === 'LONG' ? 'bullish' : ts.direction === 'SHORT' ? 'bearish' : 'neutral';
-  if (dirWord === 'neutral') return na;
+  // TDAS V5.4.0F3 — a resolved-but-neutral direction is a genuinely
+  // different reason from missing/malformed data: evidence is present,
+  // there simply is no directional thesis to compare it against. Trend's
+  // own three-tier grey vocabulary (owner-approved) distinguishes this
+  // ("No directional thesis") from genuine incompleteness ("Evidence
+  // incomplete") — using the shared generic `na` object here would
+  // silently collapse that distinction. SMA80/TEMA/UT have no equivalent
+  // "no thesis" phrase in their own approved vocabulary, so they
+  // correctly keep their generic "state unavailable" wording either way.
+  if (dirWord === 'neutral') {
+    return Object.assign({}, na, { trendTitle: 'No directional thesis' });
+  }
 
   const dotColourToCls = { green: 'ok', amber: 'warn', red: 'no', grey: 'na' };
-  const trendCls = dotColourToCls[_fourHTrendDotState(d)] || 'na';
-  const sma80Cls = dotColourToCls[_fourHSma80DotState(d)] || 'na';
+  const trendColour = _fourHTrendDotState(d);
+  const trendCls = dotColourToCls[trendColour] || 'na';
+  const sma80Colour = _fourHSma80DotState(d);
+  const sma80Cls = dotColourToCls[sma80Colour] || 'na';
 
+  // TDAS V5.4.0F3 — TEMA presentation split (owner-approved): aligned ->
+  // green; opposing + contracting -> amber ("turning", only case where
+  // that word is permitted); opposing + holding/expanding/trajectory-
+  // unavailable -> red (known opposition without contracting evidence);
+  // TEMA state itself unavailable -> grey. No analytical TEMA
+  // calculation/threshold change — pure presentation-state split on
+  // already-computed temaPhase + separation.trajectory.
   const temaPhase = ts.temaPhase;
-  const temaCls = temaPhase === 'aligned' ? 'ok' : temaPhase === 'opposing' ? 'warn' : 'na';
+  const v51evForTema = d.v51Evidence && d.v51Evidence.evidence;
+  const temaTrajectory = v51evForTema && v51evForTema.tema && v51evForTema.tema.separation ? v51evForTema.tema.separation.trajectory : 'unknown';
+  let temaCls;
+  if (!temaPhase || temaPhase === 'unknown') temaCls = 'na';
+  else if (temaPhase === 'aligned') temaCls = 'ok';
+  else if (temaPhase === 'opposing' && temaTrajectory === 'contracting') temaCls = 'warn';
+  else temaCls = 'no'; // opposing + holding/expanding/trajectory unavailable
 
   const utDirWord = ts.utDirection;
   const utCls = (!utDirWord || utDirWord === 'unknown') ? 'na' : (utDirWord === dirWord ? 'ok' : 'no');
 
-  return { trendCls, sma80Cls, temaCls, utCls };
+  return {
+    trendCls, sma80Cls, temaCls, utCls,
+    trendTitle: _fourHTrendDotHover(d), sma80Title: _fourHSma80DotHover(d),
+    temaTitle: _fourHTemaDotHover(d, dirWord), utTitle: _fourHUtDotHover(d, dirWord),
+  };
 }
 
 // ── Rollback seams (V5.3.3B) ──────────────────────────────────────────────
@@ -11553,7 +11894,7 @@ function _buildScannerAdvisory(d) {
 // ║  null/'not_applicable_tf' so 1H can never be mistaken for canonicalised ║
 // ║  TSE authority.                                                         ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
-function buildCanonicalEval(d, symbol, entry) {
+function buildCanonicalEval(d, symbol, entry, precomputedHtfRelation) {
   const tf = d && d.tf;
   const ts = d && d.trendState;
 
@@ -11671,18 +12012,20 @@ function buildCanonicalEval(d, symbol, entry) {
   // routing doctrine.
   const lifecycle = resolveCanonicalLifecycle(d, { meta, evidence, technicalState, advisoryState }, entry);
 
-  // TDAS V5.4.0F2H — canonical setup-relative HTF relationship (owner
-  // doctrine §6/§7). Combines the direction-free Daily structural fact
-  // already computed and attached by calcPair (d.dailyStructuralFact —
-  // computed once, before any setup direction is known) with the
-  // canonical 4H TSE direction (ts.direction, available only here) via
-  // the pure decision table in _deriveHtfRelation(). This is the ONE
-  // canonical HTF relationship result — downstream presentation (Scanner
-  // pill, Trade Ready rear, Watch) reads this, never buildHtfBadgeState()
-  // or legacy htfTrendContext, for any surface migrated in this build.
+  // TDAS V5.4.0F2H1 — canonical setup-relative HTF relationship (owner
+  // doctrine §6/§7, corrected under F2H1's single-producer requirement).
+  // The relation itself is now passed in as `precomputedHtfRelation`,
+  // computed exactly ONCE per calcPair() cycle at the same point
+  // counterHtfShadow is built (see calcPair's own call site) — this
+  // function no longer calls _deriveHtfRelation() a second time. Falls
+  // back to a local computation only if no precomputed result was passed
+  // (defensive; the one real production call site always provides it).
+  // d.dailyStructuralFact remains the single, once-computed, direction-
+  // free Daily structural fact (unchanged from F2H) — no new fetch, no
+  // alternate 200MA calculation, no re-derivation here either way.
   const _htfSetupDirection = ts && ts.direction === 'LONG' ? 'long' : ts && ts.direction === 'SHORT' ? 'short' : null;
   const _dailyFact = d.dailyStructuralFact || { structuralState: 'unresolved', priceVsMa200: 'unknown', ma200DirectionState: 'unknown', utDirection: 'unknown', completeness: 'unavailable' };
-  const _htfRel = _deriveHtfRelation(_htfSetupDirection, _dailyFact);
+  const _htfRel = precomputedHtfRelation || _deriveHtfRelation(_htfSetupDirection, _dailyFact);
   const _dailyBarId = (v51 && v51.confirmedBars && v51.confirmedBars.adjacent) ? v51.confirmedBars.adjacent.barId : null;
   const htfState = {
     meta: { tf: '1d', confirmedBarId: _dailyBarId, completeness: _dailyFact.completeness },
@@ -19300,6 +19643,26 @@ async function calcPair(symbol,tf){
     }
   }
 
+  // ── TDAS V5.4.0F2H1 — canonical HTF relation, computed ONCE ─────────────
+  // The single _deriveHtfRelation() call for this entire calcPair() cycle.
+  // Both counterHtfShadow (immediately below) and d.eval.htfState
+  // (buildCanonicalEval, further below) read this SAME local result —
+  // never a second independent call (consolidation doctrine: "market
+  // meaning is computed once; downstream consumers read the same
+  // result"). Direction source: tradeReadyV1TseShadow.direction, already
+  // final by this point — proven identical to trendState.direction in
+  // every case (tradeReadyDirectionFromTrendState() derives it with zero
+  // dependency on TR1-5 pass/fail status, so this is a safe substitution
+  // for buildCanonicalEval's own prior ts.direction-based computation, not
+  // merely a Trade-Ready-only shortcut). Daily fact source:
+  // dailyStructuralFact, computed earlier in this same function before any
+  // direction was known (unchanged from F2H) — no new fetch, no new Daily
+  // computation, no re-derivation anywhere in this build.
+  const _htfRelationDirection = (_result.tradeReadyV1TseShadow && _result.tradeReadyV1TseShadow.direction === 'long') ? 'long'
+    : (_result.tradeReadyV1TseShadow && _result.tradeReadyV1TseShadow.direction === 'short') ? 'short' : null;
+  const _htfRelationDailyFact = _result.dailyStructuralFact || { structuralState: 'unresolved', priceVsMa200: 'unknown', ma200DirectionState: 'unknown', utDirection: 'unknown', completeness: 'unavailable' };
+  const _canonicalHtfRelationOnce = _deriveHtfRelation(_htfRelationDirection, _htfRelationDailyFact);
+
   // ── TDAS V5.2.8C — Counter-HTF shadow attachment ──────────────────────────
   // Purely additive, Full-Analysis-only. Moved here (V5.2.8C) specifically
   // so it runs AFTER _result.tradeReadyV1TseShadow is final — the eligibility
@@ -19308,8 +19671,10 @@ async function calcPair(symbol,tf){
   // an already-established TSE Trade Ready setup, not an independent route
   // into one, and legacy score/evaluation has no authority here). Never read
   // by _buildScannerAdvisory() or any live card/button/routing path.
+  // TDAS V5.4.0F2H1 — eligibility source corrected from legacy
+  // d.htfTrendContext to the canonical HTF relation computed once above.
   try {
-    _result.counterHtfShadow = _buildCounterHtfShadow(_result);
+    _result.counterHtfShadow = _buildCounterHtfShadow(_result, _canonicalHtfRelationOnce);
   } catch (_chtfErr) {
     _result.counterHtfShadow = { eligible: false, relation: null, reason: 'EVALUATION_THREW', errorMessage: (_chtfErr && _chtfErr.message) ? _chtfErr.message : String(_chtfErr) };
   }
@@ -19372,7 +19737,7 @@ async function calcPair(symbol,tf){
     _result.eval = buildCanonicalEval(_result, symbol, {
       openTrade: _evalEntry.openTrade,
       hasWatchOwnership: (typeof isExactSymbolTfWatched === 'function') ? isExactSymbolTfWatched(symbol, '4h') : false,
-    });
+    }, _canonicalHtfRelationOnce);
   } catch (_evalErr) {
     _result.eval = {
       meta: { tf: _result.tf || null, symbol: symbol || null, confirmedBarId: null,
@@ -20633,8 +20998,9 @@ function buildDecisionDotsHtml(d){
   const st = (d && d.states) || {};
   const hasBias = !!(ev && ev.tradeBias && ev.tradeBias!=='NEUTRAL' && ev.confirms);
 
-  function item(cls,label){
-    return '<div class="dot-item dot-item-lg"><span class="dot dot-lg '+cls+'"></span><span class="dot-item-label">'+label+'</span></div>';
+  function item(cls,label,title){
+    const titleAttr = title ? ' title="'+String(title).replace(/"/g,'&quot;')+'"' : '';
+    return '<div class="dot-item dot-item-lg"'+titleAttr+'><span class="dot dot-lg '+cls+'"></span><span class="dot-item-label">'+label+'</span></div>';
   }
 
   let regimeCls='na', htfCls='na', temaCls='na', utCls='na';
@@ -20657,8 +21023,8 @@ function buildDecisionDotsHtml(d){
     try {
       const _dots = _fourHCardDotState(d);
       return '<div class="dot-row dot-row-lg">'
-        + item(_dots.trendCls,'Trend') + item(_dots.sma80Cls,'SMA80')
-        + item(_dots.temaCls,'TEMA') + item(_dots.utCls,'UT')
+        + item(_dots.trendCls,'Trend',_dots.trendTitle) + item(_dots.sma80Cls,'SMA80',_dots.sma80Title)
+        + item(_dots.temaCls,'TEMA',_dots.temaTitle) + item(_dots.utCls,'UT',_dots.utTitle)
         + '</div>';
     } catch (e) {
       if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildDecisionDotsHtml] 4H card dot row threw, degrading to all-na', e);
@@ -20872,10 +21238,18 @@ function renderCard(symbol,d){
   // once the dominant, actionable CTA (buildTradeReadyFrontButtonHtml,
   // computed below) is already present, so the same fact is never stated
   // twice on one card. Technical context (technicalSummaryHtml) and the
-  // canonical back-face checklist are both completely unaffected. Applies
-  // identically to COUNTER_HTF (same advisory.tradeReady gate, same CTA
-  // path) without changing its meaning.
-  const advisoryHtml = (_advisory && _advisory.tradeReady) ? '' : buildEvaluationSummaryHtml(d, _advisory);
+  // canonical back-face checklist are both completely unaffected.
+  // TDAS V5.4.0F3 — Counter-HTF front-card presentation (owner doctrine
+  // §8). Ordinary TRADE_READY keeps the Advisory slot fully empty, exactly
+  // as before. COUNTER_HTF renders exactly one compact warning line in
+  // that same existing slot instead — never the old two-line headline+
+  // detail block, never a change to eligibility or the dominant CTA below.
+  // Source of truth is advisory.action, itself already gated by the
+  // canonical H1 htfState.relation.state==='conflict' fact — no new
+  // computation, no re-derivation.
+  const advisoryHtml = (_advisory && _advisory.action === 'TRADE_READY') ? ''
+    : (_advisory && _advisory.action === 'COUNTER_HTF') ? '<div class="tdas-advisory-block tdas-state-counter-htf">\u26A0 COUNTER-HTF \u2014 Daily backdrop opposes this setup</div>'
+    : buildEvaluationSummaryHtml(d, _advisory);
 
   // TDAS V5.4.0C — Category D fix (formal d.signal inventory finding):
   // this token drives the card's own left-border colour class
