@@ -2203,7 +2203,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0F3';
+const APP_BUILD = 'V5.4.0F3A';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -10086,6 +10086,30 @@ function buildFourHNarrativeContext(d) {
     }
   }
 
+  // TDAS V5.4.0F3A — S4 EMERGING presentation adapter data only (owner-
+  // approved hotfix). TR1 fails tautologically for every EMERGING phase
+  // by design (tradeReadyV1Check1TseShadow's own unchanged logic) and
+  // carries no information beyond "phase is EMERGING" — already conveyed
+  // by the S4 headline — so it is never a meaningful Advisory blocker for
+  // S4 specifically. This is a SEPARATE, additive field carrying the
+  // first TR2-5 failure only (skipping TR1 entirely); `blocker` above is
+  // completely untouched and remains the single canonical first-failing-
+  // check field for every other consumer. No re-derivation, no new
+  // computation — same already-computed tr.checks objects, just a
+  // narrower scan starting at TR2.
+  let blockerSkippingTr1 = null;
+  if (tr && tr.checks) {
+    const orderSkipTr1 = [['trendQuality', 'TR2'], ['executionRegime', 'TR3'],
+      ['intermediateTrendSupport', 'TR4'], ['extension', 'TR5']];
+    for (let i = 0; i < orderSkipTr1.length; i++) {
+      const c = tr.checks[orderSkipTr1[i][0]];
+      if (c && c.status === 'fail') {
+        blockerSkippingTr1 = { checkId: orderSkipTr1[i][1], reasonCode: (c.reasonCodes && c.reasonCodes[0]) || null, raw: c.raw || null, threshold: c.threshold || null };
+        break;
+      }
+    }
+  }
+
   return {
     meta: meta,
     trend: { direction: dirWord, phase: ts.state, phaseModifier: sit.phaseModifier, situationId: sit.situationId },
@@ -10121,6 +10145,10 @@ function buildFourHNarrativeContext(d) {
       authorityDirection: sit.direction,
       displayAction: null,
       blocker: blocker,
+      // TDAS V5.4.0F3A — additive, S4-Advisory-presentation-only. Not
+      // read by any other consumer; `blocker` above remains the single
+      // canonical field for everything else.
+      blockerSkippingTr1ForS4Presentation: blockerSkippingTr1,
       nextCondition: null,
       counterHtf: !!(ch && ch.eligible),
     },
@@ -10422,18 +10450,17 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
     return { displayHeadline: 'WAIT', detail: 'Wait for price action to settle before entry.', factIds: factIds };
   }
 
-  // TDAS V5.4.0F3 — S4 EMERGING no longer short-circuits: if a concrete
-  // existing TR blocker is available, use the blocker-specific Advisory
-  // instead of the generic EMERGING fallback (owner doctrine §S4/§7).
-  // Falls through to the shared blocker table below like S5-S9 already do.
-  const blocker = ctx.decision.blocker;
-  if (blocker) {
-    factIds.push('TRADE_READY_STATUS');
+  // TDAS V5.4.0F3A — shared TR2-5 wording generator (owner-approved
+  // hotfix), extracted unchanged from the existing blocker switch so both
+  // the general blocker table below AND the new S4-specific presentation
+  // branch use the exact same, single copy of this wording — no
+  // duplicated strings that could drift.
+  function _tr2to5AdvisoryDetail(blk) {
     let detail;
-    switch (blocker.checkId) {
+    switch (blk.checkId) {
       case 'TR2': {
         const adx = use('ADX_VALUE');
-        const floor = (ctx.quality.adx && ctx.quality.adx.floor != null) ? ctx.quality.adx.floor : (blocker.threshold && blocker.threshold.adx);
+        const floor = (ctx.quality.adx && ctx.quality.adx.floor != null) ? ctx.quality.adx.floor : (blk.threshold && blk.threshold.adx);
         detail = (adx != null && floor != null)
           ? ('ADX ' + Math.round(adx) + ' is below the ' + floor + ' floor. Wait for conviction to strengthen.')
           : 'ADX is below the required floor. Wait for conviction to strengthen.';
@@ -10453,8 +10480,8 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
         // fact — these are the existing SMA80/SMA135 intermediate-
         // structure facts.
         use('EXEC_1H_SMA135');
-        const raw4 = blocker.raw || {};
-        const rc = blocker.reasonCode;
+        const raw4 = blk.raw || {};
+        const rc = blk.reasonCode;
         const isLong = DIR === 'LONG';
         if (rc === 'TR4_SMA80_PRICE_OPPOSING') {
           detail = isLong ? 'Wait for price to reclaim the 4H SMA80 before entry.' : 'Wait for price to break back below the 4H SMA80 before entry.';
@@ -10485,11 +10512,35 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
       default:
         detail = 'Trend phase is not yet eligible for entry.';
     }
-    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: detail, factIds: factIds };
+    return detail;
   }
 
+  // TDAS V5.4.0F3A — S4 EMERGING Advisory presentation fix (owner-approved
+  // hotfix). TR1 fails tautologically for every EMERGING phase by design
+  // (tradeReadyV1Check1TseShadow, unchanged) and is never a meaningful
+  // Advisory blocker for S4 — it carries no information beyond "phase is
+  // EMERGING", already conveyed by the S4 headline. This branch is
+  // evaluated BEFORE the shared blocker table below specifically so S4
+  // never falls into that table's TR1-driven default text. Uses only the
+  // additive, S4-presentation-only blockerSkippingTr1ForS4Presentation
+  // field (first TR2-5 failure, already-computed data, no new
+  // computation) — ctx.decision.blocker itself, and every other
+  // consumer of it, is completely untouched.
   if (sit === 'S4') {
+    const s4Blocker = ctx.decision.blockerSkippingTr1ForS4Presentation;
+    if (s4Blocker) {
+      factIds.push('TRADE_READY_STATUS');
+      const detail = _tr2to5AdvisoryDetail(s4Blocker);
+      return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: detail, factIds: factIds };
+    }
     return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Wait for the initial move to gain strength before entry.', factIds: factIds };
+  }
+
+  const blocker = ctx.decision.blocker;
+  if (blocker) {
+    factIds.push('TRADE_READY_STATUS');
+    const detail = _tr2to5AdvisoryDetail(blocker);
+    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: detail, factIds: factIds };
   }
 
   // No hard-failing TR check found (LIMITED_EVALUATION / genuinely unknown
