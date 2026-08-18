@@ -344,7 +344,7 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   box-sizing:border-box;
   display:flex;
   flex-direction:column;
-  justify-content:center;
+  justify-content:flex-start; /* TDAS V5.4.0F3A UI — was justify-content:center, which vertically centred the heading+detail inside the 93px footprint instead of starting them at a consistent top inset (matches .tdas-advisory-block's own flex-start, set for the identical reason under V5.0.0H8E1). Box height/line-clamp/card layout are all unaffected — only where the (unchanged) content sits within the already-existing box. */
 }
 .card:not(.tdas-card-active) .tdas-techsummary-detail{
   display:-webkit-box;
