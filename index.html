@@ -2203,7 +2203,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0F3A';
+const APP_BUILD = 'V5.4.0F3B';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -10601,19 +10601,41 @@ function _fourHTrendDotState(d) {
   return 'amber';
 }
 
-// SMA80 dot (owner doctrine §10) — reuses the existing direction-relative
-// v51SmaStateMachine() state machine unchanged, zero new tolerance. That
-// state machine is already called with the resolved setup direction baked
-// in, so its own state enum is already "supportive/opposing" in meaning —
-// this is a pure relabel to dot colour, not a new interpretation.
+// TDAS V5.4.0F3B — SMA80 dot direction-anchor correction (owner doctrine
+// §10, approved Option A). ROOT CAUSE (see the Decision Dot Semantics
+// Audit and TR4 Direction-Anchor Audit, both approved read-only):
+// evidence.sma.state (Holding/Reclaimed/Testing/Lost) is computed by
+// v51SmaStateMachine() relative to d.v51Evidence.identity.direction — the
+// confirmed TEMA-cross direction used to build the V5.1 evidence bundle —
+// which is a SEPARATE, independently-computed value from the card's
+// displayed TSE thesis, d.trendState.direction. The two normally agree;
+// when they diverge (e.g. a fresh counter-trend TEMA cross inside an
+// EMERGING/transitional TSE phase), the state machine's own
+// supportive/opposing labelling is still correct relative to ITS basis,
+// but that basis is not the thesis being displayed. v51SmaStateMachine()
+// itself is completely unchanged by this fix — this is a pure
+// re-interpretation of its already-computed output, gated on comparing
+// two already-computed direction fields. TR4 was separately confirmed to
+// never consume evidence.sma.state at all (it re-derives its own
+// thesis-correct read from raw.priceAboveSma80/sma80SlopeState), so this
+// presentation-only correction has zero effect on Trade Ready.
+function _fourHSma80DirectionsAgree(d) {
+  const basis = d.v51Evidence && d.v51Evidence.identity && d.v51Evidence.identity.direction;
+  const thesis = (d.trendState && d.trendState.direction === 'LONG') ? 'long'
+    : (d.trendState && d.trendState.direction === 'SHORT') ? 'short' : null;
+  if ((basis !== 'long' && basis !== 'short') || !thesis) return null; // unresolved — caller preserves prior mapping
+  return basis === thesis;
+}
 function _fourHSma80DotState(d) {
   if (!d || d.tf !== '4h') return 'grey';
   const sma = d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.sma;
   if (!sma || !sma.complete) return 'grey';
-  if (sma.state === 'Holding' || sma.state === 'Reclaimed') return 'green';
   if (sma.state === 'Testing') return 'amber';
-  if (sma.state === 'Lost') return 'red';
-  return 'grey';
+  if (sma.state !== 'Holding' && sma.state !== 'Reclaimed' && sma.state !== 'Lost') return 'grey';
+  const supportive = sma.state === 'Holding' || sma.state === 'Reclaimed';
+  const agree = _fourHSma80DirectionsAgree(d);
+  if (agree === false) return supportive ? 'red' : 'green'; // basis/thesis disagree — invert
+  return supportive ? 'green' : 'red'; // agree, or unresolved — preserve existing mapping
 }
 
 // TDAS V5.4.0F3 — dot rollover hover text (owner doctrine §12/§19 J).
@@ -10648,26 +10670,61 @@ function _fourHTrendDotHover(d) {
   return isLong ? 'Above 200MA \u2022 MA still declining' : 'Below 200MA \u2022 MA still rising';
 }
 
+// TDAS V5.4.0F3B — companion hover for the SMA80 direction-anchor
+// correction above. When basis/thesis agree (or are unresolved), the
+// existing truthful copy is preserved unchanged. When they disagree, the
+// wording switches to thesis-relative, owner-approved exact copy, derived
+// from sma.side (the raw, direction-agnostic price-vs-SMA80 fact) rather
+// than from the basis-relative state label — sma.side is guaranteed
+// 'above'/'below' (never 'at') whenever state is Holding/Reclaimed/Lost,
+// since a currentSide of 'at' always resolves to state 'Testing' inside
+// v51SmaStateMachine().
 function _fourHSma80DotHover(d) {
   if (!d || d.tf !== '4h') return 'SMA80 state unavailable';
   const sma = d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.sma;
   if (!sma || !sma.complete) return 'SMA80 state unavailable';
-  if (sma.state === 'Holding') return 'Holding SMA80 \u2022 Trend support intact';
-  if (sma.state === 'Reclaimed') return 'SMA80 reclaimed \u2022 Support restored';
   if (sma.state === 'Testing') return 'Testing SMA80 \u2022 Direction unclear';
-  if (sma.state === 'Lost') return 'SMA80 lost \u2022 Structure weakened';
-  return 'SMA80 state unavailable';
+  if (sma.state !== 'Holding' && sma.state !== 'Reclaimed' && sma.state !== 'Lost') return 'SMA80 state unavailable';
+  const agree = _fourHSma80DirectionsAgree(d);
+  if (agree !== false) {
+    if (sma.state === 'Holding') return 'Holding SMA80 \u2022 Trend support intact';
+    if (sma.state === 'Reclaimed') return 'SMA80 reclaimed \u2022 Support restored';
+    return 'SMA80 lost \u2022 Structure weakened'; // Lost
+  }
+  const isLong = d.trendState.direction === 'LONG';
+  const priceAbove = sma.side === 'above';
+  if (isLong) return priceAbove ? 'Above SMA80 \u2022 Supports LONG' : 'Below SMA80 \u2022 Opposes LONG';
+  return !priceAbove ? 'Below SMA80 \u2022 Supports SHORT' : 'Above SMA80 \u2022 Opposes SHORT';
 }
 
+// TDAS V5.4.0F3B — 200MA-context refinement (owner doctrine, approved).
+// Adds a third opposing tier between "recovering" (contracting) and
+// "structural opposition": when TEMA opposes the thesis, is NOT
+// contracting, but price is still on the thesis-supportive side of the
+// canonical 200MA, this is dissent that has not yet overturned the
+// structural regime — "counter-trend pressure", not full opposition.
+// Reuses raw.priceVsMa200 (the SAME canonical field the Trend dot already
+// reads) — no new calculation, no second regime engine, no change to
+// temaPhase/separation/TSE. priceVsMa200 is guaranteed 'above'/'below'
+// (never 'equal'/'unknown') whenever temaPhase is resolved, since
+// buildTrendState()'s own completeness guard requires a resolved regime,
+// which itself requires a resolved (non-equal) price-vs-200MA relation —
+// see TDAS V5.4.0F3B build notes for the full reachability proof.
 function _fourHTemaDotHover(d, dirWord) {
   const v51ev = d.v51Evidence && d.v51Evidence.evidence;
   const temaPhase = d.trendState.temaPhase;
   if (!temaPhase || temaPhase === 'unknown') return 'TEMA state unavailable';
   const isLong = dirWord === 'bullish';
   if (temaPhase === 'aligned') return isLong ? 'TEMA bullish \u2022 Averages aligned' : 'TEMA bearish \u2022 Averages aligned';
-  // opposing — split by trajectory (owner-approved presentation split)
+  // opposing — split by trajectory, then by canonical 200MA side
   const trajectory = v51ev && v51ev.tema && v51ev.tema.separation ? v51ev.tema.separation.trajectory : 'unknown';
   if (trajectory === 'contracting') return isLong ? 'TEMA turning bullish \u2022 Momentum shifting' : 'TEMA turning bearish \u2022 Momentum shifting';
+  const raw = v51ev && v51ev.raw;
+  const priceVsMa200 = raw && raw.complete ? raw.priceVsMa200 : 'unknown';
+  const priceOnThesisSide = isLong ? priceVsMa200 === 'above' : priceVsMa200 === 'below';
+  if (priceOnThesisSide) {
+    return isLong ? 'TEMA bearish but above 200MA \u2022 Counter-trend pressure' : 'TEMA bullish but below 200MA \u2022 Counter-trend pressure';
+  }
   return isLong ? 'TEMA bearish \u2022 Opposes LONG' : 'TEMA bullish \u2022 Opposes SHORT';
 }
 
@@ -10707,11 +10764,15 @@ function _fourHCardDotState(d) {
 
   // TDAS V5.4.0F3 — TEMA presentation split (owner-approved): aligned ->
   // green; opposing + contracting -> amber ("turning", only case where
-  // that word is permitted); opposing + holding/expanding/trajectory-
-  // unavailable -> red (known opposition without contracting evidence);
-  // TEMA state itself unavailable -> grey. No analytical TEMA
+  // that word is permitted); TEMA state itself unavailable -> grey.
+  // V5.4.0F3B adds a third opposing tier (owner-approved 200MA-context
+  // refinement — see _fourHTemaDotHover()'s header comment for the full
+  // rationale/reachability proof): opposing + non-contracting is amber
+  // ("counter-trend pressure") when price remains on the thesis-
+  // supportive side of the canonical 200MA, and red only once price has
+  // ALSO moved to the thesis-opposing side. No analytical TEMA
   // calculation/threshold change — pure presentation-state split on
-  // already-computed temaPhase + separation.trajectory.
+  // already-computed temaPhase + separation.trajectory + raw.priceVsMa200.
   const temaPhase = ts.temaPhase;
   const v51evForTema = d.v51Evidence && d.v51Evidence.evidence;
   const temaTrajectory = v51evForTema && v51evForTema.tema && v51evForTema.tema.separation ? v51evForTema.tema.separation.trajectory : 'unknown';
@@ -10719,7 +10780,13 @@ function _fourHCardDotState(d) {
   if (!temaPhase || temaPhase === 'unknown') temaCls = 'na';
   else if (temaPhase === 'aligned') temaCls = 'ok';
   else if (temaPhase === 'opposing' && temaTrajectory === 'contracting') temaCls = 'warn';
-  else temaCls = 'no'; // opposing + holding/expanding/trajectory unavailable
+  else {
+    const rawForTema = v51evForTema && v51evForTema.raw;
+    const priceVsMa200ForTema = rawForTema && rawForTema.complete ? rawForTema.priceVsMa200 : 'unknown';
+    const isLongForTema = ts.direction === 'LONG';
+    const priceOnThesisSideForTema = isLongForTema ? priceVsMa200ForTema === 'above' : priceVsMa200ForTema === 'below';
+    temaCls = priceOnThesisSideForTema ? 'warn' : 'no'; // counter-trend pressure (amber) vs structural opposition (red)
+  }
 
   const utDirWord = ts.utDirection;
   const utCls = (!utDirWord || utDirWord === 'unknown') ? 'na' : (utDirWord === dirWord ? 'ok' : 'no');
