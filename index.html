@@ -725,15 +725,17 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
    .sl-be-clickable: the actionable "SL to BE" prompt becomes clickable
    (opens the confirm dialog) — layered on the base amber pill, unchanged
    otherwise. .sl-be-confirmed: "✓ SL at BE", using the same green success
-   colour language as .tp1-pill, clearly distinct from the amber
-   actionable prompt. On Trade Desk this variant is ALSO given
-   .sl-be-clickable (opens the undo dialog); on the Scanner active
-   placeholder it is rendered without that class — plain, non-interactive
-   status, per spec ("no Undo control on the compact Scanner card"). */
+   colour language the retired .tp1-pill class once used (TDAS V5.4.1A
+   §B8/§14 — removed as part of the old Fib TP1 concept's surgical
+   retirement; .sl-be-confirmed itself is unaffected and remains in use),
+   clearly distinct from the amber actionable prompt. On Trade Desk this
+   variant is ALSO given .sl-be-clickable (opens the undo dialog); on the
+   Scanner active placeholder it is rendered without that class — plain,
+   non-interactive status, per spec ("no Undo control on the compact
+   Scanner card"). */
 .sl-be-pill.sl-be-clickable{cursor:pointer;}
 .sl-be-pill.sl-be-clickable:hover{filter:brightness(1.15);}
 .sl-be-pill.sl-be-confirmed{background:var(--green-bg);color:var(--green-text);}
-.tp1-pill{display:inline-block;font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--green-bg);color:var(--green-text);letter-spacing:0.3px;cursor:default;white-space:nowrap;flex-shrink:0;}
 .price{font-size:26px;font-weight:500;letter-spacing:-0.5px;line-height:1.1;}
 
 /* ── Price + pill inline row ── */
@@ -2203,7 +2205,9 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // TDAS Phase 2A: simple constant, update this string for each future build.
 // Rendered as a small muted badge beside the TDAS title (#appBuildBadge in
 // the header markup) — UI-only, no effect on app logic.
-const APP_BUILD = 'V5.4.0F3B';
+// V5.4.1A — Active Trade R-Management, Stop Persistence & Journal Outcome
+// Integrity. Supersedes V5.4.0F3B.
+const APP_BUILD = 'V5.4.1A';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3050,6 +3054,12 @@ function normaliseSheets(e){
     exitPrice:       _n(e['Exit Price']||e.exitPrice),
     pnlPercent:      _n(e['PnL %']||e.pnlPercent),
     rMultiple:       _n(e['R-Multiple']||e['R Multiple']||e.rMultiple),
+    // TDAS V5.4.1A — Closed-Trade Outcome Integrity. Exit mechanism, a
+    // separate fact from economic outcome (see deriveEconomicOutcome()/
+    // classifyExitReason()). Must be explicitly whitelisted here or
+    // pullFromSheets() would silently drop it on every sync, same as every
+    // other named field in this fixed allow-list normaliser.
+    exitReason:      e['Exit Reason']||e.exitReason||null,
     // Timestamps
     signalTimestamp: e['Signal Timestamp']||e.signalTimestamp||e.timestamp||idTs,
     entryTimestamp:  e['Entry Timestamp']||e.entryTimestamp||null,
@@ -3140,6 +3150,13 @@ function normaliseSheets(e){
     slRecommendedLevel:  _n(e.slRecommendedLevel!=null?e.slRecommendedLevel:e['SL Recommended Level']),
     slConfirmedLevel:    _n(e.slConfirmedLevel!=null?e.slConfirmedLevel:e['SL Confirmed Level']),
     slConfirmedSource:   e.slConfirmedSource||e['SL Confirmed Source']||null,
+    // TDAS V5.4.1A Part B — R-Management ladder (Google Sheets column
+    // names in brackets — see Apps Script v8.8's own JOURNAL_HEADERS).
+    // Same fixed-allow-list requirement as every field above.
+    initialRiskStop:          _n(e.initialRiskStop!=null?e.initialRiskStop:e['Initial Risk Stop']),
+    protectionStage:          e.protectionStage||e['Protection Stage']||'NONE',
+    pendingProtectionStage:   e.pendingProtectionStage||e['Pending Protection Stage']||null,
+    highestProtectionTriggerR: _n(e.highestProtectionTriggerR!=null?e.highestProtectionTriggerR:e['Highest Protection Trigger R']),
   };
   // Transitional aliases — must mirror buildV1Entry so UI renders correctly
   // after pullFromSheets() replaces in-memory journal entries.
@@ -14452,6 +14469,7 @@ const DIAG = {
   fullAnalysisSnapshotReader: true, // TDAS V4.10.4H — controls ONLY whether getFullAnalysisSnapshotData() resolves the panel's exact symbol+tf registry snapshot. When false, the panel reads legacy currentScanData[symbol] directly.
   fullAnalysisSnapshotRefresh: true, // TDAS V4.10.4H — controls ONLY whether a missing/stale exact Full Analysis snapshot may be requested through the shared coordinator. When false, the panel renders only whatever data/fallback state already exists.
   ownershipResolverLive: true, // TDAS V5.0.0H8B — Activate Canonical Ownership + Scanner Reconciliation. ACTIVE per production H8A shadow census evidence (checked=12, disagreements=1 [presentation only], suppression=0, blankTfActiveWatches=0): isScannerSymbolSuppressed() is now a thin delegate to resolveOwnership() (used by runScan's signalItems/neutralItems, renderSummary, the status count, and reconcileScannerOwnership itself), and renderCard()'s independent symbol-wide watch lookup has been replaced with resolveOwnership()'s verdict (root cause #1 fix — see TDAS_V5_REFRESH_RECONCILIATION_AUDIT.md). Rollback: set back to false and restore isScannerSymbolSuppressed() to call isExactSymbolTfWatched() directly (untouched, still present) plus restore renderCard()'s prior symbol-wide journal.find — both documented inline at their respective call sites.
+  closedTradeOutcomeMigrationLive: false, // TDAS V5.4.1A — Closed-Trade Outcome Integrity historical migration gate. Controls ONLY whether migrateLegacyJournalOutcomes() actually runs at startup. DELIBERATELY OFF pending full exitReason persistence parity (normaliseSheets()/buildV1Entry()/Apps Script journalFieldFor()/JOURNAL_HEADERS) — running the migration before exitReason can round-trip through Sheets would repair entry.outcome locally but silently drop the preserved exit-reason on the next sync, permanently losing the "how it closed" fact the migration exists to protect (see migrateLegacyJournalOutcomes()'s own header comment). The live derivation path (canonicalOutcome()/deriveEconomicOutcome(), consumed by Journal stats/ledger row and Trade Desk stats/closed-trade table) is UNAFFECTED by this flag and is already correct regardless — this flag gates only the one-time WRITE-BACK of corrected historical rows. Turn on only after confirming the persistence round-trip test passes and Apps Script v8.8 (or later) is deployed.
 };
 
 // TDAS V5.0.0H8A — Ownership Resolver Shadow Audit. Bounded in-memory
@@ -20409,31 +20427,28 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
     : advisory.action==='REVIEW' ? 'tdas-state-review'
     : 'tdas-state-hold';
 
-  // TP1 — Fib 1.618 target reached (TDAS V4.5 Task 4, V1: display-only, no
-  // persistence, not clickable). Uses openTrade.target — the same Fib 1.618
-  // target field the Trade Desk card displays — and price (d.price), the
-  // same current price already driving the Live P&L line above. The
-  // openTrade.target vs entryPx comparison doubles as the "wrong side of
-  // entry" validation.
-  const _tp1Reached = (
-    price!=null && openTrade.target!=null &&
-    (openTrade.signal==='long' ? (openTrade.target > entryPx && price >= openTrade.target)
-                                : (openTrade.target < entryPx && price <= openTrade.target))
-  ) && (!advisory || advisory.action!=='CLOSE');
-  const tp1Html = _tp1Reached
-    ? '<span class="tp1-pill" title="Fib 1.618 target reached. Consider partial profit or tightening stop.">TP1</span>'
-    : '';
+  // TDAS V5.4.1A §B8/§14 — the old Fib 1.618 "TP1 reached" concept is
+  // RETIRED here too (owner directive: "New TP1 means ONLY: protect +1R.
+  // Do not leave two TP1 meanings... it is NOT acceptable to leave a
+  // second visible TP1 meaning after V5.4.1A introduces R-based TP1").
+  // This is the ONE explicitly authorised surgical exception to the
+  // otherwise-untouched Scanner surface — remove/retire ONLY this display
+  // pill and its one dependency (the old TP1-reached suppression term
+  // inside _slToBe, below). Scanner analysis, lifecycle, eligibility,
+  // routing, and every other presentation element in this function are
+  // completely unchanged. entry.target itself is untouched (still a
+  // legitimate persisted field, still consumed elsewhere) — only this
+  // display-only pill's own eligibility/rendering is retired.
 
   // SL to BE — small secondary risk-management prompt (TDAS V4.5 Task 1;
   // moved into the advisory header row in the Task 1 follow-up). Reuses
   // pnlR already computed above for the Live P&L line, suppressed whenever
   // advisory.action is 'CLOSE' (covers both a genuine stop-loss breach and
   // the ladder's own structural CLOSE — see renderOrderTicketCard's comment
-  // for the full reasoning). Also suppressed once TP1 has been reached —
-  // priority is CLOSE > TP1 > SL to BE. Never shown for losing/sub-1R trades.
+  // for the full reasoning). Never shown for losing/sub-1R trades.
   // TDAS V4.7.0 — once the user has confirmed the stop is at break-even,
   // that is a persistent historical fact, not a recalculated indicator
-  // state: it must keep showing "✓ SL at BE" regardless of CLOSE/TP1/
+  // state: it must keep showing "✓ SL at BE" regardless of CLOSE/
   // advisory changes (see this version's delivery note, §6 priority
   // rules). The unconfirmed actionable prompt is now clickable — opens
   // confirmBeStop()'s confirmation dialog — and is additionally suppressed
@@ -20443,7 +20458,7 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
   const beConfirmedHtml = _beConfirmed
     ? '<span class="sl-be-pill sl-be-confirmed" title="Stop confirmed at break-even ('+(openTrade.beStopLevel!=null?fmt(openTrade.beStopLevel):'—')+').">\u2713 SL at BE</span>'
     : '';
-  const _slToBe = !_beConfirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  const _slToBe = !_beConfirmed && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
   const slToBeHtml = _slToBe
     ? '<span class="sl-be-pill sl-be-clickable" title="Price has moved +1R. Click to confirm you have moved your stop to break-even." onclick="event.stopPropagation();confirmBeStop('+openTrade.id+');">SL to BE</span>'
     : '';
@@ -20452,13 +20467,12 @@ function buildActiveScannerPlaceholderHtml(d, openTrade, symbol){
     ? '<div class="tdas-advisory-block '+stateClass+'">'
       + '<div class="tdas-advisory-header-row">'
       + '<div class="tdas-advisory-headline">'+advisory.headline+'</div>'
-      + tp1Html
       + beConfirmedHtml
       + slToBeHtml
       + '</div>'
       + (advisory.detail ? '<div class="tdas-advisory-detail">'+advisory.detail+'</div>' : '')
       + '</div>'
-    : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-header-row"><div class="tdas-advisory-headline">HOLD</div>'+tp1Html+beConfirmedHtml+slToBeHtml+'</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
+    : '<div class="tdas-advisory-block tdas-state-hold"><div class="tdas-advisory-header-row"><div class="tdas-advisory-headline">HOLD</div>'+beConfirmedHtml+slToBeHtml+'</div><div class="tdas-advisory-detail">Advisory unavailable — refresh to load.</div></div>';
 
   return {
     stateClass,
@@ -23872,6 +23886,11 @@ function buildV1Entry(symbol, d, decision, overrides) {
     exitPrice:      overrides.exitPrice || null,
     pnlPercent:     overrides.pnlPercent || null,
     rMultiple:      overrides.rMultiple || null,
+    // TDAS V5.4.1A — Closed-Trade Outcome Integrity. Exit mechanism, set at
+    // close time by saveOutcome() via classifyExitReason() — never at trade
+    // creation, hence null here (matches every other Outcome-family field's
+    // creation-time default on this allow-list).
+    exitReason:     overrides.exitReason || null,
 
     // Timestamps
     signalTimestamp:  overrides.signalTimestamp || _now,
@@ -23930,6 +23949,19 @@ function buildV1Entry(symbol, d, decision, overrides) {
     slRecommendedLevel:  null,
     slConfirmedLevel:    null,
     slConfirmedSource:   null,
+
+    // TDAS V5.4.1A Part B — Active Trade R-Management ladder. Every
+    // creation path starts at 'NONE' (no confirmed protection at all) —
+    // nothing else in the app advances these except confirmStopPlacement()/
+    // clearStopConfirmation()/the live-price ratchet (_advanceProtectionLadder()).
+    // initialRiskStop stays null until the FIRST confirmed actual Bitunix
+    // stop (frozen permanently from then on — see _rDenominator()'s own
+    // comment); B/E or any TP/runner stage may never be the first
+    // confirmation (owner spec §4 — a valid initial SL must exist first).
+    initialRiskStop:          null,
+    protectionStage:          'NONE',
+    pendingProtectionStage:   null,
+    highestProtectionTriggerR: null,
   };
 
   // Transitional aliases for legacy UI renderers.
@@ -24399,7 +24431,15 @@ function saveEntry(){
 
 // ── Journal render ───────────────────────────────────────────────────────
 function decLabel(d){return{took:'✓ Trade taken',skipped:'✗ Skipped',watching:'👁 Watching',missed:'⚡ Missed'}[d]||d;}
+// TDAS V5.4.1A — outcome is now always one of 'win'|'loss'|'be' (see
+// deriveEconomicOutcome()); 'manual' is retired as an outcome value and
+// survives only as a legacy fallback label for any row migration hasn't
+// reached yet (should not occur post-migrateLegacyJournalOutcomes(), kept
+// defensively rather than assuming migration always completes before render).
 function outLabel(o){if(!o)return'';return{win:'▲ Win',loss:'▼ Loss',be:'— B/E',manual:'✎ Manual exit'}[o]||o;}
+// Exit-reason display label — a separate fact from economic outcome (never
+// used to derive it). See classifyExitReason()/legacyOutcomeToExitReason().
+function exitReasonLabel(r){if(!r)return'';return{INITIAL_SL:'Initial SL',BREAK_EVEN_STOP:'B/E Stop',PROFIT_PROTECTION_STOP:'Profit Stop',TP:'TP',MANUAL:'Manual'}[r]||r;}
 
 function toggleLedger(id){
   const row=document.getElementById('lr-'+id);
@@ -24423,7 +24463,11 @@ function renderLedgerRow(e, filter){
   const isOpen=e.decision==='took'&&!e.outcome;
   const isWatch=e.decision==='watching'&&!e.outcome;
   const isCompleted=e.decision==='took'&&e.outcome&&!isCancelled;
-  const outColor=e.outcome==='win'?'var(--green-text)':e.outcome==='loss'?'var(--red-text)':'var(--text2)';
+  // TDAS V5.4.1A — canonicalOutcome() re-derives from realised economics
+  // (self-healing), never trusting a stale/legacy 'manual' value. See its
+  // own header comment.
+  const _canonOutcome = isCompleted ? canonicalOutcome(e) : null;
+  const outColor=_canonOutcome==='win'?'var(--green-text)':_canonOutcome==='loss'?'var(--red-text)':'var(--text2)';
 
   // TDAS V5.4.0P1 (P1.5) — same existing-fact presentation as the Trade
   // card badge (renderOrderTicketCard). Surfaced on any live (not
@@ -24444,9 +24488,9 @@ function renderLedgerRow(e, filter){
   // ── Row col 5: status ─────────────────────────────────────────
   let col5Text,col5Color;
   if(isCompleted){
-    const map={win:'▲ Win',loss:'▼ Loss',be:'— B/E',manual:'✎ Manual'};
-    col5Text=map[e.outcome]||e.outcome;
-    col5Color=e.outcome==='win'?'var(--green-text)':e.outcome==='loss'?'var(--red-text)':'var(--text2)';
+    const map={win:'▲ Win',loss:'▼ Loss',be:'— B/E'};
+    col5Text=map[_canonOutcome]||_canonOutcome||e.outcome;
+    col5Color=outColor;
   } else if(isOpen){
     col5Text='⚡ Active'; col5Color='var(--amber-text)';
   } else if(isWatch){
@@ -24607,9 +24651,18 @@ function renderJournal(){
   }
 
   // Stats — based on completed trades only
+  // TDAS V5.4.1A — Closed-Trade Outcome Integrity. wins/losses now consume
+  // canonicalOutcome() (the SAME helper Trade Desk stats/rows and the
+  // Journal ledger row use — owner directive: one canonical helper, not
+  // four independent classifiers) instead of trusting the raw persisted
+  // outcome field directly, so a profitable exit via a profit-protection
+  // stop is correctly counted as a win regardless of which button closed it.
+  // Avg R is UNCHANGED — it was already sourced directly from rMultiple,
+  // never from outcome, so it was never affected by this defect (traced and
+  // confirmed during the V5.4.1A audit; see test coverage).
   const completed=journal.filter(j=>!j.deleted&&j.decision==='took'&&j.outcome&&j.outcome!=='cancelled');
-  const wins=completed.filter(j=>j.outcome==='win'||(j.outcome==='manual'&&j.rMultiple>0)).length;
-  const losses=completed.filter(j=>j.outcome==='loss'||(j.outcome==='manual'&&j.rMultiple<=0)).length;
+  const wins=completed.filter(j=>canonicalOutcome(j)==='win').length;
+  const losses=completed.filter(j=>canonicalOutcome(j)==='loss').length;
   const decided=wins+losses;
   const winRate=decided>0?Math.round(wins/decided*100):null;
   const avgR=completed.filter(j=>j.rMultiple!=null).length
@@ -24708,6 +24761,170 @@ function _calcRealisedR(entry, exitPx) {
   return pnl / initialRisk;
 }
 
+// ── TDAS V5.4.1A — Closed-Trade Outcome Integrity ──────────────────────────
+// Root-cause fix: the outcome modal's four buttons ("▲ TP Hit"/"▼ SL Hit"/
+// "— B/E"/"✎ Manual") describe EXIT MECHANISM, but prior to this build the
+// literal button clicked was written directly into entry.outcome as if it
+// were the ECONOMIC RESULT — so a profitable exit via a profit-protection
+// stop (e.g. LINK 18 Aug: entry 9.508, exit 10.530, +4.50R) was persisted as
+// outcome='loss' merely because the exit mechanism was a stop. Confirmed via
+// the read-only audit: four independent render sites (Journal stats, Journal
+// ledger row, Trade Desk stats, Trade Desk closed-trade table) each read
+// entry.outcome directly with no shared derivation. Fix: outcome is now
+// ALWAYS derived from realised economics (never from which button/mechanism
+// closed the trade); exit mechanism is captured separately in entry.exitReason.
+// The exit mechanism must never determine economic outcome (owner directive).
+const OUTCOME_BE_TOLERANCE_R = 0.01; // matches Apps Script roundR()'s existing 2-decimal persisted R precision — owner-approved.
+
+// Canonical economic-outcome derivation — the SINGLE source of truth every
+// render/stat site must consume (owner directive: "one canonical helper").
+// Priority, per owner review:
+//   1. realised R magnitude, ONLY to decide the B/E boundary (±0.01R) — R is
+//      the more reliable signal for "was this genuinely flat" since it's
+//      already risk-normalised, whereas raw price equality is brittle
+//      (slippage/rounding almost never lands on an exact price match).
+//   2. realised PRICE ECONOMICS as the primary WIN/LOSS sign authority
+//      (owner-approved primary authority) once B/E has been ruled out.
+//   3. realised R sign as the fallback WIN/LOSS authority when price
+//      economics are unavailable (e.g. very old/incomplete rows).
+// Returns 'win' | 'loss' | 'be' | null (null = insufficient data — never
+// guessed, per doctrine).
+function deriveEconomicOutcome(entry) {
+  if (!entry) return null;
+  const r = entry.rMultiple;
+  const hasR = r != null && isFinite(r);
+  if (hasR && Math.abs(r) <= OUTCOME_BE_TOLERANCE_R) return 'be';
+
+  const entryPx = entry.actualEntry != null ? entry.actualEntry : entry.price;
+  const exitPx = entry.exitPrice;
+  const isLong = entry.signal === 'long';
+  const hasPrice = entryPx != null && exitPx != null && isFinite(entryPx) && isFinite(exitPx);
+  if (hasPrice && entryPx !== exitPx) {
+    const profitable = isLong ? (exitPx > entryPx) : (exitPx < entryPx);
+    return profitable ? 'win' : 'loss';
+  }
+  if (hasPrice && entryPx === exitPx) return 'be'; // exact price match with no usable R above
+
+  if (hasR) return r > 0 ? 'win' : 'loss'; // outside BE tolerance per the guard above, so decisively non-zero
+  return null;
+}
+
+// Render/stat-facing wrapper — always re-derives live from economics first
+// (self-healing against any stale/unmigrated persisted value, e.g. a
+// pre-V5.4.1A 'manual' row that hasn't been through migrateLegacyJournalOutcomes()
+// yet), falling back to a persisted value ONLY if it is already one of the
+// three valid economic values and live re-derivation had insufficient data.
+// Never returns 'manual' or 'cancelled' — callers filtering those must do so
+// on entry.outcome/entry.decision before calling this, as they already do.
+function canonicalOutcome(entry) {
+  const derived = deriveEconomicOutcome(entry);
+  if (derived) return derived;
+  return (entry && (entry.outcome === 'win' || entry.outcome === 'loss' || entry.outcome === 'be')) ? entry.outcome : null;
+}
+
+// Exit-reason classification — separate fact from economic outcome, never
+// used to derive it. `clickedButton` is the modal button pressed ('win'
+// ['▲ TP Hit'] | 'loss' ['▼ SL Hit'] | 'be' ['— B/E'] | 'manual' ['✎ Manual']).
+// 'loss' is genuinely ambiguous between mechanisms (a stop can be the
+// original SL, a break-even stop that slipped, or a profit-protection stop)
+// — per owner directive ("do not invent specificity... use Initial SL only
+// where that can actually be established"), it is sub-classified using the
+// ALREADY-DERIVED economic outcome plus existing stop-management provenance,
+// never guessed beyond what the data supports.
+function classifyExitReason(entry, clickedButton, derivedOutcome) {
+  if (clickedButton === 'manual') return 'MANUAL';
+  if (clickedButton === 'win') return 'TP';
+  if (clickedButton === 'be') return 'BREAK_EVEN_STOP';
+  if (clickedButton === 'loss') {
+    if (derivedOutcome === 'win') return 'PROFIT_PROTECTION_STOP'; // unambiguous: a stop was hit and it locked in profit
+    if (derivedOutcome === 'be') return 'BREAK_EVEN_STOP';
+    // derivedOutcome === 'loss': under the current (pre-R-ladder) architecture
+    // the only two stop concepts that exist are the recommended/confirmed SL
+    // and BE — a loss-producing stop hit, absent an explicit BE confirmation,
+    // can only be the initial SL. This mapping is superseded once the
+    // V5.4.1 R-ladder's protectionStage makes this fully precise.
+    const mgmt = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
+    if (mgmt && mgmt.confirmed && mgmt.source === 'BE') return 'BREAK_EVEN_STOP';
+    return 'INITIAL_SL';
+  }
+  return null;
+}
+
+// Historical-row legacy-outcome → exit-reason preservation. MUST run before
+// any legacy 'outcome' value is overwritten with a re-derived economic
+// value, so the exit-mechanism information a legacy row's outcome string
+// carried (most importantly 'manual') is never silently discarded (owner
+// requirement, brief §A6/§1). Mirrors classifyExitReason()'s 'loss'
+// sub-classification logic for legacy rows using their OWN already-persisted
+// rMultiple/exitPrice (re-derived fresh, not trusted from the stale label).
+function legacyOutcomeToExitReason(entry, legacyOutcome, freshlyDerivedOutcome) {
+  if (legacyOutcome === 'manual') return 'MANUAL';
+  if (legacyOutcome === 'win') return 'TP';
+  if (legacyOutcome === 'be') return 'BREAK_EVEN_STOP';
+  if (legacyOutcome === 'loss') return classifyExitReason(entry, 'loss', freshlyDerivedOutcome);
+  return null;
+}
+
+// One-time, idempotent, additive-only migration of historical Journal rows
+// whose outcome was written under the old (pre-V5.4.1A) direct-button-write
+// scheme. Guarded on entry.exitReason being unset — safe to call on every
+// load; already-migrated rows are untouched. Never invents specificity
+// beyond what the row's own persisted rMultiple/exitPrice supports (Category
+// C rows — where deriveEconomicOutcome() returns null — have their
+// exitReason preserved from the legacy label where possible, but outcome is
+// left as-is rather than guessed, and are reported, not silently skipped).
+// Marks each corrected row dirty via the SAME sessionDirtyIds/
+// commitJournalChange path every other Journal write already uses — no new
+// persistence mechanism introduced.
+function migrateLegacyJournalOutcomes() {
+  if (typeof journal === 'undefined' || !Array.isArray(journal)) return { repaired: 0, preserved: 0, ambiguous: 0 };
+  let repaired = 0, preserved = 0, ambiguous = 0;
+  const touchedIds = [];
+  journal.forEach(function (entry) {
+    if (!entry || entry.deleted) return;
+    if (entry.decision !== 'took') return;
+    if (!entry.outcome || entry.outcome === 'cancelled') return;
+    if (entry.exitReason != null) return; // already migrated
+
+    const legacyOutcome = entry.outcome;
+    const freshOutcome = deriveEconomicOutcome(entry);
+    const exitReason = legacyOutcomeToExitReason(entry, legacyOutcome, freshOutcome);
+
+    if (exitReason != null) {
+      entry.exitReason = exitReason;
+      preserved++;
+    }
+    if (freshOutcome != null) {
+      if (freshOutcome !== legacyOutcome) {
+        console.warn('[migrateLegacyJournalOutcomes] corrected', entry.symbol, entry.id, 'outcome', legacyOutcome, '->', freshOutcome, '(rMultiple=' + entry.rMultiple + ', exitPrice=' + entry.exitPrice + ')');
+        repaired++;
+      }
+      entry.outcome = freshOutcome;
+    } else {
+      // Category C — insufficient data to re-derive economics. Leave the
+      // legacy outcome value untouched (do not invent history), but the
+      // exit reason (if determinable above) is still preserved.
+      console.warn('[migrateLegacyJournalOutcomes] AMBIGUOUS — insufficient data to re-derive economics for', entry.symbol, entry.id, '(legacy outcome left as', legacyOutcome + ')');
+      ambiguous++;
+    }
+    Object.assign(entry, stampUpdate(entry));
+    touchedIds.push(entry.id);
+  });
+  if (touchedIds.length) {
+    sessionDirtyIds && touchedIds.forEach(function (id) { sessionDirtyIds.add(id); });
+    console.log('[migrateLegacyJournalOutcomes] repaired=' + repaired + ' preserved-exit-reason=' + preserved + ' ambiguous=' + ambiguous + ' total-touched=' + touchedIds.length);
+    if (typeof commitJournalChange === 'function') {
+      // changedEntryId intentionally null — every touched id was already
+      // added to sessionDirtyIds above, and commitJournalChange's push
+      // path sends everything in sessionDirtyIds, not just one id.
+      commitJournalChange('migrateLegacyJournalOutcomes', null).catch(function (e) {
+        console.warn('[migrateLegacyJournalOutcomes] commit error:', e && e.message);
+      });
+    }
+  }
+  return { repaired: repaired, preserved: preserved, ambiguous: ambiguous };
+}
+
 function autoCalcR(){
   if(selectedOutcomeModal!=='manual')return;
   // Find by id — journalId == id for self-referencing entries
@@ -24785,6 +25002,13 @@ function selectOut(o){
     document.getElementById('outExitPrice').focus();
   }
 }
+// TDAS V5.4.1A — Closed-Trade Outcome Integrity. selectedOutcomeModal (the
+// button clicked — 'win'/'loss'/'be'/'manual') NO LONGER writes directly
+// into entry.outcome — it describes exit MECHANISM only. entry.outcome is
+// now always derived from realised economics via deriveEconomicOutcome(),
+// and the clicked button (refined by that derived outcome) is classified
+// separately into entry.exitReason via classifyExitReason(). See both
+// functions' own header comments for the full root-cause explanation.
 function saveOutcome(){
   if(!outcomeEditId||!selectedOutcomeModal){alert('Please select an outcome.');return;}
   const entry=journal.find(j=>j.id===outcomeEditId);
@@ -24792,9 +25016,15 @@ function saveOutcome(){
   const ep=document.getElementById('outExitPrice').value;
   const rm=document.getElementById('outRMultiple').value;
   const note=document.getElementById('outNote').value.trim();
-  entry.outcome=selectedOutcomeModal;
   entry.exitPrice=ep?parseFloat(ep):null;
   entry.rMultiple=rm?parseFloat(rm):null;
+  const _derivedOutcome = deriveEconomicOutcome(entry);
+  if(_derivedOutcome==null){
+    alert('Enter an exit price or R-multiple before saving — TDAS can no longer log a Result without knowing the realised economics.');
+    return;
+  }
+  entry.outcome = _derivedOutcome;
+  entry.exitReason = classifyExitReason(entry, selectedOutcomeModal, _derivedOutcome);
   if(note){
     // Append close note as single-line timeline segment
     entry.note = appendNote(entry.note, 'Close', note);
@@ -25677,9 +25907,14 @@ function renderTradeDesk(){
   // (activeAll.length) rather than whatever the filter happened to leave
   // visible — with two permanent sections instead of one filtered list,
   // the stable, honest total is the more meaningful number here.
+  // TDAS V5.4.1A — Closed-Trade Outcome Integrity. Same canonicalOutcome()
+  // helper as Journal stats/ledger row and the Trade Desk closed-trade
+  // table — see that fix's own header comment. Closed-trade count itself
+  // (closed.length) is unaffected — only the win/loss classification of
+  // those already-closed rows changes.
   const closed=journal.filter(j=>!j.deleted&&j.decision==='took'&&j.outcome&&j.outcome!=='cancelled');
-  const wins=closed.filter(j=>j.outcome==='win'||(j.outcome==='manual'&&j.rMultiple>0)).length;
-  const losses=closed.filter(j=>j.outcome==='loss'||(j.outcome==='manual'&&j.rMultiple<=0)).length;
+  const wins=closed.filter(j=>canonicalOutcome(j)==='win').length;
+  const losses=closed.filter(j=>canonicalOutcome(j)==='loss').length;
   const wr=wins+losses>0?Math.round(wins/(wins+losses)*100):null;
   const avgR=closed.filter(j=>j.rMultiple!=null).length
     ?(closed.filter(j=>j.rMultiple!=null).reduce((a,j)=>a+j.rMultiple,0)/closed.filter(j=>j.rMultiple!=null).length).toFixed(2)
@@ -26283,8 +26518,12 @@ function renderOrderTicketCard(e){
   let pnlR=null; // hoisted — reused by Stop Management eligibility below, not recalculated
   if(livePrice&&entryPx){
     const pnlPct=e.signal==='long'?((livePrice-entryPx)/entryPx*100):((entryPx-livePrice)/entryPx*100);
-    const riskPx=e.stop!=null?Math.abs(entryPx-e.stop):null;
-    pnlR=riskPx?(e.signal==='long'?(livePrice-entryPx)/riskPx:(entryPx-livePrice)/riskPx):null;
+    // TDAS V5.4.1A §B4/§3 — R now uses the permanent 1R denominator
+    // (initialRiskStop once confirmed; the recommended stop, entry.stop,
+    // as provisional R before that first confirmation — calcTradeR()
+    // itself encodes this fallback, see _rDenominator()). Never
+    // recalculated from Current Stop/B/E/any later TP protection level.
+    pnlR=calcTradeR(e, livePrice);
     const color=pnlPct>0?'var(--green-text)':pnlPct<0?'var(--red-text)':'var(--text2)';
     // TDAS V5.0.0G — font-size reduced slightly from V5.0.0F via inline
     // style only (the shared .pnl-val class, 18px, is used elsewhere —
@@ -26305,15 +26544,17 @@ function renderOrderTicketCard(e){
     : advisory.action==='TAKE_PROFIT_25' ? 'tdas-state-take25'
     : advisory.action==='REVIEW' ? 'tdas-state-review'
     : 'tdas-state-hold';
-  // TP1 — computation preserved (still used elsewhere, e.g. BE eligibility
-  // below, unchanged), but its pill is not surfaced in this build's single
-  // management-status pill slot — TP is explicitly reserved as a future
-  // supported status (V5.0.0G §Advisory box), not implemented here.
-  const _tp1Reached = (
-    livePrice!=null && e.target!=null &&
-    (isLong ? (e.target > entryPx && livePrice >= e.target)
-            : (e.target < entryPx && livePrice <= e.target))
-  ) && (!advisory || advisory.action!=='CLOSE');
+  // TDAS V5.4.1A §B8 — the old Fib 1.618 "TP1 reached" concept is RETIRED
+  // from this card (owner directive: "New TP1 means ONLY: protect +1R. Do
+  // not leave two TP1 meanings."). It was already display-only/never
+  // rendered into this card's own template (confirmed during the Part B
+  // audit) — its only live effect here was suppressing B/E eligibility,
+  // now removed below. entry.target itself is untouched (still consumed
+  // by the outcome modal's R:R pre-fill) — only this card's eligibility
+  // dependency on the old Fib concept is removed. Scanner's OWN separate
+  // active-trade placeholder had its own copy of this concept, retired
+  // as a narrow, owner-authorised surgical exception — see
+  // buildActiveScannerPlaceholderHtml()'s own comment.
 
   // TDAS V5.0.0G — Stop Management. Reads the new named schema first,
   // falling back (read-only, never rewrites the journal) to the legacy
@@ -26327,7 +26568,7 @@ function renderOrderTicketCard(e){
   // "SL to BE" prompt (V5.0.0G §6: "Do not alter... BE eligibility
   // conditions"), now gating the "Set to B/E" mode button's clickability
   // instead of a standalone pill's visibility.
-  const _beEligible = !_mgmt.confirmed && !_tp1Reached && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  const _beEligible = !_mgmt.confirmed && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
 
   // TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Two compact
   // action pills replace the embedded amber form. "SL to B/E" hides
@@ -26345,13 +26586,40 @@ function renderOrderTicketCard(e){
   // persistence/source values are unchanged, presentation only) and pill
   // order corrected to Set SL first, SL to B/E second, matching the
   // settled spec's own ordering in every example.
+  // TDAS V5.4.1A owner decision §6 — truthful presentation. A pill's
+  // STAGE LABEL stays as ladder-progression truth (e.g. "\u2713 TP2 set")
+  // even when the trader has since manually adjusted the actual price —
+  // but the tooltip showing the confirmed price must never imply it still
+  // equals that stage's exact nominal level when it doesn't (owner spec:
+  // "the green Current Stop status should make that truthful rather than
+  // implying an exact R-stage price").
+  const _confirmedTitle = (_mgmt.confirmed && _mgmt.confirmedLevel!=null)
+    ? 'Confirmed at '+fmt(_mgmt.confirmedLevel)+(_isManualOverride(e)?' (manually adjusted from the nominal level)':'')
+    : '';
   const _bePillConfirmed = _mgmt.confirmed && _mgmt.source==='BE';
   const _showBePill = _bePillConfirmed || _beEligible;
   const bePillHtml = _showBePill
-    ? `<span class="sl-be-pill sl-be-clickable${_bePillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetToBeDialog(${e.id});"${_bePillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_bePillConfirmed?'\u2713 SL at B/E':'SL to B/E'}</span>`
+    ? `<span class="sl-be-pill sl-be-clickable${_bePillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetToBeDialog(${e.id});"${_bePillConfirmed && _confirmedTitle?` title="${_confirmedTitle}"`:''}>${_bePillConfirmed?'\u2713 SL at B/E':'SL to B/E'}</span>`
     : '';
   const _manualPillConfirmed = _mgmt.confirmed && _mgmt.source!=='BE';
-  const manualPillHtml = `<span class="sl-be-pill sl-be-clickable${_manualPillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetManualSlDialog(${e.id});"${_manualPillConfirmed && _mgmt.confirmedLevel!=null?` title="Confirmed at ${fmt(_mgmt.confirmedLevel)}"`:''}>${_manualPillConfirmed?'\u2713 SL set':'Set SL'}</span>`;
+  const manualPillHtml = `<span class="sl-be-pill sl-be-clickable${_manualPillConfirmed?' sl-be-confirmed':''}" onclick="event.stopPropagation();openSetManualSlDialog(${e.id});"${_manualPillConfirmed && _confirmedTitle?` title="${_confirmedTitle}"`:''}>${_manualPillConfirmed?'\u2713 SL set':'Set SL'}</span>`;
+
+  // TDAS V5.4.1A §B13/§B14/§B17 — R-ladder pill (TP1, TP1.5, TP2, ...),
+  // additive alongside the two pills above (Set SL / SL to B/E), never
+  // replacing them. Shown only once a TP-stage pendingProtectionStage
+  // exists (B/E itself keeps using its own dedicated pill/dialog above)
+  // OR the CURRENTLY confirmed stage is already past B/E (so a
+  // previously-confirmed TP-stage keeps showing its own confirmed pill,
+  // not silently reverting to "SL at B/E" once superseded — §B14). AMBER
+  // = action required; GREEN + \u2713 = confirmed on Bitunix (§B13 — "Green
+  // means CONFIRMED. Not merely profitable.").
+  const _ladderPendingStage = _pendingLadderStage(e);
+  const _ladderConfirmedStage = (_mgmt.confirmed && _mgmt.stage && _mgmt.stage!=='SL' && _mgmt.stage!=='BE') ? _mgmt.stage : null;
+  const ladderPillHtml = _ladderPendingStage
+    ? `<span class="sl-be-pill sl-be-clickable" onclick="event.stopPropagation();openProtectionStageDialog(${e.id},'${_ladderPendingStage}');">${_ladderStageLabel(_ladderPendingStage)}</span>`
+    : (_ladderConfirmedStage
+        ? `<span class="sl-be-pill sl-be-clickable sl-be-confirmed" onclick="event.stopPropagation();openProtectionStageDialog(${e.id},'${_ladderConfirmedStage}');"${_confirmedTitle?` title="${_confirmedTitle}"`:''}>\u2713 ${_ladderStageLabel(_ladderConfirmedStage)} set</span>`
+        : '');
 
   // TDAS V5.0.0H8E — Active Trade note restoration (rear face only). The
   // note itself was always captured/persisted/normalised correctly (see
@@ -26381,9 +26649,35 @@ function renderOrderTicketCard(e){
   // (was "\u2713 Manual SL") for a confirmed non-BE stop.
   const mgmtStatusPillHtml = _mgmt.confirmed
     ? (_mgmt.source==='BE'
-        ? `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL at B/E</span>`
-        : `<span class="mgmt-status-pill" title="${_mgmt.confirmedLevel!=null?'Confirmed at '+fmt(_mgmt.confirmedLevel):''}">\u2713 SL set</span>`)
+        ? `<span class="mgmt-status-pill" title="${_confirmedTitle}">\u2713 SL at B/E</span>`
+        // TDAS V5.4.1A §B13 — TP-ladder stages beyond B/E get their own
+        // "\u2713 TPx.x set" wording; every pre-Part-B case (SL/undefined
+        // source) is completely unchanged ("\u2713 SL set").
+        : (_mgmt.stage && _mgmt.stage!=='SL'
+            ? `<span class="mgmt-status-pill" title="${_confirmedTitle}">\u2713 ${_ladderStageLabel(_mgmt.stage)} set</span>`
+            : `<span class="mgmt-status-pill" title="${_confirmedTitle}">\u2713 SL set</span>`))
     : '';
+
+  // TDAS V5.4.1A §B2 — HARD REQUIREMENT: the moment a trade becomes
+  // Active, TDAS must immediately display an amber "Set SL" pending
+  // action on the FRONT — unconditionally (no R threshold, no favourable
+  // price movement, no later management transition, no card flip
+  // required — §B2's own wording). Uses a NEW class
+  // (otc-pending-action-pill), distinct from the existing confirmed-only
+  // mgmt-status-pill above, so it can never be mistaken for — or collide
+  // with any check for — the pre-Part-B confirmed pill. Front and rear
+  // share the SAME dispatch (openActiveProtectionDialog/
+  // openProtectionStageDialog — §B12: "two views onto the SAME state;
+  // handlers; editor; persistence").
+  const _frontPendingSetSlHtml = (_mgmt.stage==='NONE')
+    ? `<span class="otc-pending-action-pill" onclick="event.stopPropagation();openActiveProtectionDialog(${e.id});">Set SL</span>`
+    : '';
+  // Front mirror of the rear TP-ladder pending pill (§B12/§B14 — "current
+  // GREEN confirmed protection + next AMBER pending action").
+  const _frontLadderPendingHtml = _ladderPendingStage
+    ? `<span class="otc-pending-action-pill" onclick="event.stopPropagation();openProtectionStageDialog(${e.id},'${_ladderPendingStage}');">${_ladderStageLabel(_ladderPendingStage)}</span>`
+    : '';
+  const _frontPendingPillsHtml = _frontPendingSetSlHtml + _frontLadderPendingHtml;
 
   // TDAS V5.0.0H — Context / 1H Timing moved to the Trade front (approved
   // playground doctrine: front is advisory-led, rear is purely
@@ -26411,10 +26705,20 @@ function renderOrderTicketCard(e){
       + `<div class="tdas-advisory-header-row">`
       + `<div class="tdas-advisory-headline">${advisory.headline}</div>`
       + mgmtStatusPillHtml
+      + _frontPendingPillsHtml
       + `</div>`
       + (advisory.detail ? `<div class="tdas-advisory-detail">${advisory.detail}</div>` : '')
       + `</div>`
-    : '';
+    // TDAS V5.4.1A §B2 — the amber Set SL pending pill must appear even
+    // when advisory data isn't available yet (no throw/no live-data
+    // dependency for this specific requirement — §B2's own wording never
+    // makes it conditional on advisory). Pre-Part-B behaviour (empty
+    // string) is preserved exactly whenever there is genuinely nothing
+    // pending to show, so a trade with no advisory AND no pending action
+    // still renders nothing here, byte-identical to before.
+    : (_frontPendingPillsHtml
+        ? `<div class="tdas-advisory-block tdas-state-hold" style="margin-bottom:10px;"><div class="tdas-advisory-header-row">${_frontPendingPillsHtml}</div></div>`
+        : '');
 
   const cardClass=`order-card twin-sided ${isLong?'active-long':'active-short'} ${stateClass}`;
   // TDAS V5.4.0P2 (P2.6) — prefer entry.entryTimestamp (the user-editable,
@@ -26553,6 +26857,7 @@ function renderOrderTicketCard(e){
       <div class="otc-stop-pill-row">
         ${manualPillHtml}
         ${bePillHtml}
+        ${ladderPillHtml}
       </div>
       ${tradeNoteHtml}
       <div class="cz-spacer"></div>
@@ -26573,26 +26878,294 @@ function renderOrderTicketCard(e){
 // legacy unconfirmed trades never become falsely confirmed. Only an
 // EXPLICIT beStopConfirmed===true migrates — never inferred merely from
 // the presence of a stop recommendation (V5.0.0G §5 Values).
+// ── TDAS V5.4.1A Part B — Active Trade R-Management ladder ────────────────
+// Approved ladder (owner spec §10):
+//   +1.0R -> BE      (protects 0R)
+//   +1.5R -> TP1     (protects +1.0R)
+//   +2.0R -> TP1.5   (protects +1.5R)
+//   +2.5R -> TP2     (protects +2.0R)
+//   +3.0R -> TP2.5   (protects +2.5R)
+//   [no mandatory action at +3.5R]
+//   +4.0R -> TP3.5   (protects +3.5R)          } runner mode, N>=4:
+//   +5.0R -> TP4.5   (protects +4.5R)          } whole-R milestone N
+//   +6.0R -> TP5.5   (protects +5.5R)          } protects N-0.5R
+//   ... indefinitely, no hard-coded maximum stage.
+// Stage vocabulary is shared 1:1 with entry.protectionStage/
+// pendingProtectionStage/slConfirmedSource — 'NONE'|'SL'|'BE'|'TP1'|
+// 'TP1.5'|'TP2'|'TP2.5'|'TP3.5'|'TP4.5'|... A runner stage name 'TP(N-1).5'
+// is algorithmically generated/parsed (never hard-coded past TP2.5), so
+// progression continues indefinitely without a code change.
+const _LADDER_FIXED_STAGES = ['NONE', 'SL', 'BE', 'TP1', 'TP1.5', 'TP2', 'TP2.5'];
+
+// The next stage after `stage` in ladder order, or null if `stage` is
+// unrecognised. Purely sequential -- callers must never jump more than one
+// step (owner spec §11/§B15 "no stage skipping").
+function _nextLadderStage(stage){
+  const idx = _LADDER_FIXED_STAGES.indexOf(stage);
+  if(idx !== -1 && idx < _LADDER_FIXED_STAGES.length - 1) return _LADDER_FIXED_STAGES[idx + 1];
+  if(stage === 'TP2.5') return 'TP3.5'; // enter runner mode
+  const m = /^TP(\d+)\.5$/.exec(stage || '');
+  if(m) return 'TP' + (parseInt(m[1], 10) + 1) + '.5';
+  return null;
+}
+// The R-multiple that must be reached to make `stage` the pending action
+// (i.e. the threshold that transitions INTO `stage`). null for 'NONE'/'SL'
+// (SL has no R threshold -- it is unconditional on trade activation, §B2).
+function _ladderThresholdR(stage){
+  switch(stage){
+    case 'BE': return 1.0;
+    case 'TP1': return 1.5;
+    case 'TP1.5': return 2.0;
+    case 'TP2': return 2.5;
+    case 'TP2.5': return 3.0;
+    default: {
+      const m = /^TP(\d+)\.5$/.exec(stage || '');
+      if(m) return parseInt(m[1], 10) + 1; // TP3.5 -> 4.0, TP4.5 -> 5.0, ...
+      return null;
+    }
+  }
+}
+// The R-multiple `stage` protects once confirmed (the level locked in, not
+// the trigger threshold). null for 'NONE'/'SL' (no profit protected yet).
+function _ladderProtectsR(stage){
+  switch(stage){
+    case 'BE': return 0;
+    case 'TP1': return 1.0;
+    case 'TP1.5': return 1.5;
+    case 'TP2': return 2.0;
+    case 'TP2.5': return 2.5;
+    default: {
+      const m = /^TP(\d+)\.5$/.exec(stage || '');
+      if(m) return parseInt(m[1], 10) + 0.5; // TP3.5 -> 3.5, TP4.5 -> 4.5, ...
+      return null;
+    }
+  }
+}
+// Display label for a ladder stage pill (owner spec §B13/§9).
+// TDAS V5.4.1A owner decision (Current Stop vs R-ladder, §5/§6) — the
+// price a stage's confirmation would nominally recommend, used both to
+// detect whether the trader's actual confirmed Current Stop has been
+// manually overridden away from that nominal level (§6 — truthful
+// presentation) and to check whether a manually-edited Current Stop
+// already covers a still-pending stage (§5) without waiting for live
+// price to mechanically reach that stage's R threshold.
+function _nominalStagePrice(entry, stage){
+  if(!entry || !stage || stage==='NONE') return null;
+  if(stage==='SL') return entry.stop!=null ? entry.stop : null;
+  if(stage==='BE'){
+    const entryPx = entry.actualEntry!=null ? entry.actualEntry : entry.price;
+    return entryPx!=null ? entryPx : null;
+  }
+  const protects = _ladderProtectsR(stage);
+  return protects!=null ? protectionPriceAtR(entry, protects) : null;
+}
+// True when the trade's currently confirmed level differs meaningfully
+// from its current stage's nominal price — i.e. the trader manually
+// selected a different level than the mechanical R-ladder recommendation
+// (owner spec §5: "the confirmed Current Stop is exchange truth and may
+// differ from the nominal R-stage stop"). Used for truthful presentation
+// (§6) — never to reclassify or rename the stage itself.
+function _isManualOverride(entry){
+  if(!entry) return false;
+  const stage = entry.protectionStage;
+  const nominal = _nominalStagePrice(entry, stage);
+  const actual = entry.slConfirmedLevel;
+  if(nominal==null || actual==null) return false;
+  const tol = Math.max(Math.abs(nominal)*1e-6, 1e-9);
+  return Math.abs(actual-nominal) > tol;
+}
+// TDAS V5.4.1A owner decision §5 — "the ladder must never recommend
+// reducing protection merely to match its mechanical level... if a
+// pending R action exists and the trader manually edits Current Stop to
+// a level that meets or exceeds that pending protection requirement,
+// treat the pending action as satisfied and advance the confirmed ladder
+// stage accordingly." Checked against the STOP LEVEL itself (favourable
+// direction), independent of whether live price has actually reached
+// that stage's R threshold yet — a trader may legitimately trail tighter
+// than the mechanical ladder requires. Never marks a stage satisfied
+// merely because a manual stop happens to sit beyond a LATER,
+// not-yet-pending stage — only ever checks the single currently pending
+// stage (sequential accounting preserved, no skipping).
+function _satisfyPendingIfCoveredByManualStop(entry){
+  const pending = entry.pendingProtectionStage;
+  if(!pending) return false;
+  const nominal = _nominalStagePrice(entry, pending);
+  const actual = entry.slConfirmedLevel;
+  if(nominal==null || actual==null) return false;
+  const isLong = entry.signal==='long';
+  const covered = isLong ? (actual >= nominal) : (actual <= nominal);
+  if(!covered) return false;
+  entry.protectionStage = pending;
+  entry.pendingProtectionStage = null;
+  return true;
+}
+
+function _ladderStageLabel(stage){
+  if(stage === 'BE') return 'B/E';
+  return stage; // 'TP1'/'TP1.5'/... are already their own display text
+}
+// The entry's pending stage, but ONLY when it is a genuine TP-ladder stage
+// (excludes 'BE', which keeps using its own dedicated pill/dialog) — the
+// render-layer's single source of truth for whether the additive ladder
+// pill should show an amber pending action.
+function _pendingLadderStage(e){
+  const p = e && e.pendingProtectionStage;
+  if(!p || p==='BE') return null;
+  return _ladderProtectsR(p)!=null ? p : null;
+}
+
+// Permanent 1R denominator (owner spec §B4/§3): once initialRiskStop
+// exists (the FIRST confirmed actual Bitunix stop), R is ALWAYS computed
+// from it -- never recalculated from Current Stop, B/E, or any later TP
+// protection level. Before initialRiskStop exists, provisional R may use
+// the Recommended Initial Stop (entry.stop) instead. Never any other
+// fallback -- callers must not fabricate a denominator.
+function _rDenominator(entry){
+  if(!entry) return null;
+  return entry.initialRiskStop!=null ? entry.initialRiskStop : (entry.stop!=null ? entry.stop : null);
+}
+function _tradeOneR(entry){
+  if(!entry) return null;
+  const entryPx = entry.actualEntry!=null ? entry.actualEntry : entry.price;
+  const denom = _rDenominator(entry);
+  if(entryPx==null || denom==null) return null;
+  const r = Math.abs(entryPx - denom);
+  return r > 0 ? r : null;
+}
+// Current realised/unrealised R at `currentPrice`, using the permanent 1R
+// denominator above. One small pure helper (owner spec §B4 "create one
+// small pure R helper") -- every R-dependent read (card P&L, ladder
+// eligibility, ratchet, dialogs) goes through this, not a duplicated calc.
+function calcTradeR(entry, currentPrice){
+  if(!entry || currentPrice==null || !isFinite(currentPrice)) return null;
+  const entryPx = entry.actualEntry!=null ? entry.actualEntry : entry.price;
+  const oneR = _tradeOneR(entry);
+  if(entryPx==null || oneR==null) return null;
+  const pnl = entry.signal==='long' ? (currentPrice-entryPx) : (entryPx-currentPrice);
+  return pnl / oneR;
+}
+// Protection price at +nR from entry (owner spec §B7).
+function protectionPriceAtR(entry, nR){
+  if(!entry || nR==null) return null;
+  const entryPx = entry.actualEntry!=null ? entry.actualEntry : entry.price;
+  const oneR = _tradeOneR(entry);
+  if(entryPx==null || oneR==null) return null;
+  return entry.signal==='long' ? entryPx + nR*oneR : entryPx - nR*oneR;
+}
+// Percentage protected from entry at +nR (owner spec §B7 -- "Profit
+// protected: +X.XX% from entry"; price distance, not leveraged P&L).
+function protectedPercentAtR(entry, nR){
+  if(!entry) return null;
+  const entryPx = entry.actualEntry!=null ? entry.actualEntry : entry.price;
+  const price = protectionPriceAtR(entry, nR);
+  if(entryPx==null || price==null || !entryPx) return null;
+  return entry.signal==='long' ? (price-entryPx)/entryPx*100 : (entryPx-price)/entryPx*100;
+}
+
+// TDAS V5.4.1A Part B -- the discrete protection-progression ratchet.
+// Advances entry.highestProtectionTriggerR as far as `currentPrice`-derived
+// R genuinely supports (recording every threshold crossed, even several
+// stages ahead of what's currently confirmed -- owner spec §4/§13), then
+// exposes entry.pendingProtectionStage to AT MOST the single immediate
+// next stage after the currently CONFIRMED protectionStage (never further
+// -- "no stage skipping", §11/§B15). Called from both the live-price
+// refresh tick (continuous exposure while a stage is pending) and
+// immediately after confirmStopPlacement() (so an already-earned next
+// stage surfaces without waiting for the next tick -- §13/§B15's "delayed
+// confirmation immediately exposes the next already-earned stage").
+// Ladder progression never starts before the first SL is confirmed (owner
+// spec §B2: "before initial SL confirmation, do NOT advance to B/E/TP1/or
+// later stages") -- a protectionStage of 'NONE'/unset is a no-op here.
+// Returns true if anything changed (caller decides whether/when to persist
+// -- owner spec §9/§19: not a high-frequency persistence field).
+function _advanceProtectionLadder(entry, currentPrice){
+  if(!entry) return false;
+  const stage = entry.protectionStage;
+  if(!stage || stage==='NONE') return false;
+  const r = calcTradeR(entry, currentPrice);
+  if(r==null) return false;
+  let changed = false;
+
+  let probeStage = stage;
+  let probeNext = _nextLadderStage(probeStage);
+  while(probeNext){
+    const th = _ladderThresholdR(probeNext);
+    if(th==null || r < th) break;
+    if(entry.highestProtectionTriggerR==null || th > entry.highestProtectionTriggerR){
+      entry.highestProtectionTriggerR = th;
+      changed = true;
+    }
+    probeStage = probeNext;
+    probeNext = _nextLadderStage(probeStage);
+  }
+
+  const nextStage = _nextLadderStage(stage);
+  if(nextStage){
+    const nextTh = _ladderThresholdR(nextStage);
+    if(nextTh!=null && entry.highestProtectionTriggerR!=null && entry.highestProtectionTriggerR >= nextTh){
+      if(entry.pendingProtectionStage !== nextStage){
+        entry.pendingProtectionStage = nextStage;
+        changed = true;
+      }
+    }
+  }
+  return changed;
+}
+
+// TDAS V5.4.1A Part B -- extended return shape (stage/pendingStage/
+// highestTriggerR added) while preserving the EXACT pre-Part-B return
+// values (confirmed/source/confirmedLevel/confirmedAt/recommendedLevel)
+// for every trade whose protectionStage is unset -- genuinely legacy rows
+// (pre-Part-B, e.g. a trade confirmed only via the old beStopConfirmed
+// mirror with no protectionStage ever written) fall through to the
+// byte-identical legacy branches below, exactly as this function already
+// behaved. Once protectionStage is set (every trade going forward, and any
+// trade confirmStopPlacement() has touched even once), the first branch is
+// authoritative and stays perfectly in sync with it by construction --
+// protectionStage/slConfirmedSource are set together at every confirmation.
 function _computeStopManagementState(e){
-  if(e.slConfirmed){
+  const stage = e.protectionStage;
+  if(stage && stage!=='NONE'){
     return {
       confirmed: true,
+      stage: stage,
       source: e.slConfirmedSource || 'MANUAL',
       confirmedLevel: e.slConfirmedLevel!=null ? e.slConfirmedLevel : null,
       confirmedAt: e.slConfirmedAt || null,
       recommendedLevel: e.slRecommendedLevel!=null ? e.slRecommendedLevel : null,
+      pendingStage: e.pendingProtectionStage || null,
+      highestTriggerR: e.highestProtectionTriggerR!=null ? e.highestProtectionTriggerR : null,
+    };
+  }
+  if(e.slConfirmed){
+    return {
+      confirmed: true,
+      stage: e.slConfirmedSource==='BE' ? 'BE' : 'SL',
+      source: e.slConfirmedSource || 'MANUAL',
+      confirmedLevel: e.slConfirmedLevel!=null ? e.slConfirmedLevel : null,
+      confirmedAt: e.slConfirmedAt || null,
+      recommendedLevel: e.slRecommendedLevel!=null ? e.slRecommendedLevel : null,
+      pendingStage: e.pendingProtectionStage || null,
+      highestTriggerR: e.highestProtectionTriggerR!=null ? e.highestProtectionTriggerR : null,
     };
   }
   if(e.beStopConfirmed){
     return {
       confirmed: true,
+      stage: 'BE',
       source: 'BE',
       confirmedLevel: e.beStopLevel!=null ? e.beStopLevel : null,
       confirmedAt: e.beStopConfirmedAt || null,
       recommendedLevel: e.beStopLevel!=null ? e.beStopLevel : null,
+      pendingStage: e.pendingProtectionStage || null,
+      highestTriggerR: e.highestProtectionTriggerR!=null ? e.highestProtectionTriggerR : null,
     };
   }
-  return { confirmed:false, source:null, confirmedLevel:null, confirmedAt:null, recommendedLevel:null };
+  return {
+    confirmed:false, stage:'NONE', source:null, confirmedLevel:null, confirmedAt:null, recommendedLevel:null,
+    pendingStage: e.pendingProtectionStage || null,
+    highestTriggerR: e.highestProtectionTriggerR!=null ? e.highestProtectionTriggerR : null,
+  };
 }
 
 // TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Opens the "Set to
@@ -26608,20 +27181,26 @@ function openSetToBeDialog(id){
   if(!entry){ alert('Trade not found.'); return; }
   const entryPx = entry.actualEntry!=null ? entry.actualEntry
                 : (entry.entryPrice!=null ? entry.entryPrice : entry.price);
-  // TDAS V5.0.0G2 §6 — Clear confirmation. Shown only when reopening this
-  // dialog for a trade currently confirmed via THIS source (BE) — a
-  // restrained, explicit-click-only action inside the dialog body (not
-  // the modal's own primary action-button slot), so it can never be
-  // triggered by mistake alongside the normal confirm flow.
   const _mgmtNow = _computeStopManagementState(entry);
-  const _clearBtnHtml = (_mgmtNow.confirmed && _mgmtNow.source==='BE')
-    ? '<button type="button" class="stop-mgmt-clear-btn" onclick="event.stopPropagation();clearStopConfirmation('+id+');_tdasConfirmCancel();">Clear confirmation</button>'
-    : '';
+  // TDAS V5.4.1A owner decision §3 — full destructive Clear confirmation
+  // is NEVER offered once protectionStage is B/E or later (permitted only
+  // at protectionStage==='SL', before any real ladder progression) — see
+  // clearStopConfirmation()'s own re-scoped comment. Revising the stop
+  // while already at B/E uses the normal confirm flow below (Edit Current
+  // Stop), which never destroys initialRiskStop/ladder history.
+  const _clearBtnHtml = '';
+  // TDAS V5.4.1A owner decision §1 — Current Stop always manually
+  // editable: reopening this dialog for a trade ALREADY confirmed at B/E
+  // prefills the CURRENT confirmed level (which may have been manually
+  // trailed away from entry price), never silently reverting to the exact
+  // entry-price recommendation.
+  const _alreadyConfirmedBe = _mgmtNow.confirmed && _mgmtNow.source==='BE';
+  const prefillLevel = (_alreadyConfirmedBe && _mgmtNow.confirmedLevel!=null) ? _mgmtNow.confirmedLevel : entryPx;
   openTdasConfirmModal({
     title: 'Set Stop to Break Even',
     bodyHtml:
       '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Recommended level</div><div class="stop-mgmt-recommended">'+(entryPx!=null?fmt(entryPx):'—')+'</div></div>'
-      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(entryPx!=null?entryPx:'')+'"></div>'
+      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(prefillLevel!=null?prefillLevel:'')+'"></div>'
       + _clearBtnHtml,
     confirmLabel: 'Confirm placed',
     onConfirm: function(){
@@ -26640,18 +27219,37 @@ function openSetManualSlDialog(id){
   const entry = journal.find(j=>j.id===id);
   if(!entry){ alert('Trade not found.'); return; }
   const recLevel = entry.stop!=null ? entry.stop : null;
-  // TDAS V5.0.0G2 §6 — Clear confirmation, shown only when reopening this
-  // dialog for a trade currently confirmed via THIS source (ATR/MANUAL —
-  // i.e. any non-BE confirmed source).
   const _mgmtNow = _computeStopManagementState(entry);
-  const _clearBtnHtml = (_mgmtNow.confirmed && _mgmtNow.source!=='BE')
+  // TDAS V5.4.1A owner decision §3 — full destructive Clear confirmation
+  // is permitted ONLY while protectionStage is literally 'SL' (the
+  // initial confirmation itself, before B/E or any TP stage exists).
+  // Reopening this SAME dialog once real ladder progress exists (via the
+  // always-available rear "Set SL" pill) is an Edit Current Stop
+  // operation instead — see confirmStopPlacement()'s _isSlEditAtLaterStage
+  // branch — and must never offer to destroy that history.
+  const _clearBtnHtml = (_mgmtNow.stage==='SL')
     ? '<button type="button" class="stop-mgmt-clear-btn" onclick="event.stopPropagation();clearStopConfirmation('+id+');_tdasConfirmCancel();">Clear confirmation</button>'
     : '';
+  // TDAS V5.4.1A §B11/owner decision §1 — prefill fix (the confirmed
+  // MUST-FIX defect from the read-only audit) + Current Stop always
+  // editable. FIRST-EVER open of this dialog (protectionStage still
+  // 'NONE') prefills the Recommended Initial Stop, exactly as before.
+  // Reopening it for a trade that already has SOME confirmed level —
+  // whether still at 'SL' or having since progressed to B/E/any TP
+  // stage — now prefills the CURRENT confirmed level instead (Edit
+  // Current Stop): the editor must never silently return to the original
+  // recommendation once the trader has since moved their stop (§B11),
+  // and must remain usable at every later stage too (owner decision §1).
+  // The "TDAS recommended stop" reference display below is UNCHANGED — it
+  // always shows entry.stop, a fixed historical fact, not what should
+  // populate the editable field.
+  const _hasAnyConfirmedLevel = _mgmtNow.confirmed && _mgmtNow.confirmedLevel!=null;
+  const prefillLevel = _hasAnyConfirmedLevel ? _mgmtNow.confirmedLevel : recLevel;
   openTdasConfirmModal({
     title: 'Set Stop Loss',
     bodyHtml:
       '<div class="stop-mgmt-field"><div class="stop-mgmt-label">TDAS recommended stop</div><div class="stop-mgmt-recommended">'+(recLevel!=null?fmt(recLevel):'—')+'</div></div>'
-      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(recLevel!=null?recLevel:'')+'"></div>'
+      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(prefillLevel!=null?prefillLevel:'')+'"></div>'
       + _clearBtnHtml,
     confirmLabel: 'Confirm placed',
     onConfirm: function(){
@@ -26659,6 +27257,77 @@ function openSetManualSlDialog(id){
       confirmStopPlacement(id, 'SL', input ? input.value : '');
     },
   });
+}
+
+// TDAS V5.4.1A §B12/§B13/§B22 — unified R-ladder stage confirmation dialog
+// (TP1, TP1.5, TP2, TP2.5, TP3.5, TP4.5, ... — everything past B/E). The
+// SAME modal system and the SAME confirmStopPlacement() persistence path
+// every other stop-management dialog uses (§B12: "Front and rear pills
+// are two views onto the SAME state; handlers; editor; persistence" — no
+// duplicated front/rear management system). `stage` must be a recognised
+// ladder stage name (validated via _ladderProtectsR); SL/BE keep using
+// their own dedicated dialogs (openSetManualSlDialog/openSetToBeDialog),
+// unchanged, since their prefill/eligibility/wording rules are genuinely
+// different (a calculated protection price vs the ATR recommendation or
+// entry price) — this function is additive, not a replacement.
+function openProtectionStageDialog(id, stage){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry){ alert('Trade not found.'); return; }
+  const protectsR = _ladderProtectsR(stage);
+  if(protectsR==null){ alert('Unrecognised protection stage.'); return; }
+  const _mgmtNow = _computeStopManagementState(entry);
+  // TDAS V5.4.1A owner decision §1 — Current Stop always manually
+  // editable: if THIS exact stage is already the one currently confirmed
+  // (reopening its own dialog to revise the stop — Edit Current Stop),
+  // prefill the CURRENT confirmed level. Otherwise (first time reaching
+  // this stage, a genuine pending confirmation) prefill the freshly
+  // CALCULATED protection price, as before (§5/§B11).
+  const _isEditingThisStage = _mgmtNow.confirmed && _mgmtNow.stage===stage;
+  const recLevel = _isEditingThisStage && _mgmtNow.confirmedLevel!=null
+    ? _mgmtNow.confirmedLevel
+    : protectionPriceAtR(entry, protectsR);
+  const protectedPct = protectedPercentAtR(entry, protectsR);
+  // TDAS V5.4.1A owner decision §3 — full destructive Clear confirmation
+  // is NEVER offered at a TP/runner stage (permitted only at
+  // protectionStage==='SL') — see clearStopConfirmation()'s own re-scoped
+  // comment. Revising an already-confirmed TP stage's stop uses the
+  // normal confirm flow above (Edit Current Stop), never a destructive
+  // reset of initialRiskStop/ladder history.
+  const _clearBtnHtml = '';
+  const _label = _ladderStageLabel(stage);
+  openTdasConfirmModal({
+    title: _label + ' — Protect +' + protectsR.toFixed(1) + 'R',
+    bodyHtml:
+      '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Recommended stop</div><div class="stop-mgmt-recommended">'+(recLevel!=null?fmt(recLevel):'—')+'</div></div>'
+      + (protectedPct!=null ? '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Profit protected</div><div class="stop-mgmt-recommended">'+(protectedPct>=0?'+':'')+protectedPct.toFixed(2)+'% from entry</div></div>' : '')
+      + '<div class="stop-mgmt-field"><div class="stop-mgmt-label">Actual level placed</div><input type="number" step="any" class="stop-mgmt-actual-input" id="stopmgmtDialogActual" value="'+(recLevel!=null?recLevel:'')+'"></div>'
+      + _clearBtnHtml,
+    confirmLabel: 'Confirm placed',
+    onConfirm: function(){
+      const input = document.getElementById('stopmgmtDialogActual');
+      confirmStopPlacement(id, stage, input ? input.value : '');
+    },
+  });
+}
+// TDAS V5.4.1A §B2/§B12/owner decision §1 — single dispatch entry point
+// for BOTH front and rear pending-action/confirmed pills (front and rear
+// share the same state/editor, never a duplicated management system).
+// Routes to whichever dialog is actually appropriate: a pending action
+// takes priority (confirming it); otherwise this is an Edit Current Stop
+// request for whatever stage is CURRENTLY confirmed, at any stage — the
+// initial SL, B/E, or any TP/runner stage.
+function openActiveProtectionDialog(id){
+  const entry = journal.find(j=>j.id===id);
+  if(!entry){ alert('Trade not found.'); return; }
+  const stage = entry.protectionStage;
+  if(!stage || stage==='NONE'){ openSetManualSlDialog(id); return; }
+  const pending = entry.pendingProtectionStage;
+  if(pending==='BE'){ openSetToBeDialog(id); return; }
+  if(pending){ openProtectionStageDialog(id, pending); return; }
+  // No pending action — editing the CURRENTLY confirmed stage's Current Stop.
+  if(stage==='SL'){ openSetManualSlDialog(id); return; }
+  if(stage==='BE'){ openSetToBeDialog(id); return; }
+  openProtectionStageDialog(id, stage);
 }
 
 // TDAS V5.0.0G — Stop Management explicit confirmation. Persists the
@@ -26684,6 +27353,17 @@ function confirmStopPlacement(id, mode, actualValRaw){
   const actualVal = parseFloat(actualValRaw);
   if(!isFinite(actualVal)){
     alert('Enter a valid actual stop level before confirming.');
+    return;
+  }
+  // TDAS V5.4.1A owner decision §4 — "B/E cannot be first confirmation."
+  // A valid initial SL confirmation must exist (protectionStage already
+  // something other than 'NONE') before B/E or any TP/runner stage may be
+  // confirmed — otherwise initialRiskStop would freeze at entry price
+  // itself (a zero-width 1R, an invalid state). mode==='SL' is always
+  // exempt — it is either the genuine first confirmation, or a Current
+  // Stop edit at a later stage (handled further below), never gated here.
+  if(mode!=='SL' && (!entry.protectionStage || entry.protectionStage==='NONE')){
+    alert('A valid initial stop loss must be confirmed before '+(mode==='BE'?'break-even':'a profit-protection stage')+' can be confirmed.');
     return;
   }
   // Data validation (same principle as the pre-existing confirmBeStop()
@@ -26716,10 +27396,23 @@ function confirmStopPlacement(id, mode, actualValRaw){
       return;
     }
   }
-  const recommendedLevel = mode==='BE' ? entryPx : (entry.stop!=null ? entry.stop : null);
-  let source;
-  if(mode==='BE'){ source='BE'; }
-  else {
+  // TDAS V5.4.1A §B7/§B11 — ladder-stage (TP1, TP1.5, TP2, ...) modes
+  // compute their recommended level as the CALCULATED protection price at
+  // that stage's protect-R, never the ATR/entry recommendation, and skip
+  // the ATR/MANUAL tolerance classification entirely — `source` is the
+  // stage name itself. mode==='SL'/'BE' are STRUCTURALLY IDENTICAL to the
+  // pre-Part-B logic (same branches, same values) — only reorganised so a
+  // third case can sit alongside them.
+  const _isLadderStage = mode!=='BE' && mode!=='SL' && _ladderProtectsR(mode)!=null;
+  let recommendedLevel, source;
+  if(_isLadderStage){
+    recommendedLevel = protectionPriceAtR(entry, _ladderProtectsR(mode));
+    source = mode;
+  } else if(mode==='BE'){
+    recommendedLevel = entryPx;
+    source = 'BE';
+  } else {
+    recommendedLevel = entry.stop!=null ? entry.stop : null;
     // Safe numeric comparison — a fixed absolute epsilon (e.g. 1e-9) is
     // unsafe across the price-magnitude range crypto pairs span (a
     // sub-cent altcoin vs a six-figure BTC price), so the tolerance
@@ -26752,6 +27445,57 @@ function confirmStopPlacement(id, mode, actualValRaw){
     entry.beStopSource         = null;
   }
 
+  // TDAS V5.4.1A §B2/§B3/§B9/§B15 — R-ladder progression. The FIRST-EVER
+  // confirmation for this trade (protectionStage was 'NONE'/unset) freezes
+  // initialRiskStop PERMANENTLY — see the field's own comment (§_rDenominator)
+  // for why nothing downstream may ever overwrite it again.
+  if(!entry.protectionStage || entry.protectionStage==='NONE'){
+    entry.initialRiskStop = actualVal;
+  }
+  // TDAS V5.4.1A owner decision §1/§2 — Current Stop must always be
+  // manually editable at every stage. mode==='SL' is reachable at ANY
+  // time (the rear "Set SL" pill has always been unconditionally
+  // available — V5.0.0G1 doctrine, unchanged). Once real ladder progress
+  // already exists (protectionStage is something other than 'NONE'/'SL'),
+  // a mode==='SL' call is a Current-Stop EDIT at whatever stage is
+  // CURRENTLY confirmed — protectionStage/initialRiskStop/
+  // pendingProtectionStage/highestProtectionTriggerR are all left
+  // untouched; only the actual confirmed price/source are revised
+  // (exactly the pre-Part-B "revising a confirmed stop" contract for
+  // those two fields specifically — never a regression back to 'SL').
+  // Every other mode (a genuine stage advance, or a same-stage edit via
+  // its own dedicated dialog) assigns protectionStage = mode as before —
+  // both cases collapse to the same no-op assignment when mode already
+  // equals the current stage.
+  const _isSlEditAtLaterStage = mode==='SL' && entry.protectionStage && entry.protectionStage!=='NONE' && entry.protectionStage!=='SL';
+  if(!_isSlEditAtLaterStage){
+    entry.protectionStage = mode;
+  }
+  // Confirming the currently-pending stage supersedes it (owner spec
+  // §B14). A re-confirmation of an ALREADY-confirmed stage (revising
+  // Current Stop) leaves any OTHER already-pending stage untouched — only
+  // clear when this confirmation genuinely matches what was pending.
+  if(entry.pendingProtectionStage === mode){
+    entry.pendingProtectionStage = null;
+  }
+  // TDAS V5.4.1A owner decision §5 — if editing Current Stop just now
+  // (any mode) landed the trader's ACTUAL confirmed level at or beyond a
+  // still-pending stage's nominal protection price, treat that pending
+  // stage as satisfied immediately — never wait for live price to
+  // mechanically reach it, and never ask the trader to move a stop they
+  // have already trailed further than required. No-op (returns false)
+  // when there is no pending stage or it isn't yet covered.
+  _satisfyPendingIfCoveredByManualStop(entry);
+  // Immediately expose the next stage if it was already earned before this
+  // confirmation happened (§13/§B15 — "delayed confirmation immediately
+  // exposes the next already-earned stage"), using the SAME shared ratchet
+  // the live-price tick uses — no duplicated logic. Uses whatever live
+  // price validation already resolved above; if none was available this
+  // is a safe no-op (the next refresh tick will catch up).
+  if(_livePriceForValidation!=null){
+    _advanceProtectionLadder(entry, _livePriceForValidation);
+  }
+
   Object.assign(entry, stampUpdate(entry));
   sessionDirtyIds.add(entry.id);
   const _sym = entry.symbol;
@@ -26761,22 +27505,29 @@ function confirmStopPlacement(id, mode, actualValRaw){
   });
 }
 
-// TDAS V5.0.0G2 §6 — Clear confirmation. Requires an explicit click
-// (reachable only from inside a reopened dialog, never automatic). Clears
-// ONLY TDAS's own confirmed-stop state — both the named schema and the
-// legacy BE mirror, since "one authoritative confirmed stop" is the rule
-// (V5.0.0G2 §6: "Do not add parallel stored SL and B/E states") — never
-// implies TDAS changed or cancelled anything on Bitunix itself. After
-// clearing: the front shows no status pill (mgmtStatusPillHtml is only
-// ever built when _mgmt.confirmed is true), and the rear's two pills
-// naturally return to their appropriate available-action state (the SL
-// pill always available; the B/E pill visible again only if still
-// eligible) — both computed fresh from _computeStopManagementState() on
-// the next render, no special-casing needed here beyond clearing the
-// fields themselves.
+// TDAS V5.0.0G2 §6 / V5.4.1A owner decision §2/§3 — Clear confirmation.
+// Requires an explicit click (reachable only from inside a reopened
+// dialog, never automatic). RE-SCOPED under Part B: this is now
+// EXCLUSIVELY the destructive full reset of the INITIAL SL confirmation —
+// "an exceptional correction... before genuine ladder progression", never
+// a general-purpose revision tool once real management history exists.
+// Normal stop changes after the initial confirmation must go through
+// Edit Current Stop (confirmStopPlacement's same-stage-edit path) — that
+// operation NEVER destroys initialRiskStop/protectionStage/ladder
+// history; only this function does, and only when explicitly permitted.
+// Permitted ONLY while protectionStage==='SL' (no B/E or later stage
+// confirmed yet) — the calling dialogs' own Clear-confirmation buttons
+// are already gated to only appear in that state (see
+// openSetManualSlDialog/openSetToBeDialog/openProtectionStageDialog's own
+// comments), and this guard is the defensive backstop for any other/
+// programmatic call path.
 function clearStopConfirmation(id){
   const entry = journal.find(j=>j.id===id);
   if(!entry){ alert('Trade not found.'); return; }
+  if(entry.protectionStage && entry.protectionStage!=='SL'){
+    alert('Clear confirmation is only available for the initial stop loss, before break-even or any profit-protection stage has been confirmed. Use Edit Current Stop to revise the stop instead.');
+    return;
+  }
   entry.mgmtSchemaVersion  = 1;
   entry.slConfirmed        = false;
   entry.slConfirmedAt      = null;
@@ -26788,6 +27539,14 @@ function clearStopConfirmation(id){
   entry.beStopConfirmedPrice = null;
   entry.beStopLevel          = null;
   entry.beStopSource         = null;
+  // TDAS V5.4.1A owner decision §2 — a legitimate full initial-SL reset
+  // also clears every R-ladder field, as an explicit correction exception
+  // to initialRiskStop's normal immutability, and returns the trade to
+  // amber "Set SL" with B/E/TP progression blocked until reconfirmed.
+  entry.initialRiskStop          = null;
+  entry.protectionStage          = 'NONE';
+  entry.pendingProtectionStage   = null;
+  entry.highestProtectionTriggerR = null;
 
   Object.assign(entry, stampUpdate(entry));
   sessionDirtyIds.add(entry.id);
@@ -27030,6 +27789,31 @@ async function _ensureActiveTradeLivePricing(){
       if(currentScanData[sym]) currentScanData[sym].price = px;
       _applyPriceUpdateToRegistry(sym, px);
     });
+
+    // TDAS V5.4.1A §4/§12/§13 — advance the discrete protection-progression
+    // ratchet for every active trade using this tick's freshly fetched
+    // live price. Pure, monotonic, cheap (per §19's "not a high-frequency
+    // persistence field" — only entries that actually changed get marked
+    // dirty/committed, never every trade on every tick regardless of
+    // change). A no-op for any trade whose protectionStage is still
+    // 'NONE' (ladder progression never starts before the first SL is
+    // confirmed, §B2) or genuinely legacy trades with no ladder fields.
+    const _ratchetChangedIds = [];
+    active.forEach(e=>{
+      const px = prices[e.symbol];
+      if(px==null) return;
+      if(_advanceProtectionLadder(e, px)){
+        Object.assign(e, stampUpdate(e));
+        _ratchetChangedIds.push(e.id);
+      }
+    });
+    if(_ratchetChangedIds.length){
+      _ratchetChangedIds.forEach(id=>sessionDirtyIds.add(id));
+      if(DEBUG_MODE) console.log('[ProtectionRatchet] advanced for', _ratchetChangedIds.join(','));
+      commitJournalChange('protectionRatchet', null).catch(err=>{
+        console.warn('[ProtectionRatchet] commit error:', err && err.message);
+      });
+    }
 
     // Re-render Trade Desk active cards in place, if present in the DOM
     // (harmless no-op when Trade Desk hasn't been opened this session).
@@ -27574,7 +28358,7 @@ function exportJournal(){
     'ADX Value','ADX Trending','High Conviction',
     'RSI','Session',
     'Signal Price','Entry Price','Stop Price','Target Price','ATR','Fib Stop',
-    'Outcome','Exit Price','PnL %','R-Multiple',
+    'Outcome','Exit Price','PnL %','R-Multiple','Exit Reason',
     'Signal Timestamp','Entry Timestamp','Close Timestamp',
     'Notes',
     'Deleted','Deleted At',
@@ -27596,7 +28380,7 @@ function exportJournal(){
     nf(e.signalPrice||e.price,4), nf(e.entryPrice||e.actualEntry,4),
     nf(e.stopPrice||e.stop,4), nf(e.targetPrice||e.target,4),
     nf(e.atr,4), nf(e.fibStop,4),
-    sf(e.outcome||''), nf(e.exitPrice,4), nf(e.pnlPercent,3), nf(e.rMultiple,2),
+    sf(e.outcome||''), nf(e.exitPrice,4), nf(e.pnlPercent,3), nf(e.rMultiple,2), sf(e.exitReason||''),
     sf(e.signalTimestamp||e.timestamp||''), sf(e.entryTimestamp||''), sf(e.closeTimestamp||e.closedAt||''),
     '"'+(e.note||'').replace(/"/g,'""')+'"',
     sf(e.deleted?'TRUE':'FALSE'),
@@ -29002,6 +29786,11 @@ function renderTrades(){
     return;
   }
 
+  // TDAS V5.4.1A — Closed-Trade Outcome Integrity. Outcome column now shows
+  // economic result only (via canonicalOutcome(), the same helper every
+  // other consumer uses), never the exit mechanism. A new Reason column
+  // carries exit mechanism separately (exitReason) — see owner directive
+  // "OUTCOME = WIN/LOSS/B-E, EXIT = separate exit mechanism where recoverable".
   wrap.innerHTML=`
     <table class="history-table" style="width:100%;">
       <thead><tr>
@@ -29011,6 +29800,7 @@ function renderTrades(){
         <th class="hide-mobile">TF</th>
         <th>Type</th>
         <th>Outcome</th>
+        <th class="hide-mobile">Reason</th>
         <th class="hide-mobile">Entry</th>
         <th class="hide-mobile">Exit</th>
         <th>P&L · R</th>
@@ -29025,8 +29815,10 @@ function renderTrades(){
         const pnlColor=pnlPct>0?'var(--green-text)':pnlPct<0?'var(--red-text)':'var(--text2)';
         const isReal=e.tradeType==='real';
         const duration=e.closedAt?Math.round((new Date(e.closedAt)-new Date(e.id))/(1000*60*60))+'h':'—';
-        const outLabel={win:'▲ TP',loss:'▼ SL',be:'— B/E',manual:'✎ Man'}[e.outcome]||e.outcome;
-        const outColor=e.outcome==='win'?'var(--green-text)':e.outcome==='loss'?'var(--red-text)':'var(--text2)';
+        const _canonOutcome=canonicalOutcome(e);
+        const outText={win:'▲ Win',loss:'▼ Loss',be:'— B/E'}[_canonOutcome]||_canonOutcome||e.outcome;
+        const outColor=_canonOutcome==='win'?'var(--green-text)':_canonOutcome==='loss'?'var(--red-text)':'var(--text2)';
+        const reasonText=exitReasonLabel(e.exitReason)||'—';
         const rColor=e.rMultiple>0?'var(--green-text)':e.rMultiple<0?'var(--red-text)':'var(--text2)';
         return`<tr title="${(e.note||'').replace(/"/g,"'")}" style="cursor:default;">
           <td style="font-size:12px;color:var(--text3);">${new Date(e.id).toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}</td>
@@ -29034,7 +29826,8 @@ function renderTrades(){
           <td><span class="chip ${e.signal}" style="font-size:11px;padding:2px 6px;">${e.signal==='long'?'▲':'▼'}</span></td>
           <td class="hide-mobile" style="color:var(--text2);">${e.tf.toUpperCase()}</td>
           <td style="font-size:12px;">${isReal?'💰':'📝'}</td>
-          <td style="color:${outColor};font-size:12px;font-weight:600;">${outLabel}</td>
+          <td style="color:${outColor};font-size:12px;font-weight:600;">${outText}</td>
+          <td class="hide-mobile" style="font-size:12px;color:var(--text2);">${reasonText}</td>
           <td class="hide-mobile" style="font-family:var(--mono);font-size:12px;color:var(--blue-text);">${fmt(entryPx)}</td>
           <td class="hide-mobile" style="font-family:var(--mono);font-size:12px;color:${pnlColor};">${e.exitPrice?fmt(e.exitPrice):'—'}</td>
           <td style="font-family:var(--mono);font-size:12px;color:${pnlColor};">${pnlPct!==null?(pnlPct>=0?'+':'')+pnlPct.toFixed(2)+'%':'—'}<br><span style="font-size:11px;color:${rColor};">${e.rMultiple!=null?(e.rMultiple>0?'+':'')+e.rMultiple+'R':'—'}</span></td>
@@ -29049,20 +29842,23 @@ function renderTrades(){
 
 function exportTrades(){
   const closed=journal.filter(j=>!j.deleted&&j.decision==='took'&&j.outcome&&j.outcome!=='cancelled');
-  const headers=['Date','Pair','TF','Direction','Type','Outcome','Entry','Exit','P&L %','R-Multiple','Duration (hrs)','Strength','Notes'];
+  const headers=['Date','Pair','TF','Direction','Type','Outcome','Reason','Entry','Exit','P&L %','R-Multiple','Duration (hrs)','Strength','Notes'];
   const rows=closed.map(e=>{
     const entryPx=e.actualEntry||e.price;
     const pnlPct=e.exitPrice&&entryPx
       ?(e.signal==='long'?((e.exitPrice-entryPx)/entryPx*100):((entryPx-e.exitPrice)/entryPx*100))
       :null;
     const duration=e.closedAt?Math.round((new Date(e.closedAt)-new Date(e.id))/(1000*60*60)):'';
+    // TDAS V5.4.1A — canonicalOutcome(), the same single source of truth
+    // every other consumer uses, instead of the raw persisted field.
     return[
       new Date(e.id).toLocaleDateString(),
       LABELS[e.symbol]||e.symbol,
       e.tf.toUpperCase(),
       e.signal,
       e.tradeType||'paper',
-      e.outcome,
+      canonicalOutcome(e)||e.outcome,
+      e.exitReason||'',
       entryPx.toFixed(4),
       e.exitPrice?e.exitPrice.toFixed(4):'',
       pnlPct!==null?pnlPct.toFixed(2):'',
@@ -30450,6 +31246,23 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     'source selected': _src,
     'lastUpdated': _newest || '—',
   });
+
+  // TDAS V5.4.1A — Closed-Trade Outcome Integrity. One-time, idempotent
+  // repair of any historical row still carrying a pre-V5.4.1A outcome value
+  // (a stop-mechanism click written directly as economic result). Must run
+  // before renderJournal()/updateLivePnL() so every render this session
+  // reads already-corrected data — see migrateLegacyJournalOutcomes()'s own
+  // header comment for the full root-cause explanation and guarantees.
+  // GATED behind DIAG.closedTradeOutcomeMigrationLive (currently OFF) until
+  // exitReason has full Sheets persistence parity — see that flag's own
+  // comment. The live per-render derivation (canonicalOutcome()) is NOT
+  // gated and already displays correctly regardless; only this one-time
+  // historical write-back waits.
+  if (DIAG.closedTradeOutcomeMigrationLive) {
+    migrateLegacyJournalOutcomes();
+  } else if (DEBUG_MODE) {
+    console.log('[migrateLegacyJournalOutcomes] SKIPPED — DIAG.closedTradeOutcomeMigrationLive is false (awaiting exitReason persistence parity).');
+  }
 
   // NOW safe to render — reset has been applied
   renderJournal();
