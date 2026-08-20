@@ -1579,7 +1579,20 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
   display:inline-flex;align-items:center;height:20px;padding:0 8px;
   border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap;
   background:var(--green-dim);color:var(--green-text);border:1px solid var(--green-bg);
-  flex-shrink:0;margin-left:8px;
+  flex-shrink:0;margin-left:8px;cursor:pointer;
+}
+/* TDAS V5.4.1A1 hotfix — the front pending-action pill (before this build
+   had no rule at all, so it fell back to unstyled browser defaults —
+   confirmed live defect: oversized, wrong-colour text, no pointer cursor).
+   Same box model as .mgmt-status-pill above (same pill family, per owner
+   spec — "It should visually belong to the same pill family as the later
+   green confirmed management state"), amber instead of green since this
+   is an action-required state, not a confirmed one. */
+.otc-pending-action-pill{
+  display:inline-flex;align-items:center;height:20px;padding:0 8px;
+  border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap;
+  background:var(--amber-bg);color:var(--amber-text);border:1px solid var(--amber-bg);
+  flex-shrink:0;margin-left:8px;cursor:pointer;
 }
 /* TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Two compact action
    pills (replacing V5.0.0G's large embedded amber form) — reuses the
@@ -2207,7 +2220,10 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // the header markup) — UI-only, no effect on app logic.
 // V5.4.1A — Active Trade R-Management, Stop Persistence & Journal Outcome
 // Integrity. Supersedes V5.4.0F3B.
-const APP_BUILD = 'V5.4.1A';
+// V5.4.1A1 — Active Trade Live UI & Interaction Fix. Frontend-presentation-
+// only hotfix on top of V5.4.1A's architecture — no persistence/state-
+// machine change. Supersedes V5.4.1A.
+const APP_BUILD = 'V5.4.1A1';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -26514,6 +26530,12 @@ function renderOrderTicketCard(e){
     : '';
   const livePrice=liveData?liveData.price:null;
   const entryPx=e.actualEntry||e.price;
+  // TDAS V5.4.1A1 hotfix — moved up from its original position (further
+  // below, unchanged there — this is a second reference to the same
+  // already-computed value, not a duplicate calculation) so the Live P&L
+  // line below can show the actual confirmed Current Stop. Pure read of
+  // `e`, no side effects — safe to compute earlier.
+  const _mgmt = _computeStopManagementState(e);
   let pnlHtml='';
   let pnlR=null; // hoisted — reused by Stop Management eligibility below, not recalculated
   if(livePrice&&entryPx){
@@ -26563,7 +26585,10 @@ function renderOrderTicketCard(e){
   // become falsely confirmed (only an EXPLICIT beStopConfirmed===true
   // migrates, per "do not infer confirmation merely because legacy data
   // contains a stop recommendation").
-  const _mgmt = _computeStopManagementState(e);
+  // TDAS V5.4.1A1 hotfix — _mgmt itself now computed earlier (see above,
+  // by the Live P&L block) so it's available for the front Current Stop
+  // label; this comment block stays here as it still documents _mgmt's
+  // semantics at the point every reader below actually consumes it.
   // BE eligibility — byte-identical trigger condition to the pre-V5.0.0G
   // "SL to BE" prompt (V5.0.0G §6: "Do not alter... BE eligibility
   // conditions"), now gating the "Set to B/E" mode button's clickability
@@ -26647,15 +26672,23 @@ function renderOrderTicketCard(e){
   // supported states for this build may display (V5.0.0G §Advisory box).
   // TDAS V5.0.0G2 §4/§5 — front status wording corrected: "\u2713 SL set"
   // (was "\u2713 Manual SL") for a confirmed non-BE stop.
+  // TDAS V5.4.1A1 hotfix — confirmed live defect: this pill was a plain,
+  // non-clickable <span>. Front and rear must remain two views of the
+  // SAME state/handler (owner doctrine) — reuses openActiveProtectionDialog(),
+  // the exact same dispatcher the rear controls already use, rather than
+  // creating separate front management logic. At every stage this opens
+  // the appropriate Current Stop/protection editor for whatever is
+  // currently confirmed (no pending action) — identical routing to a
+  // click on the rear's own confirmed pill.
   const mgmtStatusPillHtml = _mgmt.confirmed
     ? (_mgmt.source==='BE'
-        ? `<span class="mgmt-status-pill" title="${_confirmedTitle}">\u2713 SL at B/E</span>`
+        ? `<span class="mgmt-status-pill" onclick="event.stopPropagation();openActiveProtectionDialog(${e.id});" title="${_confirmedTitle}">\u2713 SL at B/E</span>`
         // TDAS V5.4.1A §B13 — TP-ladder stages beyond B/E get their own
         // "\u2713 TPx.x set" wording; every pre-Part-B case (SL/undefined
         // source) is completely unchanged ("\u2713 SL set").
         : (_mgmt.stage && _mgmt.stage!=='SL'
-            ? `<span class="mgmt-status-pill" title="${_confirmedTitle}">\u2713 ${_ladderStageLabel(_mgmt.stage)} set</span>`
-            : `<span class="mgmt-status-pill" title="${_confirmedTitle}">\u2713 SL set</span>`))
+            ? `<span class="mgmt-status-pill" onclick="event.stopPropagation();openActiveProtectionDialog(${e.id});" title="${_confirmedTitle}">\u2713 ${_ladderStageLabel(_mgmt.stage)} set</span>`
+            : `<span class="mgmt-status-pill" onclick="event.stopPropagation();openActiveProtectionDialog(${e.id});" title="${_confirmedTitle}">\u2713 SL set</span>`))
     : '';
 
   // TDAS V5.4.1A §B2 — HARD REQUIREMENT: the moment a trade becomes
@@ -26840,7 +26873,12 @@ function renderOrderTicketCard(e){
         <div class="otc-face-header-row">
           <span class="otc-symbol">${LABELS[e.symbol]||e.symbol}</span>
           <span class="sig-pill pill-trade-${isLong?'long':'short'}">${dirArrow} ${dirWord} ACTIVE</span>
-          ${notSyncedBadgeHtml}
+          <!-- TDAS V5.4.1A1 hotfix — the not-synced badge is intentionally
+               omitted from the rear (owner decision #5: presentation-only,
+               front keeps it; the rear header was overcrowded). Sync-state
+               calculation itself is completely unchanged —
+               notSyncedBadgeHtml is still computed exactly as before and
+               still shown on the front. -->
           ${copyBtnHtml}
         </div>
       </div>
@@ -26850,7 +26888,7 @@ function renderOrderTicketCard(e){
         <div class="tl-item tl-primary"><div class="tl-label">Entry</div><div class="tl-val" style="color:var(--blue-text);">${entryPx?fmt(entryPx):'—'}</div></div>
         <div class="tl-item tl-primary"><div class="tl-label">Current</div><div class="tl-val">${livePrice?fmt(livePrice):'—'}</div></div>
         <div class="tl-item tl-secondary"><div class="tl-label">Recommended stop</div><div class="tl-val" style="color:var(--text2);">${_recommendedStop!=null?fmt(_recommendedStop):'—'}</div></div>
-        <div class="tl-item tl-primary"><div class="tl-label">Actual stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--green-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
+        <div class="tl-item tl-primary"><div class="tl-label">Current stop</div><div class="tl-val" style="color:${_hasActualStop?'var(--green-text)':'var(--text3)'};">${_actualStopDisplay}</div></div>
         <div class="tl-item tl-secondary"><div class="tl-label">${_stopState.percentLabel}</div><div class="tl-val" style="color:${_stopStateColor};">${_stopStatePercentHtml}</div></div>
         <div class="tl-item tl-secondary"><div class="tl-label">${_stopState.pointsLabel}</div><div class="tl-val" style="color:${_stopStateColor};">${_stopStatePointsHtml}</div></div>
       </div>
