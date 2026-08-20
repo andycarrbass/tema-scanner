@@ -2223,7 +2223,12 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // V5.4.1A1 — Active Trade Live UI & Interaction Fix. Frontend-presentation-
 // only hotfix on top of V5.4.1A's architecture — no persistence/state-
 // machine change. Supersedes V5.4.1A.
-const APP_BUILD = 'V5.4.1A1';
+// V5.4.1A2 — Scanner & Setups Action Routing Fix. Setups Paper Trade
+// wiring + Scanner action-zone three-state canonical lane resolution
+// (directional / genuinely neutral / evaluation unavailable) + a narrow
+// HTF-hover null guard. No TSE/Evaluation/Advisory/Trade-Ready-admission
+// change. Supersedes V5.4.1A1.
+const APP_BUILD = 'V5.4.1A2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -9877,6 +9882,42 @@ function _fourHCanonicalLaneDirection(d) {
 // above, same 1H passthrough.
 function _fourHCanonicalIsDirectional(d) {
   return _fourHCanonicalLaneDirection(d) !== 'neutral';
+}
+
+// TDAS V5.4.1A2 §Defect B — three-state discriminator for the ONE render
+// decision that genuinely needs to distinguish "unavailable" from
+// "genuinely neutral": the Scanner action-zone's +Log decision/View
+// analysis branch. Deliberately NOT a change to
+// _fourHCanonicalLaneDirection() itself (used by dozens of other
+// consumers — pill class, HTF badge, RSI/MA/ADX tone, level box, warn
+// strips — every one of which correctly wants the existing 2-state
+// long/short/neutral collapse and is completely untouched by this
+// addition) or to resolveCanonicalLifecycle()/buildCanonicalEval()
+// (both already correct at their own layer — resolveCanonicalLifecycle()
+// already explicitly returns laneDirection:null, with its own "fail
+// conservative, never synthesize direction" comment, whenever
+// technicalState is unavailable/incomplete, and the scan pipeline's
+// exception-catch path independently produces the same null-lifecycle
+// shape — see buildCanonicalEval()'s call site). The defect was entirely
+// in this file's OWN `lane || 'neutral'` fallback, which discarded that
+// already-correct distinction. Root-cause audit: read-only, confirmed by
+// tracing resolveCanonicalLifecycle()'s own `if (!ts) return {...,
+// laneDirection: null}` branch against buildCanonicalEval()'s
+// meta.completeness assignment and the scan pipeline's own catch block
+// (`errorMessage` is set ONLY there, never inside buildCanonicalEval()
+// itself — confirmed by exhaustive search — so meta.completeness alone
+// cannot distinguish "TSE evidence genuinely incomplete" from "the
+// function threw", but laneDirection's null-vs-'neutral' distinction
+// already can, for the specific 4H/flag-live case this function guards).
+// Returns 'long'|'short'|'neutral'|'unavailable' for 4H canonical cases;
+// unchanged 2-state 'long'|'short'|'neutral' passthrough (identical to
+// _fourHCanonicalLaneDirection()) for 1H or DIAG.fourHTseAuthorityLive
+// off, since there is no canonical authority to be unavailable there.
+function _fourHCanonicalLaneState(d) {
+  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') return (d && d.signal) || 'neutral';
+  const lane = d.eval && d.eval.lifecycle && d.eval.lifecycle.laneDirection;
+  if (lane === 'long' || lane === 'short' || lane === 'neutral') return lane;
+  return 'unavailable';
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -21444,7 +21485,18 @@ function renderCard(symbol,d){
   const _htfPillState = _isFourHCanonicalPill
     ? d.eval.htfState.relation.state
     : (signal==='long'||signal==='short') ? buildHtfBadgeState(d, signal) : htfAlign;
-  const _htfPillHover = _isFourHCanonicalPill
+  // TDAS V5.4.1A2 — Defect B fix exposed a genuine, pre-existing crash
+  // here: _isFourHCanonicalPill only checks htfState's presence, but
+  // htfState is unconditionally built by buildCanonicalEval() regardless
+  // of whether technicalState could be computed (see buildCanonicalEval()
+  // itself — htfState construction never depends on `ts`). A 4H card
+  // whose trendState is genuinely absent (the exact "unavailable" shape
+  // Defect B's new render state now legitimately reaches) has
+  // technicalState:null while htfState is still fully populated —
+  // unconditionally dereferencing d.eval.technicalState.direction would
+  // throw. Narrowly guarded here; _isFourHCanonicalPill/_htfPillState
+  // above are untouched (neither depends on technicalState).
+  const _htfPillHover = (_isFourHCanonicalPill && d.eval.technicalState)
     ? _formatHtfPillHover(d.eval.htfState, d.eval.technicalState.direction)
     : '';
   const htfText = HTF_BADGE_GLYPH[_htfPillState]
@@ -21660,6 +21712,21 @@ function renderCard(symbol,d){
   // ── Action zone — single, at bottom ────────────────────────────────────
   // Scanner is discovery only. Once watched or traded, management moves to Trade Desk.
   let actionZone;
+  // TDAS V5.4.1A2 §Defect B — the action-zone directional check below MUST
+  // use canonical lane state for 4H cards, never the raw `signal` local
+  // (which is d.signal, the legacy field, destructured at the top of this
+  // function — confirmed by direct trace: renderCard() never re-assigns
+  // `signal` from any canonical accessor; only a DIFFERENT function,
+  // buildFilterLineHtml(), does that, on its own unrelated local of the
+  // same name). Using raw d.signal here would let a directional legacy
+  // signal override unavailable canonical authority — exactly the
+  // violation the owner's acceptance criteria explicitly forbid, and
+  // exactly what resolveCanonicalLifecycle()'s own doctrine header
+  // already states: "NEVER reads d.signal as technical or decision
+  // authority." _fourHCanonicalLaneState(d) is a safe drop-in here for
+  // 1H/DIAG.fourHTseAuthorityLive-off cases too — it passes raw d.signal
+  // through unchanged for those, identical to the pre-existing behaviour.
+  const _laneState = _fourHCanonicalLaneState(d);
   if(isOpenTrade){
     // Navigation-only status button — no management actions on scanner
     actionZone = '<div class="card-btn-row">'
@@ -21670,7 +21737,7 @@ function renderCard(symbol,d){
     actionZone = '<div class="card-btn-row">'
       +'<button class="card-btn status-watching" onclick="focusScannerWatchCard(\''+symbol+'\')">\uD83D\uDFE1 Watching →</button>'
       +'</div>';
-  } else if(signal!=='neutral'){
+  } else if(_laneState==='long' || _laneState==='short'){
     // alreadyLogged: a non-watching decision (skip/miss) was recorded for this
     // symbol on this TF within the last 12 hours. Show a muted acknowledged state
     // rather than the active Log button — prevents accidental duplicate logging.
@@ -21678,6 +21745,16 @@ function renderCard(symbol,d){
     actionZone = alreadyLogged
       ? '<button class="card-btn secondary" style="cursor:default;" disabled>\u2713 '+(sameTfRecent.decision==='missed'?'Missed':'Skipped')+'</button>'
       : '<button class="card-btn" onclick="openLogChoice(event,\''+symbol+'\')">+ Log decision</button>';
+  } else if(_laneState==='unavailable'){
+    // TDAS V5.4.1A2 §Defect B — three-state render contract. An
+    // unavailable canonical 4H evaluation must never be presented as
+    // either directional (+ Log decision) or genuinely neutral (View
+    // analysis) — see _fourHCanonicalLaneState()'s own header comment
+    // for the full root-cause trace. Non-actionable, existing
+    // disabled-button styling (same pattern as the already-logged
+    // acknowledged state above), never routed to either the logging or
+    // analysis action.
+    actionZone = '<button class="card-btn secondary" style="cursor:default;" disabled title="Canonical 4H evaluation unavailable this cycle — refresh to retry">Evaluation unavailable</button>';
   } else {
     actionZone = '<button class="card-btn secondary" onclick="openAnalysisPanel({symbol:\''+symbol+'\',tf:\''+d.tf+'\',consumer:\'scanner\',snapshotRole:\'primary\'})">View analysis</button>';
   }
@@ -25839,8 +25916,26 @@ function buildSetupsCardHtml(sym, d){
   let _setupsAdvisory = null;
   try { _setupsAdvisory = (typeof buildAdvisory==='function') ? buildAdvisory(d, {openTrade:null}) : null; }
   catch(e) { console.warn('[buildSetupsCardHtml] buildAdvisory failed for',sym,e); }
+  // TDAS V5.4.1A2 §Defect A — Setups Paper Trade routing fix. Root cause
+  // (audited, confirmed): buildTradeReadyChecklistHtml()'s PAPER TRADE
+  // button is enabled ONLY when the caller supplies opts.onPaperTradeClick
+  // — Scanner's own renderCard() already does (see its own call site),
+  // Setups never did, so the button rendered permanently disabled
+  // ("Coming soon") on every Setups card regardless of eligibility. Fix
+  // is the smallest possible: supply the SAME onclick string Scanner
+  // already uses, calling the SAME page-independent, already-proven
+  // createTradeReadyPaperTrade(symbol) — no new trade-creation function,
+  // no lifecycle/persistence change, no ownership/one-active-trade/Watch-
+  // supersession/risk-geometry change (createTradeReadyPaperTrade() and
+  // the saveEntry()/buildV1Entry() path it calls are completely
+  // untouched by this fix). LIVE: BITUNIX ORDER remains unconditionally
+  // disabled here, exactly as it already is on Scanner's own proven
+  // route — not a Setups-specific gap, so intentionally left alone.
   const rearHtml = (_setupsAdvisory && _setupsAdvisory.tradeReady && typeof buildTradeReadyChecklistHtml==='function')
-    ? buildTradeReadyChecklistHtml(sym, d, _setupsAdvisory, { onViewFullAnalysisClick: "event.stopPropagation();openAnalysisPanel({symbol:'"+sym+"',tf:'"+(d.tf||'4h')+"',consumer:'scanner',snapshotRole:'primary'})" })
+    ? buildTradeReadyChecklistHtml(sym, d, _setupsAdvisory, {
+        onPaperTradeClick: "createTradeReadyPaperTrade('"+sym+"')",
+        onViewFullAnalysisClick: "event.stopPropagation();openAnalysisPanel({symbol:'"+sym+"',tf:'"+(d.tf||'4h')+"',consumer:'scanner',snapshotRole:'primary'})",
+      })
     : '';
   return `<div class="card setups-card">
     <div style="font-size:12px;color:var(--text3);margin-bottom:8px;">4H \u00b7 ${d.price!=null?fmt(d.price):'\u2014'}</div>
