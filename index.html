@@ -2228,7 +2228,17 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // (directional / genuinely neutral / evaluation unavailable) + a narrow
 // HTF-hover null guard. No TSE/Evaluation/Advisory/Trade-Ready-admission
 // change. Supersedes V5.4.1A1.
-const APP_BUILD = 'V5.4.1A2';
+// V5.4.1A3 — Active Trade B/E Pending Action Fix. Root-cause: the B/E
+// pending-eligibility rule predated the V5.4.1A ladder and required
+// `!_mgmt.confirmed`, which an SL-confirmed ladder trade can never
+// satisfy — so the amber "SL to B/E" pill never appeared once the
+// initial SL was confirmed, regardless of R (live SOL/ETH defect,
+// 21 Aug 2026). Canonical ladder state (pendingProtectionStage,
+// highestProtectionTriggerR) was always correct; this was a presentation-
+// only fix, plus a new front-face B/E pending mirror (front never had
+// one before). No TSE/Evaluation/Advisory/Apps-Script change. Supersedes
+// V5.4.1A2.
+const APP_BUILD = 'V5.4.1A3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -26682,13 +26692,30 @@ function renderOrderTicketCard(e){
   // contains a stop recommendation").
   // TDAS V5.4.1A1 hotfix — _mgmt itself now computed earlier (see above,
   // by the Live P&L block) so it's available for the front Current Stop
-  // label; this comment block stays here as it still documents _mgmt's
-  // semantics at the point every reader below actually consumes it.
-  // BE eligibility — byte-identical trigger condition to the pre-V5.0.0G
-  // "SL to BE" prompt (V5.0.0G §6: "Do not alter... BE eligibility
-  // conditions"), now gating the "Set to B/E" mode button's clickability
-  // instead of a standalone pill's visibility.
-  const _beEligible = !_mgmt.confirmed && pnlR!=null && pnlR>=1.0 && (!advisory || advisory.action!=='CLOSE');
+  // TDAS V5.4.1A3 — B/E pending action root-cause fix (live SOL/ETH
+  // defect, observed morning of 21 Aug 2026, entries moved through +1R
+  // overnight showing "\u2713 SL set" with no amber "SL to B/E" prompt).
+  // PROVEN via direct fixture trace, not inferred: _advanceProtectionLadder()
+  // was already correctly setting e.pendingProtectionStage='BE' and
+  // ratcheting highestProtectionTriggerR the moment +1R was reached — the
+  // ladder STATE was always correct. The defect was entirely in this
+  // presentation rule below, which predates the V5.4.1A ladder (it is the
+  // byte-identical pre-V5.0.0G "SL to BE" prompt condition, from when
+  // _mgmt.confirmed being true meant "some final terminal answer has
+  // already been given" in the old binary SL/BE model). Under the ladder,
+  // protectionStage='SL' is a non-terminal, already-confirmed
+  // intermediate stage — so `!_mgmt.confirmed` permanently suppressed
+  // this pill for every SL-confirmed trade, regardless of R. One coherent
+  // rule (owner directive): e.pendingProtectionStage is now the SOLE
+  // authority for pending B/E eligibility here — no second,
+  // independently rediscovered pnlR>=1 threshold check. The SAME ratchet
+  // that already correctly drives every other ladder stage (and already
+  // proved, in this exact investigation, that it remembers a threshold
+  // crossed through retracement/reload/a direct multi-threshold jump) is
+  // now simply trusted here too, instead of re-deriving eligibility from
+  // scratch with a rule that never accounted for SL already being
+  // confirmed.
+  const _beEligible = e.pendingProtectionStage==='BE' && (!advisory || advisory.action!=='CLOSE');
 
   // TDAS V5.0.0G1 — Trade Card Stop-Control Correction. Two compact
   // action pills replace the embedded amber form. "SL to B/E" hides
@@ -26805,7 +26832,20 @@ function renderOrderTicketCard(e){
   const _frontLadderPendingHtml = _ladderPendingStage
     ? `<span class="otc-pending-action-pill" onclick="event.stopPropagation();openProtectionStageDialog(${e.id},'${_ladderPendingStage}');">${_ladderStageLabel(_ladderPendingStage)}</span>`
     : '';
-  const _frontPendingPillsHtml = _frontPendingSetSlHtml + _frontLadderPendingHtml;
+  // TDAS V5.4.1A3 — front mirror of the rear "SL to B/E" pending pill.
+  // B/E never had a front analogue before this fix (it was deliberately
+  // excluded from the generic TP-ladder mirror above, since B/E keeps its
+  // own dedicated dialog/pill path — see _pendingLadderStage()'s own
+  // comment). The owner's live SOL/ETH investigation requires the front
+  // to surface this pending action too, and explicitly requires front and
+  // rear to derive from the SAME truth rather than a second eligibility
+  // rule — this reuses _beEligible directly (declared above, already
+  // driven solely by the canonical e.pendingProtectionStage==='BE'), not
+  // a re-derived condition.
+  const _frontBePendingHtml = _beEligible
+    ? `<span class="otc-pending-action-pill" onclick="event.stopPropagation();openActiveProtectionDialog(${e.id});">SL to B/E</span>`
+    : '';
+  const _frontPendingPillsHtml = _frontPendingSetSlHtml + _frontBePendingHtml + _frontLadderPendingHtml;
 
   // TDAS V5.0.0H — Context / 1H Timing moved to the Trade front (approved
   // playground doctrine: front is advisory-led, rear is purely
