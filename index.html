@@ -1291,6 +1291,12 @@ button:disabled{opacity:0.35;cursor:not-allowed;}
 .out-btn.sel-win{background:#1a2e1a;color:#6dcc6d;border-color:#2a4a2a;}
 .out-btn.sel-loss{background:var(--red-bg);color:var(--red-text);border-color:#3a1a0a;}
 .out-btn.sel-be{background:var(--bg4);color:var(--text);border-color:var(--border3);}
+/* TDAS V5.4.1A5 — Manual never had a visible selected state at all (the
+   class was correctly assigned by selectOut() but no CSS rule existed for
+   it — confirmed root cause of the live "Manual info panel visible with no
+   button highlighted" defect). Neutral/slate per owner instruction — not
+   green/red, since Manual is not itself an economic classification. */
+.out-btn.sel-manual{background:var(--bg4);color:var(--text2);border-color:var(--text3);}
 .out-fields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px;}
 .out-fields input{font-size:12px;padding:7px 9px;border-radius:var(--radius-sm);border:1px solid var(--border2);background:var(--bg3);color:var(--text);font-family:var(--mono);width:100%;}
 .out-fields input:focus{outline:none;border-color:var(--border3);}
@@ -2262,7 +2268,32 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // outcome/exitReason separation (V5.4.1A doctrine) preserved throughout.
 // No TSE/Evaluation/Advisory/Apps-Script/ladder-mechanics change.
 // Supersedes V5.4.1A3.
-const APP_BUILD = 'V5.4.1A4';
+// V5.4.1A5 — Active Trade Exit Event Authority & Modal Integration Fix.
+// A4 LIVE-FAILED: the close-modal read raw currentScanData[symbol]
+// (_trustworthyLivePrice()) instead of getActiveTradeSnapshotData(entry)
+// — the exact symbol+trade-timeframe registry authority the Active Trade
+// card itself has used since V4.10.4G — so the modal silently used a
+// different, unvalidated price than the card that opened it. A second,
+// independent defect found in the same trace: selectOut()'s 'loss'
+// branch had ALWAYS unconditionally prefilled the confirmed Current
+// Stop, predating A4 entirely, producing the exact live symptom (a
+// +1.50R profit-protection stop presentable as a Stop Loss). Fixes:
+// (1) one Active Trade live-price authority — getActiveTradeSnapshotData()
+// only, via the new thin _trustworthyActiveTradeLivePrice() consumer,
+// never currentScanData directly; (2) a confirmed stop breach is now a
+// durable pending EXIT EVENT, latched once by the live-price refresh tick
+// on first observation and never overwritten by a later price/rebound —
+// 4 new named Sheets fields (pendingExitReason/Stop/DetectedAt/
+// ProtectionStage, Apps Script v8.9; deliberately no persisted R — always
+// re-derived via calcTradeR()), cleared on saveOutcome(); (3) 'win' and
+// 'loss' are now symmetrically breach-gated — Current Stop is prefilled
+// only when detection (latch or live) positively matches THAT button's
+// own economic direction, never merely because the button was clicked;
+// (4) the Manual button's CSS selected-state rule (.sel-manual) simply
+// never existed — added. No TSE/Evaluation/Advisory/Trade-Ready/Scanner/
+// Watch/Setups/HTF/CHOP/200MA/RSI-ADX/protection-ladder-sequencing
+// change. Supersedes V5.4.1A4.
+const APP_BUILD = 'V5.4.1A5';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -3212,6 +3243,13 @@ function normaliseSheets(e){
     protectionStage:          e.protectionStage||e['Protection Stage']||'NONE',
     pendingProtectionStage:   e.pendingProtectionStage||e['Pending Protection Stage']||null,
     highestProtectionTriggerR: _n(e.highestProtectionTriggerR!=null?e.highestProtectionTriggerR:e['Highest Protection Trigger R']),
+    // TDAS V5.4.1A5 — pending exit-event latch (Sheets column names in
+    // brackets — see Apps Script v8.9's own JOURNAL_HEADERS). Same fixed
+    // allow-list requirement as every field above.
+    pendingExitReason:          e.pendingExitReason||e['Pending Exit Reason']||null,
+    pendingExitStop:            _n(e.pendingExitStop!=null?e.pendingExitStop:e['Pending Exit Stop']),
+    pendingExitDetectedAt:      e.pendingExitDetectedAt||e['Pending Exit Detected At']||null,
+    pendingExitProtectionStage: e.pendingExitProtectionStage||e['Pending Exit Protection Stage']||null,
   };
   // Transitional aliases — must mirror buildV1Entry so UI renders correctly
   // after pullFromSheets() replaces in-memory journal entries.
@@ -12941,7 +12979,22 @@ function _buildActiveTradeAdvisory(d, openTrade) {
   // Bitunix-live-priced by _ensureActiveTradeLivePricing for active trades —
   // see that function's own header comment) and the recorded stop already
   // stored on the journal entry — no recalculation of either.
-  const _stopBreach = getStopBreachState(openTrade, price);
+  // TDAS V5.4.1A5 correction — a latched pending exit event (see
+  // _ensureActiveTradeLivePricing()'s own comment) is now Active Trade's
+  // HIGHEST-PRIORITY CLOSE authority once it exists. Before this fix, a
+  // breach could latch correctly and the modal could remember it, yet
+  // this Advisory would keep re-deriving from a FRESH getStopBreachState()
+  // call — so a price rebound could silently make the card stop saying
+  // CLOSE while the modal still (correctly) remembered the breach. This
+  // is NOT a new exit classifier — it substitutes the latched stop into
+  // the exact same {breached,stop,...} shape getStopBreachState() already
+  // returns, so every downstream consumer of `_stopBreach` below is
+  // completely unaffected. Only when nothing is latched yet does a fresh
+  // live check run (which may itself cause the FIRST latch, written by
+  // the live-price tick on the very next refresh cycle).
+  const _stopBreach = (openTrade.pendingExitReason != null && openTrade.pendingExitStop != null)
+    ? { breached: true, direction: dir, stop: openTrade.pendingExitStop, currentPrice: price, breachPct: null }
+    : getStopBreachState(openTrade, price);
 
   if (_stopBreach.breached) {
     action = 'CLOSE'; headline = 'CLOSE';
@@ -24089,6 +24142,22 @@ function buildV1Entry(symbol, d, decision, overrides) {
     protectionStage:          'NONE',
     pendingProtectionStage:   null,
     highestProtectionTriggerR: null,
+
+    // TDAS V5.4.1A5 — pending exit-event latch. A confirmed Active Trade
+    // stop breach is a historical EVENT once observed — it must not be
+    // forgotten merely because price subsequently rebounds before the
+    // trader opens the Close dialog (owner doctrine §3/§6). Written ONLY
+    // by _ensureActiveTradeLivePricing()'s live-price tick, on the FIRST
+    // detected breach (never overwritten by a later price — see that
+    // function's own comment); cleared by saveOutcome() once the trade is
+    // actually closed. pendingExitR is deliberately NOT persisted — it is
+    // always re-derived on demand via calcTradeR(entry, pendingExitStop),
+    // since initialRiskStop/pendingExitStop are both already immutable
+    // once set (no redundant derived data persisted, owner doctrine §6/§7).
+    pendingExitReason:          null, // 'PROFIT_PROTECTION_STOP'|'INITIAL_SL'|'BREAK_EVEN_STOP'
+    pendingExitStop:            null, // the confirmed stop level actually breached
+    pendingExitDetectedAt:      null, // ISO timestamp of first detection
+    pendingExitProtectionStage: null, // protectionStage snapshot AT detection time
   };
 
   // Transitional aliases for legacy UI renderers.
@@ -24837,10 +24906,29 @@ function renderJournal(){
 let outcomeEditId=null;
 let selectedOutcomeModal=null;
 
-// TDAS V5.4.1A4 — Active Trade Exit Workflow Consolidation. Automatic
-// close-dialog classification (owner requirement, not optional): detects
-// the intelligent DEFAULT close button from the trade's OWN actual
-// current state — never invents a reason. Reuses, verbatim:
+// TDAS V5.4.1A5 — Active Trade Exit Event Authority & Modal Integration
+// Fix. A4's _trustworthyLivePrice() read raw currentScanData[symbol]
+// directly — the Scanner's own multi-symbol/multi-timeframe registry,
+// NOT validated against this specific trade's setup timeframe. Active
+// Trade's card has used getActiveTradeSnapshotData(entry) as its exact
+// symbol+trade.tf authority since V4.10.4G (confirmed by direct trace —
+// renderOrderTicketCard()'s own liveData/livePrice, and
+// confirmStopPlacement()'s wrong-side-of-market validation, both already
+// use it) — the close-modal reading a DIFFERENT, unvalidated price source
+// was the exact live SOL production failure (Take Profit not detected;
+// Stop Loss produced an incoherent +1.50R prefill from the unconditional
+// old 'loss' branch, unrelated to any genuine live-price read at all).
+// getActiveTradeSnapshotData() itself is UNCHANGED and UNDUPLICATED here —
+// this function is a thin consumer, not a second snapshot-resolution path.
+function _trustworthyActiveTradeLivePrice(entry) {
+  if (!entry || typeof getActiveTradeSnapshotData !== 'function') return null;
+  const read = getActiveTradeSnapshotData(entry);
+  return (read && read.data && read.data.price != null) ? read.data.price : null;
+}
+// TDAS V5.4.1A4 — Automatic close-dialog classification (owner
+// requirement, not optional): detects the intelligent DEFAULT close
+// button from the trade's OWN actual current state — never invents a
+// reason. Reuses, verbatim:
 //  - getStopBreachState() (unmodified — the exact same confirmed-stop +
 //    breach detector the CLOSE advisory itself already uses, per its own
 //    "no recalculation" doctrine comment above);
@@ -24848,34 +24936,37 @@ let selectedOutcomeModal=null;
 //    build consolidates every close-workflow path onto — see
 //    _calcRealisedR()'s own header comment).
 // No new detection mechanism, no second eligibility/classification rule.
-// TDAS V5.4.1A4 correction — returns {preset, stop, r} (not merely a
-// preset string) so every consumer (openOutcomeModal's auto-select AND
-// selectOut()'s own prefill logic) reads the SAME single detection
-// result — the actual breached stop level is never independently
-// re-derived a second time, and a "win" classification is never inferred
-// merely from which button happens to be selected. Returns null when no
-// stop-breach mechanism is detected at all (§5D — Manual is the
-// sensible, non-invented discretionary default in that case).
-function _detectCloseClassification(entry, livePrice) {
-  if (!entry || typeof getStopBreachState !== 'function' || typeof calcTradeR !== 'function') return null;
-  const breach = getStopBreachState(entry, livePrice);
+// TDAS V5.4.1A5 — a confirmed stop breach is a historical EVENT once
+// observed (owner doctrine §3/§6): this function now checks the
+// PERSISTED pendingExit* latch FIRST — set once by
+// _ensureActiveTradeLivePricing()'s live-price tick on first detection,
+// and never overwritten by a later price — so a subsequent price rebound
+// can never make TDAS "forget" an already-observed breach. Only when
+// nothing is latched yet does it fall through to a fresh LIVE check,
+// via _trustworthyActiveTradeLivePrice() (getActiveTradeSnapshotData(),
+// never currentScanData directly). Returns {preset, stop, r, reason,
+// fromLatch}, or null when no breach — latched or live — is present at
+// all (§5D — Manual is the sensible, non-invented discretionary default
+// in that case).
+function _detectCloseClassification(entry) {
+  if (!entry || typeof calcTradeR !== 'function') return null;
+  const _tol = (typeof OUTCOME_BE_TOLERANCE_R === 'number') ? OUTCOME_BE_TOLERANCE_R : 0.01;
+  if (entry.pendingExitReason != null && entry.pendingExitStop != null) {
+    const _latchR = calcTradeR(entry, entry.pendingExitStop);
+    if (_latchR != null) {
+      const _latchPreset = Math.abs(_latchR) <= _tol ? 'be' : (_latchR > 0 ? 'win' : 'loss');
+      return { preset: _latchPreset, stop: entry.pendingExitStop, r: _latchR, reason: entry.pendingExitReason, fromLatch: true };
+    }
+  }
+  if (typeof getStopBreachState !== 'function') return null;
+  const _livePrice = _trustworthyActiveTradeLivePrice(entry);
+  if (_livePrice == null) return null;
+  const breach = getStopBreachState(entry, _livePrice);
   if (!breach || !breach.breached || breach.stop == null) return null;
   const r = calcTradeR(entry, breach.stop);
   if (r == null) return null;
-  const _tol = (typeof OUTCOME_BE_TOLERANCE_R === 'number') ? OUTCOME_BE_TOLERANCE_R : 0.01;
   const preset = Math.abs(r) <= _tol ? 'be' : (r > 0 ? 'win' : 'loss');
-  return { preset: preset, stop: breach.stop, r: r };
-}
-// TDAS V5.4.1A4 correction — the ONLY trustworthy "current price" source
-// for close-workflow detection/prefill is a genuine live market snapshot
-// (currentScanData). entry.price is the persisted SIGNAL price from when
-// the trade was originally created/logged — not a last-known market
-// price — and must never be used as a live-price stand-in; using it would
-// let a stale, possibly very old price silently drive breach detection or
-// an exit-price prefill. Returns null (never a fabricated number) when no
-// genuine live snapshot exists for this symbol.
-function _trustworthyLivePrice(symbol) {
-  return (currentScanData[symbol] && currentScanData[symbol].price != null) ? currentScanData[symbol].price : null;
+  return { preset: preset, stop: breach.stop, r: r, reason: null, fromLatch: false };
 }
 
 function openOutcomeModal(id,presetOutcome){
@@ -24899,8 +24990,7 @@ function openOutcomeModal(id,presetOutcome){
   let _resolvedPreset = presetOutcome || null;
   let _detection = null;
   if (!_resolvedPreset && _isOpenActiveTrade) {
-    const _livePriceForDetection = _trustworthyLivePrice(entry.symbol);
-    _detection = _detectCloseClassification(entry, _livePriceForDetection);
+    _detection = _detectCloseClassification(entry);
     // TDAS V5.4.1A4 correction #4 — an open Active Trade with no detected
     // protection-stop breach defaults to Manual (the discretionary-close
     // default), rather than leaving nothing selected — a live trade being
@@ -25051,14 +25141,32 @@ function classifyExitReason(entry, clickedButton, derivedOutcome) {
     // TDAS V5.4.1A4 — "Take Profit" no longer unconditionally implies the
     // old fixed entry.target was hit (that concept is retired from live
     // Active Trade management — see selectOut()'s 'win' branch and this
-    // build's audit). If the ACTUAL PERSISTED exit price matches the
-    // confirmed Current Stop (the same _computeStopManagementState()
-    // reconciliation every other consumer uses), the real mechanism was a
-    // profit-protection stop breach — the exact SOL case (protectionStage
-    // TP1.5, stop breached at $90.490, +1.50R) — not a fixed take-profit.
-    // Checking the PERSISTED exitPrice (not merely "was a stop
-    // confirmed") respects §6 — "actual execution truth wins": if the
-    // trader overrides the exit price to something else entirely, this
+    // build's audit).
+    // TDAS V5.4.1A5 — a LATCHED pending exit event is itself sufficient
+    // provenance, ahead of any price-matching heuristic: if TDAS had
+    // already identified this trade's close as a profit-protection stop
+    // breach (entry.pendingExitReason==='PROFIT_PROTECTION_STOP') and the
+    // trader kept Take Profit selected, that mechanism is authoritative
+    // even when the actual Bitunix fill differs slightly from the
+    // latched stop level (a real stop order can fill with slippage) — the
+    // ACTUAL fill still drives outcome/R via deriveEconomicOutcome()/
+    // _calcRealisedR() (completely unchanged, derived from entry.exitPrice
+    // as saveOutcome() already reads it); only the MECHANISM
+    // classification below no longer requires a byte-exact price match.
+    // If the trader instead changes the category to Manual or another
+    // button before save, this branch never runs at all (clickedButton
+    // would not be 'win') — the explicit correction already supersedes
+    // the inferred mechanism, exactly per existing owner doctrine.
+    if (entry && entry.pendingExitReason === 'PROFIT_PROTECTION_STOP') return 'PROFIT_PROTECTION_STOP';
+    // Fallback for the no-latch case (e.g. a legacy trade, or Take Profit
+    // clicked with no detection ever having run): the ACTUAL PERSISTED
+    // exit price matching the confirmed Current Stop (the same
+    // _computeStopManagementState() reconciliation every other consumer
+    // uses) is itself sufficient provenance that the real mechanism was a
+    // profit-protection stop breach, not a fixed take-profit. Checking
+    // the PERSISTED exitPrice (not merely "was a stop confirmed")
+    // respects §6 — "actual execution truth wins": if the trader
+    // overrides the exit price to something else entirely, this
     // correctly falls through to the genuine TP classification instead.
     const mgmtWin = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
     const confirmedStopWin = (mgmtWin && mgmtWin.confirmed && mgmtWin.confirmedLevel != null) ? mgmtWin.confirmedLevel : null;
@@ -25202,59 +25310,69 @@ function selectOut(o){
     // fixed entry.target is RETIRED as live Active Trade management
     // authority (owner directive — the V5.4.1 protection ladder
     // superseded fixed take-profit targets; see this build's own audit).
-    // TDAS V5.4.1A4 correction #2 — Current Stop is the provisional exit
-    // price ONLY when _detectCloseClassification() has POSITIVELY
-    // identified, right now, that this trade's confirmed stop was
-    // actually breached and the breach is genuinely profitable. It is
-    // never inferred merely from "Take Profit" being the selected button —
-    // a trader may click Take Profit on a whim with no detected breach at
-    // all (e.g. price is nowhere near the confirmed stop), and in that
+    // TDAS V5.4.1A5 — Current Stop (or the LATCHED pending-exit stop — see
+    // _detectCloseClassification()'s own header comment) is the
+    // provisional exit price ONLY when detection has POSITIVELY
+    // identified, via the persisted latch or a fresh authoritative-price
+    // check, that this trade's confirmed stop was actually breached and
+    // the breach is genuinely profitable. It is never inferred merely
+    // from "Take Profit" being the selected button — a trader may click
+    // Take Profit on a whim with no detected breach at all, and in that
     // case prefilling the confirmed stop would misrepresent a level the
     // trade never actually exited at. The SAME single detection call
     // openOutcomeModal() uses for auto-selection is re-run here (not a
     // second, independent eligibility rule) so a direct user click gets
     // identical treatment to the automatic default.
-    // TDAS V5.4.1A4 correction #1 — the ONLY trustworthy live-price
-    // fallback is a genuine current market snapshot (_trustworthyLivePrice()
-    // — currentScanData only); entry.price is the persisted SIGNAL price
-    // from trade creation, never a stand-in for "now". If neither a
-    // detected breach nor a live snapshot exists, the exit price is left
-    // genuinely empty for the trader's actual execution entry rather than
-    // fabricating a number from either source.
-    const _winLivePrice = _trustworthyLivePrice(entry.symbol);
-    const _winDetection = _detectCloseClassification(entry, _winLivePrice);
+    // TDAS V5.4.1A5 — the ONLY trustworthy live-price fallback is the
+    // SAME Active Trade exact-timeframe authority the card itself uses
+    // (_trustworthyActiveTradeLivePrice() -> getActiveTradeSnapshotData(),
+    // never raw currentScanData). entry.price/entry.target are never used
+    // as a price source. If neither a detected breach nor a genuine live
+    // snapshot exists, the exit price is left empty for actual execution
+    // entry rather than fabricating a number.
+    // TDAS V5.4.1A5 correction — a genuinely CONTRADICTING detection (a
+    // real losing or B/E event is latched/detected, but Take Profit was
+    // clicked anyway) must NOT fall back to authoritative live price
+    // either — even though that price is genuine, using it under an
+    // incompatible category is exactly the semantically-impossible
+    // prefill this fix eliminates (owner doctrine §3: "conflicting
+    // economic buttons must not receive an incompatible live-price
+    // prefill"). Only the genuine ABSENCE of any detection — no latch, no
+    // live breach at all — still falls through to the ordinary
+    // discretionary live-price-or-empty path.
+    const _winDetection = _detectCloseClassification(entry);
     const _winBreachStop = (_winDetection && _winDetection.preset==='win') ? _winDetection.stop : null;
+    const _winContradicted = _winDetection != null && _winDetection.preset !== 'win';
+    const _winLivePrice = (_winBreachStop==null && !_winContradicted) ? _trustworthyActiveTradeLivePrice(entry) : null;
     const _winExitForPrefill = _winBreachStop != null ? _winBreachStop : _winLivePrice;
     const _winR = _winExitForPrefill != null ? _calcRealisedR(entry, _winExitForPrefill) : null;
     document.getElementById('outRMultiple').value = _winR != null ? _winR.toFixed(2) : '';
     document.getElementById('outExitPrice').value = _winExitForPrefill != null ? safeFixed(_winExitForPrefill, _winExitForPrefill >= 1000 ? 2 : 4) : '';
   } else if(o==='loss'){
-    // TDAS V5.1.1E — pre-fills the CONFIRMED ACTUAL stop that was actually
-    // breached (via the same _computeStopManagementState reconciliation
-    // used by the breach detector above), never the merely-recommended
-    // stop, when an actual stop has been confirmed. Required precedence:
-    // confirmed actual stop exists -> use it; no confirmed actual stop ->
-    // the recommended stop remains the fallback exactly as before. This
-    // is the exact dialog pre-fill this build's SUI/USDT SHORT fixture
-    // (entry 0.69460, recommended 0.71151, confirmed actual 0.68000)
-    // requires: 0.68000, never 0.71151.
-    const _lossMgmt = (typeof _computeStopManagementState === 'function') ? _computeStopManagementState(entry) : null;
-    const _lossActualStop = (_lossMgmt && _lossMgmt.confirmed && _lossMgmt.confirmedLevel != null) ? _lossMgmt.confirmedLevel : null;
-    const _lossStopForPrefill = _lossActualStop != null ? _lossActualStop : entry.stop;
-    // TDAS V5.1.1E1b — the "Loss" preset no longer hardcodes -1. A stop
-    // breach is not always a loss in R terms: if the confirmed actual
-    // stop that was hit is itself a profit-locking level (moved past
-    // entry), the realised R for THIS trade is genuinely positive, even
-    // though the exit mechanism was a stop breach. _calcRealisedR() uses
-    // the SAME original-initial-risk denominator as every other outcome
-    // path (win/manual) — only the exit price differs per branch. A
-    // genuine loss at the original stop level still correctly resolves
-    // to approximately -1 through this same calculation, unchanged in
-    // substance from before; only the case where the actual stop
-    // genuinely differs from the original is now correct instead of
-    // silently wrong.
+    // TDAS V5.1.1E — historically pre-filled the confirmed actual stop
+    // UNCONDITIONALLY whenever one existed, regardless of whether it was
+    // genuinely a LOSING breach. TDAS V5.4.1A5 fix — this was the exact
+    // live SOL production defect (Screenshot 3): clicking "Stop Loss" on
+    // a profitable +1.50R protection-stop trade showed 90.490/+1.50R as
+    // though it were a loss, which is semantically impossible. Stop Loss
+    // now mirrors the Take Profit branch exactly: the confirmed stop (or
+    // latched pending-exit stop) is used ONLY when detection has
+    // POSITIVELY identified a genuinely LOSING breach; a genuinely
+    // CONTRADICTING detection (a real profitable/B-E event is latched,
+    // but Stop Loss was clicked anyway) is likewise never rescued by an
+    // authoritative live-price fallback — both fields are left empty.
+    // Only the genuine absence of any detection falls through to the
+    // ordinary discretionary live-price-or-empty path. entry.stop (the
+    // original recommendation, never an actual placed stop) is no longer
+    // used as a fallback here either, for the same reason entry.target
+    // was retired from the Take Profit branch.
+    const _lossDetection = _detectCloseClassification(entry);
+    const _lossBreachStop = (_lossDetection && _lossDetection.preset==='loss') ? _lossDetection.stop : null;
+    const _lossContradicted = _lossDetection != null && _lossDetection.preset !== 'loss';
+    const _lossLivePrice = (_lossBreachStop==null && !_lossContradicted) ? _trustworthyActiveTradeLivePrice(entry) : null;
+    const _lossStopForPrefill = _lossBreachStop != null ? _lossBreachStop : _lossLivePrice;
     const _lossR = _lossStopForPrefill != null ? _calcRealisedR(entry, _lossStopForPrefill) : null;
-    document.getElementById('outRMultiple').value = _lossR != null ? _lossR.toFixed(2) : '-1';
+    document.getElementById('outRMultiple').value = _lossR != null ? _lossR.toFixed(2) : '';
     document.getElementById('outExitPrice').value=_lossStopForPrefill!=null?safeFixed(_lossStopForPrefill,_lossStopForPrefill>=1000?2:4):'';
   } else if(o==='be'){
     document.getElementById('outRMultiple').value='0';
@@ -25290,6 +25408,15 @@ function saveOutcome(){
   }
   entry.outcome = _derivedOutcome;
   entry.exitReason = classifyExitReason(entry, selectedOutcomeModal, _derivedOutcome);
+  // TDAS V5.4.1A5 — the pending exit-event latch is retired once the
+  // trade is actually closed and logged; it exists only to keep an open
+  // Active Trade's observed breach durable across renders/rebounds/
+  // reload (owner doctrine §6 — "trade completed / pending event cleared
+  // or retired"). A completed Journal row never needs it again.
+  entry.pendingExitReason = null;
+  entry.pendingExitStop = null;
+  entry.pendingExitDetectedAt = null;
+  entry.pendingExitProtectionStage = null;
   if(note){
     // Append close note as single-line timeline segment
     entry.note = appendNote(entry.note, 'Close', note);
@@ -28133,8 +28260,17 @@ async function _ensureActiveTradeLivePricing(){
     // change). A no-op for any trade whose protectionStage is still
     // 'NONE' (ladder progression never starts before the first SL is
     // confirmed, §B2) or genuinely legacy trades with no ladder fields.
+    // TDAS V5.4.1A5 correction — ALSO a no-op once a pending exit event is
+    // latched (owner doctrine §2): the trade is awaiting exit
+    // confirmation, so highestProtectionTriggerR/pendingProtectionStage
+    // must freeze at their exact values at the instant of the breach,
+    // never advance from a subsequent rebound price, until saveOutcome()
+    // resolves the trade (which clears the latch — see that function's
+    // own comment). Preserves the existing, unmodified ratchet mechanics
+    // for every trade that has NOT yet had a breach latched.
     const _ratchetChangedIds = [];
     active.forEach(e=>{
+      if(e.pendingExitReason != null) return; // exit event pending -- ladder progression frozen
       const px = prices[e.symbol];
       if(px==null) return;
       if(_advanceProtectionLadder(e, px)){
@@ -28147,6 +28283,53 @@ async function _ensureActiveTradeLivePricing(){
       if(DEBUG_MODE) console.log('[ProtectionRatchet] advanced for', _ratchetChangedIds.join(','));
       commitJournalChange('protectionRatchet', null).catch(err=>{
         console.warn('[ProtectionRatchet] commit error:', err && err.message);
+      });
+    }
+
+    // TDAS V5.4.1A5 — pending exit-event latch. A confirmed Active Trade
+    // stop breach is a historical EVENT once observed (owner doctrine
+    // §3/§6): the FIRST time this tick's freshly-fetched authoritative
+    // price shows the confirmed stop breached, the event is written once
+    // and NEVER overwritten by a later price — including a rebound back
+    // above/below the stop — so _detectCloseClassification() (the Close
+    // card/modal's single shared truth) can never "forget" an
+    // already-observed breach. Uses the SAME getStopBreachState()/
+    // calcTradeR() this tick's own ratchet already relies on — no second
+    // detection mechanism. Mechanism classification mirrors
+    // classifyExitReason()'s own 'loss'-branch reasoning (a stop hit,
+    // absent an explicit BE-sourced confirmation, is the initial SL) —
+    // not a duplicated rule, the same reasoning applied at detection time
+    // instead of at save time.
+    const _exitLatchChangedIds = [];
+    active.forEach(e=>{
+      if(e.pendingExitReason != null) return; // already latched -- never overwritten by a later price
+      const px = prices[e.symbol];
+      if(px==null) return;
+      if(!e.protectionStage || e.protectionStage==='NONE') return; // no confirmed stop exists at all yet
+      const breach = getStopBreachState(e, px);
+      if(!breach || !breach.breached || breach.stop==null) return;
+      const r = calcTradeR(e, breach.stop);
+      if(r==null) return;
+      const _tol = (typeof OUTCOME_BE_TOLERANCE_R === 'number') ? OUTCOME_BE_TOLERANCE_R : 0.01;
+      let _reason;
+      if(Math.abs(r) <= _tol){ _reason = 'BREAK_EVEN_STOP'; }
+      else if(r > 0){ _reason = 'PROFIT_PROTECTION_STOP'; }
+      else {
+        const _mgmtAtBreach = _computeStopManagementState(e);
+        _reason = (_mgmtAtBreach && _mgmtAtBreach.source==='BE') ? 'BREAK_EVEN_STOP' : 'INITIAL_SL';
+      }
+      e.pendingExitReason = _reason;
+      e.pendingExitStop = breach.stop;
+      e.pendingExitDetectedAt = new Date().toISOString();
+      e.pendingExitProtectionStage = e.protectionStage;
+      Object.assign(e, stampUpdate(e));
+      _exitLatchChangedIds.push(e.id);
+    });
+    if(_exitLatchChangedIds.length){
+      _exitLatchChangedIds.forEach(id=>sessionDirtyIds.add(id));
+      if(DEBUG_MODE) console.log('[PendingExitLatch] latched for', _exitLatchChangedIds.join(','));
+      commitJournalChange('pendingExitLatch', null).catch(err=>{
+        console.warn('[PendingExitLatch] commit error:', err && err.message);
       });
     }
 
