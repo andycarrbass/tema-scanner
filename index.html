@@ -2293,7 +2293,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // never existed — added. No TSE/Evaluation/Advisory/Trade-Ready/Scanner/
 // Watch/Setups/HTF/CHOP/200MA/RSI-ADX/protection-ladder-sequencing
 // change. Supersedes V5.4.1A4.
-const APP_BUILD = 'V5.4.1A5';
+const APP_BUILD = 'V5.4.2';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -6051,16 +6051,20 @@ function _setupPathFromValues(setupTf, oneHTimingEvidence) {
 }
 
 // TDAS V4.9.7 — canonical closed-candle execution-extension evidence.
-// Separate from (and never replacing) the existing, frozen, live-price-
-// based _marketEvidenceExtension() descriptive aggregate — this is a NEW,
-// additive, classifier-oriented object. Named provisional constants:
+// Additive, classifier-oriented object with its own stageSixEligible
+// semantics (see _executionExtensionFromValues() below) — distinct from
+// the general-purpose _marketEvidenceExtension() descriptive aggregate
+// above, which now (TDAS V5.4.2) also reads this same confirmed-candle
+// atrDistance (d.currentBarAtrDistance) rather than a second,
+// independently-computed value; the two remain separate FUNCTIONS with
+// separate output shapes/consumers, not a duplicated calculation of the
+// underlying distance itself. Named provisional constants:
 // EXECUTION_EXTENSION_ELEVATED_ATR/CLIMACTIC_ATR intentionally mirror the
 // existing MARKET_EVIDENCE_STRETCHED_ATR/CLIMACTIC_ATR numeric values
 // (2.5/3.0) without touching those original constants at all — this task
-// changes WHICH price feeds the distance calculation (closed-candle,
-// never live ticker) and HOW stretched/climactic map to a stage-demoting
-// decision, not the ATR multiples themselves. EXECUTION_RSI_NEAR_EXTREME_*
-// are genuinely new provisional calibration constants (audited: no
+// changes HOW stretched/climactic map to a stage-demoting decision, not
+// the ATR multiples themselves. EXECUTION_RSI_NEAR_EXTREME_* are
+// genuinely new provisional calibration constants (audited: no
 // "near-extreme" RSI concept existed anywhere before this task).
 const EXECUTION_EXTENSION_ELEVATED_ATR = 2.5;
 const EXECUTION_EXTENSION_CLIMACTIC_ATR = 3.0;
@@ -7363,18 +7367,31 @@ function _marketEvidenceTrendQuality(d) {
 // no such field currently exists in production data, so this
 // implementation never infers it from RSI band position alone (per spec
 // instruction) — flagged as a documented limitation, not invented.
+//
+// TDAS V5.4.2 — S-class fix. This function previously computed its own
+// atrDistance from the live ticker `d.price` (documented at the time as
+// "frozen, live-price-based" — that doctrine is now superseded; the
+// V5.4.2 audit confirmed it caused analytical `stretched`/`climactic`
+// wording to flip on Bitunix price refreshes with no new confirmed
+// candle, since d.price is continuously mutated by
+// _ensureActiveTradeLivePricing() between the periodic moments d.evidence
+// itself gets rebuilt). Now reads d.currentBarAtrDistance instead — the
+// SAME confirmed, closed-candle (lastClose-based) execution-extension
+// distance the existing executionExtension/Stage-6-eligibility gate
+// already established (V4.9.7, see that field's own header a few lines
+// below) — no new calculation, no third extension model, no new fetch.
+// If d.currentBarAtrDistance is unavailable, atrDistance stays null
+// (falls through to RSI-only / 'unknown') — this analytical path never
+// falls back to live price. atr/trendSMA remain read (both already
+// confirmed-candle-derived — the same values currentBarAtrDistance itself
+// was computed from) but are no longer combined with live price here.
 function _marketEvidenceExtension(d) {
   const st = (d && d.states) || {};
   const rsi = (st.rsi != null && isFinite(st.rsi)) ? st.rsi
             : (d && d.rsi != null && isFinite(d.rsi)) ? d.rsi : null;
-  const atr = (d && d.atr != null && isFinite(d.atr) && d.atr > 0) ? d.atr : null;
-  const price = (d && d.price != null && isFinite(d.price)) ? d.price : null;
-  const trendSMA = (d && d.trendSMA != null && isFinite(d.trendSMA)) ? d.trendSMA : null;
 
-  let atrDistance = null;
-  if (atr != null && price != null && trendSMA != null) {
-    atrDistance = Math.abs(price - trendSMA) / atr;
-  }
+  const atrDistance = (d && d.currentBarAtrDistance != null && isFinite(d.currentBarAtrDistance))
+    ? d.currentBarAtrDistance : null;
 
   if (atrDistance != null && atrDistance >= MARKET_EVIDENCE_CLIMACTIC_ATR) return 'climactic';
   if (atrDistance != null && atrDistance >= MARKET_EVIDENCE_STRETCHED_ATR) return 'stretched';
@@ -9891,6 +9908,376 @@ function _buildFourHTseAuthority(d) {
   };
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.2 — Canonical 1H Phase / Entry-Quality Evaluator               ║
+// ║                                                                          ║
+// ║  Answers ONE question: given a 4H setup that has ALREADY passed TR1-5    ║
+// ║  structural validation, is this a good place/time to take a FRESH entry  ║
+// ║  right now? Doctrine: "Strong trend != good fresh entry" / "4H finds and ║
+// ║  owns the swing, 1H tells us when to participate." Never re-evaluates    ║
+// ║  TR1-5 itself — this is a SEPARATE, additional consideration nested      ║
+// ║  inside canonical Advisory alongside TR1-5 (owner doctrine: Trade Ready  ║
+// ║  is a validated branch of Advisory, not a sibling authority).            ║
+// ║                                                                          ║
+// ║  Consumes ONLY already-computed V5.1/TSE evidence: tseOneHEvidence.      ║
+// ║  evidence — the SAME 1H evidence object TR3/TR4/TR5 already read (see    ║
+// ║  buildTradeReadyV1TseShadow()'s own header) — no new indicator, no new   ║
+// ║  fetch, no new numeric threshold. Every band reused below already        ║
+// ║  existed and was already tested before this task:                       ║
+// ║    RSI 70/30            -> MARKET_EVIDENCE_RSI_OVERBOUGHT/OVERSOLD       ║
+// ║                             (via the existing _oneHRsiTimingFromValue()) ║
+// ║    extension 2.5/3.0/4.0-> EXECUTION_EXTENSION_ELEVATED_ATR /            ║
+// ║                             EXECUTION_EXTENSION_CLIMACTIC_ATR /          ║
+// ║                             TRADE_READY_V1_CONFIG.oneHSevereExtensionAtr ║
+// ║    ADX rollover         -> ev.adxSlope.highRollingOver / .state          ║
+// ║                             (already computed by _adxSlopeFromValues())  ║
+// ║    UT freshness         -> classifyUtFreshness() fresh/recent/mature/    ║
+// ║                             stale bands (already the display standard)   ║
+// ║  Pure, no DOM/fetch/mutation, no new owner-approval-requiring threshold. ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+// TDAS V5.4.2 — TEMA17<->TEMA92 gap materiality floor, owner-selected
+// after real-market calibration (47 historical crosses across LINK/BNB/
+// TAO/ETH — see the V5.4.2 calibration report). Below this, TEMA sign is
+// not decisive on its own ("sign alone cannot block"); at or above it,
+// interpret with widening/narrowing per the calibrated doctrine.
+const TEMA92_GAP_MATERIALITY_ATR = 0.5;
+
+function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
+  const ev = tseOneHEvidence && tseOneHEvidence.evidence;
+  if ((direction !== 'long' && direction !== 'short') || !tseOneHEvidence
+      || tseOneHEvidence.status !== 'complete' || !ev || ev.status !== 'complete') {
+    return { known: false, severity: 'unknown', primaryReasonCode: null, cautionCodes: [], facts: {} };
+  }
+
+  const dirWord = direction === 'long' ? 'bullish' : 'bearish';
+  const oppWord = direction === 'long' ? 'bearish' : 'bullish';
+
+  // TEMA — primary early phase-transition/resumption evidence. Current
+  // 17-vs-92 relation is read directly (a materially changed phase must
+  // suppress a fresh entry even if UT/4H remain aligned); tema92Slope
+  // (the anchor line's OWN slope, already computed, no new field) is used
+  // only to distinguish a confirmed/advancing reversal from a lagging one
+  // — for wording, not for whether to suppress at all.
+  const temaAligned = ev.temaDirection === dirWord;
+  const temaOpposing = ev.temaDirection === oppWord;
+  const tema92SlopeOpposing = direction === 'long' ? ev.tema92Slope === 'falling' : ev.tema92Slope === 'rising';
+  const temaGenuineReversal = temaOpposing && tema92SlopeOpposing;
+
+  // UT — later directional confirmation, not primary phase detector.
+  // Freshness-aware via the existing classifyUtFreshness() display bands.
+  const utAligned = ev.utDirection === dirWord;
+  const utOpposing = ev.utDirection === oppWord;
+  const utFreshness = classifyUtFreshness(ev.utBarsSinceFlip);
+  const utOpposingStale = utOpposing && (utFreshness.key === 'mature' || utFreshness.key === 'stale');
+
+  // RSI — heat/reset context only, never a standalone veto. Reuses the
+  // existing 70/30 overbought/oversold bands via the existing helper.
+  const rsiTiming = _oneHRsiTimingFromValue(ev.rsi);
+  const rsiHeat = direction === 'long' ? rsiTiming.extreme === 'high' : rsiTiming.extreme === 'low';
+
+  // Extension — entry location, not direction. Reuses the existing
+  // 2.5 / 3.0 / 4.0 ATR bands already established for Stage-6 eligibility
+  // (EXECUTION_EXTENSION_ELEVATED_ATR/CLIMACTIC_ATR) and TR5
+  // (TRADE_READY_V1_CONFIG.oneHSevereExtensionAtr) — no new threshold.
+  const extAbs = ev.extensionAbsoluteAtr;
+  const extKnown = extAbs != null && isFinite(extAbs);
+  const extElevated = extKnown && extAbs >= EXECUTION_EXTENSION_ELEVATED_ATR;
+  const extClimactic = extKnown && extAbs >= EXECUTION_EXTENSION_CLIMACTIC_ATR;
+
+  // ADX — strength/decay, existing rollover flag only (ADX_HIGH_ROLLOVER_
+  // ADX_MIN-gated, already computed by _adxSlopeFromValues()).
+  const adxSlope = ev.adxSlope || { state: 'unknown', highRollingOver: false };
+  const adxDecaying = adxSlope.highRollingOver === true || adxSlope.state === 'falling';
+
+  // Intermediate structure — SMA135(1H), already established by TR4
+  // (side/slope-sign). TDAS V5.4.2 correction: this previously aliased
+  // ev.sma135SlopeAtr (the MA's own regression SLOPE magnitude) under the
+  // name sma135DistanceAtr — a mislabeling confirmed during the V5.4.2
+  // TEMA-materiality diagnostic. Now reads the genuine price-to-SMA135 ATR
+  // distance (ev.priceSma135DistanceAtr, additive on the evidence object —
+  // see _calcConfirmedEvidenceFromKlines()'s own header). Read here for
+  // location context only, still no new threshold, still not consulted by
+  // any suppression branch below.
+  const sma135Held = ev.priceAboveSma135 === (direction === 'long');
+  const sma135DistanceAtr = (ev.priceSma135DistanceAtr != null && isFinite(ev.priceSma135DistanceAtr)) ? ev.priceSma135DistanceAtr : null;
+
+  // TDAS V5.4.2 — TEMA separation measurement facts, additive/exposed only.
+  // NOT consulted by any suppression branch below yet (owner instruction:
+  // "do not yet change Trade Ready suppression logic") — Priority 1 below
+  // remains the exact pre-existing binary temaOpposing check, unmodified.
+  // Carried through to `facts` purely so the magnitude/trajectory data is
+  // visible for the pending materiality-threshold decision.
+  const tema92GapAtr = (ev.tema92GapAtr != null && isFinite(ev.tema92GapAtr)) ? ev.tema92GapAtr : null;
+  const tema92GapAtrPrevious = (ev.tema92GapAtrPrevious != null && isFinite(ev.tema92GapAtrPrevious)) ? ev.tema92GapAtrPrevious : null;
+  const tema92GapWidening = ev.tema92GapWidening || 'unknown';
+  const tema92CrossConfirmed = ev.tema92CrossConfirmed === true;
+
+  const cautionCodes = [];
+  let severity = 'clear';
+  let primaryReasonCode = null;
+
+  // TDAS V5.4.2 — TEMA materiality, owner-calibrated against real-market
+  // LINK/BNB/TAO/ETH data (47 real historical crosses inspected: cross-bar
+  // |gap/ATR| clusters low, median ~0.08-0.10; sustained real trends run
+  // materially higher, ~0.5-2+ ATR by a few bars out; ~36% of detected
+  // sign changes never exceeded 0.5 ATR and many re-flipped — noise, not
+  // phase change). gapMaterial === false means "sign alone cannot block"
+  // per doctrine — an unknown gap (atr missing) is treated the same way,
+  // fail-open on suppression, never fail-closed into blocking a setup on
+  // data TEMA can't actually speak to.
+  const gapMaterial = (tema92GapAtr != null) && (Math.abs(tema92GapAtr) >= TEMA92_GAP_MATERIALITY_ATR);
+
+  // TDAS V5.4.2 — shared corroboration/veto facts, computed once and
+  // exposed on `facts` so both the RESET pre-cross override below and
+  // _isEmergingConditionallyAdmissible() read the SAME single source
+  // rather than each recomputing their own version.
+  const priceOnCorrectSideOfTema92 = (ev.extensionSignedAtr != null && isFinite(ev.extensionSignedAtr))
+    ? (direction === 'long' ? ev.extensionSignedAtr > 0 : ev.extensionSignedAtr < 0)
+    : false;
+  const freshRecentOpposingUT = utOpposing && (utFreshness.key === 'fresh' || utFreshness.key === 'recent');
+  const freshRecentAlignedUT = utAligned && (utFreshness.key === 'fresh' || utFreshness.key === 'recent');
+  const adxRising = adxSlope.state === 'rising';
+  // "Existing canonical extension/location/other blockers remain clear" —
+  // the SAME Priority 2/3 conditions below, evaluated once here so the
+  // RESET override can require them to be clear without duplicating the
+  // suppression logic itself.
+  const otherEntryQualityBlockersPresent =
+    (extClimactic && rsiHeat && (adxDecaying || tema92SlopeOpposing)) || (extElevated && adxDecaying);
+
+  // TDAS V5.4.2 — pre-cross resumption override. Materially-opposed-but-
+  // NARROWING (RESET_IN_PROGRESS) is NOT an absolute TEMA veto: canonical
+  // Advisory may clear it BEFORE the actual 17/92 cross when closed-candle
+  // price has already reclaimed TEMA92 in the trade direction, there is no
+  // fresh/recent opposing UT, and either fresh/recent aligned UT OR rising
+  // 1H ADX corroborates the recovery, with every other canonical blocker
+  // still clear. Deliberately narrower than "not suppressed" — this ONLY
+  // overrides the narrowing/RESET case, never the widening/PULLBACK case
+  // (an actively deteriorating, widening gap is not eligible regardless of
+  // price location).
+  const resumptionDevelopingPreCross = gapMaterial && temaOpposing && tema92GapWidening === 'narrowing'
+    && priceOnCorrectSideOfTema92 && !freshRecentOpposingUT
+    && (freshRecentAlignedUT || adxRising) && !otherEntryQualityBlockersPresent;
+
+  // Priority 1 — TEMA MATERIALLY opposing the trade direction (owner-
+  // calibrated: |gap|>=0.5 ATR). A materially opposed AND WIDENING gap is
+  // active deterioration/pullback and always suppresses. Materially
+  // opposed but NARROWING is recovery/stabilisation — still suppresses to
+  // WATCH by default (RESET_IN_PROGRESS: "not resumption either"), UNLESS
+  // the pre-cross resumption override above holds, in which case
+  // canonical Advisory clears it ahead of the actual cross. Below the
+  // materiality floor, TEMA sign is NOT consulted for suppression at all
+  // — the direct fix for the confirmed noise-level (~0.02 ATR)
+  // false-suppression case from the V5.4.2 calibration.
+  if (gapMaterial && temaOpposing && !resumptionDevelopingPreCross) {
+    severity = 'suppress';
+    primaryReasonCode = (tema92GapWidening === 'widening')
+      ? (direction === 'long' ? 'PULLBACK_IN_PROGRESS' : 'BOUNCE_IN_PROGRESS')
+      : 'RESET_IN_PROGRESS';
+  }
+  // Priority 2 — strong anti-chase: climactic-or-worse extension + RSI
+  // heat + genuine weakening evidence (ADX decaying OR the TEMA anchor
+  // itself already sloping against the trade even though 17 has not
+  // fully crossed under 92 yet — an early-warning case, e.g. ETH-shaped).
+  // Unchanged by the materiality calibration — this path never depended
+  // on TEMA sign/materiality in the first place.
+  else if (extClimactic && rsiHeat && (adxDecaying || tema92SlopeOpposing)) {
+    severity = 'suppress'; primaryReasonCode = 'ENTRY_EXTENDED';
+    cautionCodes.push('RSI_HEAT');
+  }
+  // Priority 3 — elevated extension + genuine ADX decay, RSI heat not
+  // required (extension + weakening 1H execution alone, per doctrine).
+  else if (extElevated && adxDecaying) {
+    severity = 'suppress'; primaryReasonCode = 'ENTRY_EXTENDED';
+  }
+  // Not suppressed. Attach non-blocking cautions only (doctrine: RSI/
+  // extension/stale-UT alone are context, not blocks) — including the
+  // calibrated non-blocking states: materially aligned but narrowing
+  // ("cooling"), a below-materiality opposing gap ("transitional"), and a
+  // pre-cross resumption override (visible for context/transparency).
+  else {
+    if (rsiHeat) cautionCodes.push('RSI_HEAT');
+    if (extElevated) cautionCodes.push('EXTENSION_ELEVATED');
+    if (utOpposingStale) cautionCodes.push('UT_STALE_OPPOSING');
+    if (adxDecaying) cautionCodes.push('ADX_DECAYING');
+    if (!sma135Held) cautionCodes.push('SMA135_NOT_HELD');
+    if (gapMaterial && temaAligned && tema92GapWidening === 'narrowing') cautionCodes.push('TEMA_COOLING');
+    if (!gapMaterial && temaOpposing) cautionCodes.push('TEMA_TRANSITIONAL');
+    if (resumptionDevelopingPreCross) cautionCodes.push('RESUMPTION_DEVELOPING_PRECROSS');
+  }
+
+  return {
+    known: true, severity, primaryReasonCode, cautionCodes,
+    facts: {
+      temaDirection: ev.temaDirection, temaAligned, temaOpposing, temaGenuineReversal,
+      tema92GapAtr, tema92GapAtrPrevious, tema92GapWidening, tema92CrossConfirmed, gapMaterial,
+      utDirection: ev.utDirection, utFreshness: utFreshness.key, utAligned, utOpposingStale,
+      rsi: ev.rsi, rsiState: rsiTiming.state, rsiHeat,
+      extensionAbsoluteAtr: extAbs, extElevated, extClimactic,
+      adxSlopeState: adxSlope.state, adxDecaying, adxRising,
+      sma135Held, sma135DistanceAtr,
+      priceOnCorrectSideOfTema92, freshRecentOpposingUT, freshRecentAlignedUT,
+      otherEntryQualityBlockersPresent, resumptionDevelopingPreCross,
+    },
+  };
+}
+
+// Trader-facing headline suffix / detail sentence for each canonical
+// suppression reason. Direction-aware. The single wording source for
+// entry-quality-suppressed WATCH cards — never duplicated at a render site.
+function _oneHPhaseReasonText(reasonCode, dirWord) {
+  switch (reasonCode) {
+    case 'RESET_IN_PROGRESS':
+      return { headlineSuffix: 'RESET IN PROGRESS',
+        detail: '4H regime remains ' + dirWord + ', but 1H has not yet resumed. Wait for ' + dirWord + ' structure to resume.' };
+    case 'PULLBACK_IN_PROGRESS':
+      return { headlineSuffix: 'PULLBACK IN PROGRESS',
+        detail: '4H trend remains strong, but 1H is pulling back against it. Wait for 1H structure to stabilise and resume.' };
+    case 'BOUNCE_IN_PROGRESS':
+      return { headlineSuffix: 'BOUNCE IN PROGRESS',
+        detail: '4H trend remains strong, but 1H is bouncing against it. Wait for 1H structure to stabilise and resume.' };
+    case 'ENTRY_EXTENDED':
+      return { headlineSuffix: 'ENTRY EXTENDED',
+        detail: 'Strong 4H trend, but 1H entry is extended with weakening execution. Wait for a reset.' };
+    default:
+      return { headlineSuffix: null, detail: null };
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.2 — EMERGING Conditional Admission                            ║
+// ║                                                                          ║
+// ║  Settled product doctrine: EMERGING is a conditional admission state,    ║
+// ║  not an automatic TR1 failure. TR1 itself (tradeReadyV1Check1TseShadow)  ║
+// ║  is UNTOUCHED — it still fails EMERGING on its own terms, preserving     ║
+// ║  TR1 as a pure, narrow, auditable check. This function is the ONLY      ║
+// ║  place that may override that failure, and only when EVERY other TR     ║
+// ║  check has already passed independently (conditional admission never    ║
+// ║  substitutes for trend quality / execution regime / intermediate        ║
+// ║  support / extension — those remain fully enforced) AND the 1H phase    ║
+// ║  evaluator shows convincing, materially-calibrated resumption: material ║
+// ║  (>=0.5 ATR) TEMA alignment, WIDENING (not merely non-suppressed),      ║
+// ║  closed-candle price already on the correct side of TEMA92, no fresh/   ║
+// ║  recent OPPOSING UT (still materially adverse, still a veto), and       ║
+// ║  corroboration from either fresh/recent ALIGNED UT or rising 1H ADX     ║
+// ║  (either one — UT is later confirmation, not mandatory phase authority; ║
+// ║  TEMA can identify resumption earlier). Mature/stale UT never           ║
+// ║  independently vetoes. Weak/mixed/recovering 1H (cooling, transitional, ║
+// ║  or merely non-suppressed-but-ambiguous) does not qualify and remains   ║
+// ║  WATCH, per doctrine.                                                   ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function _isEmergingConditionallyAdmissible(tr, entryQuality) {
+  if (!tr || tr.sourcePhase !== 'EMERGING') return false;
+  const c = tr.checks;
+  if (!c || !c.directionCoherent || c.directionCoherent.status !== 'fail') return false;
+  // Every OTHER TR check must already have passed on its own — conditional
+  // admission concerns the phase check alone, never a substitute for the
+  // other four.
+  const othersAllPass = c.trendQuality && c.trendQuality.status === 'pass'
+    && c.executionRegime && c.executionRegime.status === 'pass'
+    && c.intermediateTrendSupport && c.intermediateTrendSupport.status === 'pass'
+    && c.extension && c.extension.status === 'pass';
+  if (!othersAllPass) return false;
+  if (!entryQuality || !entryQuality.known || entryQuality.severity !== 'clear') return false;
+  const f = entryQuality.facts;
+  const materialAligned = !!(f.temaAligned && f.gapMaterial);
+  const widening = f.tema92GapWidening === 'widening';
+  // TDAS V5.4.2 — UT is corroborating evidence, NOT a mandatory phase
+  // authority (owner doctrine: "UT is later confirmation... TEMA can
+  // identify resumption earlier"). Fresh/recent OPPOSING UT remains
+  // materially adverse and still vetoes; mature/stale UT (opposing OR
+  // aligned) is NOT independently consulted either way. Corroboration is
+  // satisfied by fresh/recent ALIGNED UT OR rising 1H ADX — either one,
+  // not both, and neither is itself mandatory the way UT alone used to be.
+  if (f.freshRecentOpposingUT) return false;
+  const corroborated = !!(f.freshRecentAlignedUT || f.adxRising);
+  const priceCorrectSide = !!f.priceOnCorrectSideOfTema92;
+  return materialAligned && widening && priceCorrectSide && corroborated;
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.2 — ONE Canonical Advisory Decision                           ║
+// ║                                                                          ║
+// ║  The single function permitted to answer WAIT/WATCH/TRADE_READY for a    ║
+// ║  4H candidate. Combines TR1-5 structural validation (_buildFourHTse-      ║
+// ║  Authority(), unchanged) with the 1H phase/entry-quality evaluator above ║
+// ║  and the existing Counter-HTF shadow. Called from exactly ONE place —    ║
+// ║  _buildScannerAdvisory()'s existing TSE-actionable branch — so every     ║
+// ║  existing consumer of buildAdvisory()/_buildScannerAdvisory() (Scanner,  ║
+// ║  Watch, Setups, buildCanonicalEval) automatically receives the same      ║
+// ║  single answer. No new call site, no parallel authority.                 ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function buildCanonicalAdvisoryDecision(d, tseAuth) {
+  const dirWord = tseAuth.direction === 'LONG' ? 'long' : (tseAuth.direction === 'SHORT' ? 'short' : null);
+
+  if (!tseAuth.actionable) {
+    // TDAS V5.4.2 — EMERGING conditional admission, tried first. Only
+    // engages for the specific 'not_trade_ready' classification (a
+    // genuine, valid TR1-5 non-ready result) — never for
+    // 'technical_failure' (missing/malformed TSE shadow).
+    if (tseAuth.classification === 'not_trade_ready' && dirWord) {
+      const trForEmerging = d.tradeReadyV1TseShadow;
+      const eqForEmerging = buildOneHPhaseEntryQuality(dirWord, d.tradeReadyV1TseOneHEvidence, d.v51Evidence);
+      if (_isEmergingConditionallyAdmissible(trForEmerging, eqForEmerging)) {
+        const shadow = d.counterHtfShadow;
+        const counterHtf = !!(shadow && shadow.eligible === true && shadow.direction === tseAuth.direction);
+        return {
+          action: counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
+          direction: tseAuth.direction, primaryReasonCode: null,
+          cautionCodes: ['EMERGING_CONDITIONAL_ADMISSION'],
+          nextCondition: null, entryQuality: eqForEmerging, source: 'emerging_conditional_admission',
+        };
+      }
+    }
+    // TR1-5 already resolved non-ready/technical-failure — canonical
+    // decision mirrors that unchanged. Entry-quality is only relevant
+    // once structural validation has already passed (owner doctrine:
+    // Trade Ready is a validated branch of Advisory, evaluated after it).
+    return {
+      action: (tseAuth.classification === 'technical_failure') ? 'UNAVAILABLE' : 'WATCH',
+      direction: tseAuth.direction, primaryReasonCode: null, cautionCodes: [], nextCondition: null,
+      entryQuality: { known: false, severity: 'unknown', primaryReasonCode: null, cautionCodes: [], facts: {} },
+      source: 'tr1_5',
+    };
+  }
+
+  const entryQuality = buildOneHPhaseEntryQuality(dirWord, d.tradeReadyV1TseOneHEvidence, d.v51Evidence);
+
+  if (entryQuality.known && entryQuality.severity === 'suppress') {
+    const txt = _oneHPhaseReasonText(entryQuality.primaryReasonCode, dirWord === 'long' ? 'bullish' : 'bearish');
+    return {
+      action: 'WATCH', direction: tseAuth.direction,
+      primaryReasonCode: entryQuality.primaryReasonCode, cautionCodes: entryQuality.cautionCodes,
+      nextCondition: txt.detail, entryQuality, source: 'entry_quality_suppressed',
+    };
+  }
+
+  // TR1-5 passed AND entry-quality does not suppress — genuine Trade
+  // Ready (or Counter-HTF, unchanged from TR1-5), with at most one
+  // non-blocking caution attached (doctrine: "at most one secondary
+  // caution where genuinely useful").
+  return {
+    action: tseAuth.counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
+    direction: tseAuth.direction, primaryReasonCode: null,
+    cautionCodes: (entryQuality.known && entryQuality.cautionCodes.length ? [entryQuality.cautionCodes[0]] : []),
+    nextCondition: null, entryQuality, source: 'tr1_5_and_entry_quality',
+  };
+}
+
+// Short, single-caution wording — "at most one secondary caution where
+// genuinely useful" per doctrine. Appended (never replacing) the existing
+// TR1-5/Narrative detail text on a genuine Trade Ready/Counter-HTF card.
+const _ONE_H_PHASE_CAUTION_TEXT = {
+  RSI_HEAT: '1H RSI is running hot — size and timing accordingly.',
+  EXTENSION_ELEVATED: '1H entry is somewhat extended from structure.',
+  UT_STALE_OPPOSING: '1H UT remains opposed but is stale, lagging the resumption.',
+  ADX_DECAYING: '1H ADX is decaying — momentum may be cooling.',
+  SMA135_NOT_HELD: '1H SMA135 is not yet reclaimed.',
+  TEMA_COOLING: '1H TEMA gap is narrowing — momentum may be cooling.',
+  TEMA_TRANSITIONAL: '1H TEMA17/92 are near-converged — treat as transitional, not a confirmed phase.',
+  RESUMPTION_DEVELOPING_PRECROSS: '1H TEMA has not yet crossed, but price has reclaimed TEMA92 with confirming evidence — resumption developing.',
+  EMERGING_CONDITIONAL_ADMISSION: '4H structure is still emerging — admitted on strong, fresh 1H resumption evidence.',
+};
+
 // Small routing helper — used only at Scanner render-routing sites to
 // prevent a TSE-actionable 4H card from being mis-routed to the compact
 // neutral bucket because legacy d.signal happens to read 'neutral'. Reuses
@@ -11802,6 +12189,14 @@ function _buildScannerAdvisory(d) {
   if (DIAG.fourHTseAuthorityLive === true && d && d.tf === '4h') {
     const _tseAuth = _buildFourHTseAuthority(d);
     if (_tseAuth.engaged) {
+      // TDAS V5.4.2 — ONE canonical Advisory decision, computed once, used
+      // by every branch below. Combines TR1-5 (already-computed _tseAuth,
+      // untouched) with the 1H phase/entry-quality evaluator — see
+      // buildCanonicalAdvisoryDecision()'s own header. This is the ONLY
+      // place permitted to downgrade a TR1-5-actionable result to WATCH,
+      // or to attach a non-blocking entry-quality caution to a genuine
+      // Trade Ready/Counter-HTF result.
+      const _canonicalDecision = buildCanonicalAdvisoryDecision(d, _tseAuth);
       // TDAS V5.3.3B — Narrative Engine, presentation-only overlay. Computed
       // once, used by all three branches below. `action`/`direction`/
       // `tradeReady`/`readyLabel`/`tradeReadyBlockedReasons`/`authoritySource`
@@ -11819,12 +12214,42 @@ function _buildScannerAdvisory(d) {
           _narrCtx = null; _narrAdv = null;
         }
       }
+      if (_tseAuth.actionable && _canonicalDecision.action === 'WATCH') {
+        // TDAS V5.4.2 — entry-quality suppression. TR1-5 structural
+        // validation passed, but the 1H phase/entry-quality evaluator
+        // determined this is not a good FRESH entry right now (owner
+        // doctrine: "strong trend != good fresh entry"). TR1-5's own
+        // pass/fail is untouched — this is Advisory overriding action,
+        // not Trade Ready being redefined.
+        const _txt = _oneHPhaseReasonText(_canonicalDecision.primaryReasonCode, _tseAuth.direction === 'LONG' ? 'bullish' : 'bearish');
+        return {
+          mode: 'scanner', action: 'WATCH',
+          headline: 'WATCH ' + _tseAuth.direction + (_txt.headlineSuffix ? (' \u2014 ' + _txt.headlineSuffix) : ''),
+          detail: _canonicalDecision.nextCondition || _txt.detail || 'Entry timing does not support a fresh entry right now.',
+          summary: null,
+          direction: _tseAuth.direction, tradeReady: false, readyLabel: null,
+          supporting: [], blocking: [], warnings: [],
+          tradeReadyBlockedReasons: _canonicalDecision.primaryReasonCode ? [_canonicalDecision.primaryReasonCode] : [],
+          next: _canonicalDecision.nextCondition || '',
+          authoritySource: 'canonical_advisory_v542',
+          primaryReasonCode: _canonicalDecision.primaryReasonCode,
+          cautionCodes: _canonicalDecision.cautionCodes,
+          entryQuality: _canonicalDecision.entryQuality,
+        };
+      }
       if (_tseAuth.actionable) {
         const _interpReady = _buildFourHTseInterpretation(d.tradeReadyV1TseShadow, d.trendState, d.counterHtfShadow);
+        // TDAS V5.4.2 — at most one non-blocking entry-quality caution,
+        // appended to the existing detail text (never replacing it, never
+        // changing action/headline/tradeReady — those remain TR1-5's own).
+        let _detail = _narrAdv ? _narrAdv.detail : (_tseAuth.detail || _interpReady.explanation);
+        const _capCode = (_canonicalDecision.cautionCodes && _canonicalDecision.cautionCodes[0]) || null;
+        const _capText = _capCode ? _ONE_H_PHASE_CAUTION_TEXT[_capCode] : null;
+        if (_capText) _detail = _detail + ' ' + _capText;
         return {
-          mode: 'scanner', action: _tseAuth.counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
+          mode: 'scanner', action: _canonicalDecision.action,
           headline: _tseAuth.headline,
-          detail: _narrAdv ? _narrAdv.detail : (_tseAuth.detail || _interpReady.explanation),
+          detail: _detail,
           // TDAS V5.3.3B note (audit §7): `summary` is confirmed unreachable
           // — no consumer in the codebase reads advisory.summary; the
           // rendered Technical-box headline comes from buildTechnicalSumm-
@@ -11839,6 +12264,8 @@ function _buildScannerAdvisory(d) {
           supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [],
           next: _tseAuth.counterHtf ? 'Treat as a counter-trend setup with reduced conviction.' : '',
           authoritySource: 'tse_4h',
+          primaryReasonCode: null, cautionCodes: _canonicalDecision.cautionCodes,
+          entryQuality: _canonicalDecision.entryQuality,
         };
       }
       if (_tseAuth.classification === 'technical_failure') {
@@ -11848,6 +12275,31 @@ function _buildScannerAdvisory(d) {
           direction: _tseAuth.direction, tradeReady: false, readyLabel: null,
           supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [_tseAuth.reason],
           next: '', authoritySource: 'tse_4h',
+          primaryReasonCode: null, cautionCodes: [], entryQuality: _canonicalDecision.entryQuality,
+        };
+      }
+      if (!_tseAuth.actionable && (_canonicalDecision.action === 'TRADE_READY' || _canonicalDecision.action === 'COUNTER_HTF')) {
+        // TDAS V5.4.2 — EMERGING conditional admission. TR1-5's own
+        // directionCoherent check failed (4H phase EMERGING), but every
+        // OTHER TR check independently passed and the 1H phase evaluator
+        // showed convincing, materially-calibrated resumption — see
+        // _isEmergingConditionallyAdmissible()'s own header for the exact
+        // bar. This is the one case where canonical Advisory's action
+        // genuinely diverges from TR1-5's raw actionable flag (owner
+        // doctrine: "EMERGING is a conditional admission state, not an
+        // automatic TR1 failure") — TR1 itself remains unmodified and
+        // still fails EMERGING on its own terms; this is Advisory
+        // overriding on top of that, not TR1 being redefined.
+        return {
+          mode: 'scanner', action: _canonicalDecision.action,
+          headline: (_canonicalDecision.action === 'COUNTER_HTF' ? 'TRADE READY \u2014 COUNTER-HTF ' : 'TRADE READY ') + _tseAuth.direction,
+          detail: 'Emerging 4H structure admitted on strong, fresh 1H resumption evidence.',
+          summary: null,
+          direction: _tseAuth.direction, tradeReady: true, readyLabel: 'TRADE READY',
+          supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [],
+          next: _canonicalDecision.action === 'COUNTER_HTF' ? 'Treat as a counter-trend setup with reduced conviction.' : '',
+          authoritySource: 'canonical_advisory_v542',
+          primaryReasonCode: null, cautionCodes: _canonicalDecision.cautionCodes, entryQuality: _canonicalDecision.entryQuality,
         };
       }
       // TDAS V5.3.2 — genuine, valid TSE non-ready result (WATCH/
@@ -11870,6 +12322,7 @@ function _buildScannerAdvisory(d) {
         direction: _watchDir, tradeReady: false, readyLabel: null,
         supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [_tseAuth.reason],
         next: '', authoritySource: 'tse_4h',
+        primaryReasonCode: null, cautionCodes: [], entryQuality: _canonicalDecision.entryQuality,
       };
     }
   }
@@ -12236,18 +12689,22 @@ function buildCanonicalEval(d, symbol, entry, precomputedHtfRelation) {
     validation: {
       status: tr ? tr.status : null,
       checks: tr ? tr.checks : null,
-      // `blocker`/`nextCondition` intentionally left null. The only
-      // existing computation of "which TR check is the blocker" lives
-      // inside the 4H Narrative Engine's context builder
-      // (buildFourHNarrativeContext().decision.blocker) — presentation-
-      // layer per architecture doctrine. `nextCondition` is itself a
-      // hardcoded null placeholder in that same existing object today (no
-      // authoritative non-presentation source produces it yet). Reaching
-      // into Narrative for either risks making it a second decision
-      // authority; left transitional and reported to architecture review.
-      blocker: null,
-      nextCondition: null,
+      // TDAS V5.4.2 — `blocker` now sourced from the SAME canonical
+      // decision _buildScannerAdvisory() itself computed this cycle
+      // (buildCanonicalAdvisoryDecision(), via _advForEval.primaryReasonCode)
+      // rather than left null — Advisory now owns this fact instead of the
+      // Narrative Engine's context builder computing a second, presentation
+      // -layer-only version of it. `nextCondition` is likewise sourced from
+      // the same canonical decision (entry-quality suppression's own
+      // trader-facing "what's missing" sentence) rather than hardcoded null.
+      blocker: (_advForEval && _advForEval.primaryReasonCode) || null,
+      nextCondition: (_advForEval && _advForEval.next) || null,
     },
+    // TDAS V5.4.2 — canonical entry-quality result and non-blocking
+    // cautions, additive fields. `cautions` is capped at one entry per
+    // doctrine ("at most one secondary caution where genuinely useful").
+    cautions: (_advForEval && _advForEval.cautionCodes && _advForEval.cautionCodes.length) ? [_advForEval.cautionCodes[0]] : [],
+    entryQuality: (_advForEval && _advForEval.entryQuality) || null,
     counterHtf: d.counterHtfShadow || null,
     reasons: (_advForEval && _advForEval.tradeReadyBlockedReasons) ? _advForEval.tradeReadyBlockedReasons : [],
   };
@@ -17124,6 +17581,12 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
     const _tema92Negligible = Math.abs(_tema92Delta) < Math.abs(tema92Prev) * 0.0001;
     tema92Slope = _tema92Negligible ? 'flat' : (_tema92Delta > 0 ? 'rising' : 'falling');
   }
+  // TDAS V5.4.2 — TEMA17's own previous confirmed value, exposed by the
+  // exact same pattern as tema92Prev immediately above (t17a already holds
+  // the full confirmed TEMA17 series — the previous value was already
+  // computed and discarded). Measurement only; no new indicator, no
+  // classification, no change to temaDirection/tema92Slope above.
+  const tema17Prev = t17a.length >= 2 ? t17a[t17a.length - 2] : null;
 
   const lastClosedPrice = closedC[closedC.length - 1];
   // TDAS V5.4.0F2 — this block previously duplicated the 200MA
@@ -17173,6 +17636,48 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
     extensionAbsoluteAtr = Math.abs(extensionSignedAtr);
   }
 
+  // TDAS V5.4.2 — TEMA17<->TEMA92 separation, ATR-normalised, current and
+  // previous confirmed bar. Owner instruction: measurement only, no
+  // materiality threshold selected here — this is the raw factual layer a
+  // future threshold decision will read, not a classification. Reuses the
+  // SAME atr already computed for extensionSignedAtr above for BOTH bars
+  // (a small, explicitly-acknowledged approximation — ATR itself moves
+  // slowly bar-to-bar, and computing a second, bar-shifted ATR window
+  // would be a genuinely new calculation, not a factual exposure of
+  // already-computed values; if a precise per-bar ATR is ever required,
+  // that is a separate, larger addition, not part of this task).
+  let tema92GapAtr = null, tema92GapAtrPrevious = null, tema92GapWidening = 'unknown', tema92CrossConfirmed = false;
+  if (atr != null && atr > 0 && tema17 != null && tema92 != null) {
+    tema92GapAtr = Math.round(((tema17 - tema92) / atr) * 1000) / 1000;
+  }
+  if (atr != null && atr > 0 && tema17Prev != null && tema92Prev != null) {
+    tema92GapAtrPrevious = Math.round(((tema17Prev - tema92Prev) / atr) * 1000) / 1000;
+  }
+  if (tema92GapAtr != null && tema92GapAtrPrevious != null) {
+    tema92GapWidening = Math.abs(tema92GapAtr) > Math.abs(tema92GapAtrPrevious) ? 'widening'
+      : (Math.abs(tema92GapAtr) < Math.abs(tema92GapAtrPrevious) ? 'narrowing' : 'unchanged');
+    // A confirmed-bar cross: the sign of the gap between the previous
+    // confirmed bar and this one genuinely flipped (zero-gap treated as
+    // neither sign, never itself counted as a cross).
+    const _prevSign = tema92GapAtrPrevious > 0 ? 1 : (tema92GapAtrPrevious < 0 ? -1 : 0);
+    const _curSign = tema92GapAtr > 0 ? 1 : (tema92GapAtr < 0 ? -1 : 0);
+    tema92CrossConfirmed = (_prevSign !== 0 && _curSign !== 0 && _prevSign !== _curSign);
+  }
+
+  // TDAS V5.4.2 — true price-to-SMA135 ATR distance, additive. Distinct
+  // from the existing sma135SlopeAtr/sma135WindowSlopeAtr fields below
+  // (which measure the MA's own regression SLOPE magnitude, not price's
+  // distance from it) — that distinction was confirmed conflated in an
+  // earlier V5.4.2 diagnostic (buildOneHPhaseEntryQuality()'s own
+  // sma135DistanceAtr field wrongly aliased sma135SlopeAtr; corrected at
+  // that call site alongside this addition). Same formula shape as the
+  // existing extensionSignedAtr (price-to-TEMA92) above — reused pattern,
+  // not a new calculation family.
+  let priceSma135DistanceAtr = null;
+  if (atr != null && atr > 0 && sma135 != null) {
+    priceSma135DistanceAtr = Math.round(((lastClosedPrice - sma135) / atr) * 1000) / 1000;
+  }
+
   const rsi = calcRSI(closedC, 14);
   const adxCalc = calcADXWithHistory(closedH, closedL, closedC, ADX_PERIOD, ADX_SLOPE_LOOKBACK_BARS);
   const adx = adxCalc.value;
@@ -17190,9 +17695,18 @@ function _calcConfirmedEvidenceFromKlines(symbol, rawKlines, timeframe) {
     utDirection: utBotRaw.direction === 1 ? 'bullish' : (utBotRaw.direction === -1 ? 'bearish' : 'unknown'),
     utBarsSinceFlip: utBotRaw.barsAgoFlip != null ? utBotRaw.barsAgoFlip : null,
     tema17, tema92, temaDirection, tema92Slope,
+    // TDAS V5.4.2 — additive TEMA-separation measurement facts. Values
+    // only, no classification/threshold — see this block's own header
+    // comment above the calculation for the full rationale.
+    tema17Previous: tema17Prev, tema92Previous: tema92Prev,
+    tema92GapAtr, tema92GapAtrPrevious, tema92GapWidening, tema92CrossConfirmed,
     sma200, sma200Previous, sma200SlopeDelta, sma200SlopeAtr, sma200SlopeState, priceAboveSma200,
     sma135, sma135Slope, sma135Previous: sma135Prev, priceAboveSma135,
     sma135SlopeAtr: sma135SlopeInfo.slopeAtr, sma135WindowSlopeAtr: sma135SlopeInfo.windowSlopeAtr, sma135SlopeState: sma135SlopeInfo.state,
+    // TDAS V5.4.2 — true price-to-SMA135 ATR distance, additive (distinct
+    // from sma135SlopeAtr immediately above, which is the MA's own slope
+    // magnitude, not price's distance from it).
+    priceSma135DistanceAtr,
     atr, extensionAnchor: 'TEMA92', extensionSignedAtr, extensionAbsoluteAtr,
     rsi, adx, adxSlope, adxPrevious: adxCalc.prevValue,
     source: 'confirmed_closed_candles', fetchedAt,
@@ -18396,11 +18910,17 @@ async function calcPair(symbol,tf){
   // fetch, no separate indicator implementation. previousBarAtrDistance
   // mirrors the exact shift-the-window-and-recompute technique already
   // established by T1's prevMa200 and T3's chop detection. currentBar*
-  // uses lastClose (the genuinely closed candle's own price) rather than
-  // the live ticker `price` used by the existing descriptive
-  // _marketEvidenceExtension() — this is the specific fix for the
-  // confirmed V4.9.5 audit finding that live intra-candle price could
-  // create a stage-demoting result.
+  // uses lastClose (the genuinely closed candle's own price), never the
+  // live ticker `price`.
+  //
+  // TDAS V5.4.2 — this field (currentBarAtrDistance) is now ALSO the
+  // single source _marketEvidenceExtension() reads for its `stretched`/
+  // `climactic` classification (see that function's own header). Prior to
+  // V5.4.2, that function computed its own distance from live `d.price`
+  // instead — the confirmed root cause of Active Trade Context wording
+  // flipping on Bitunix price refreshes with no new confirmed candle.
+  // That doctrine is superseded; both consumers now share this one
+  // confirmed-candle value, never a third parallel computation.
   const currentBarAtrDistance = (atr != null && atr > 0 && trendSMA != null) ? Math.abs(lastClose - trendSMA) / atr : null;
   const _prevClosedPrice = closes.length >= 2 ? closes[closes.length-2] : null;
   const _prevAtr = (highs.length >= 2 && lows.length >= 2 && closes.length >= 2) ? calcATR(highs.slice(0,-1), lows.slice(0,-1), closes.slice(0,-1), 14) : null;
@@ -21479,10 +21999,27 @@ function renderCard(symbol,d){
   // own legitimate uses elsewhere: sorting, persistence, Confluence
   // population — none of which this task touches). Fails closed: unknown
   // Evaluation (highConvictionKnown!==true) never shows a star.
+  //
+  // TDAS V5.4.2 — settled doctrine: Trade Ready is permission to enter now;
+  // the star is a subordinate Premium/High-Conviction subset of an
+  // ALREADY-ready setup, never independent permission
+  // (showGoldStar = canonicalAdvisory.action==='TRADE_READY' &&
+  // existingHighConvictionQuality===true). The Stage-10 HC quality
+  // calculation itself (d.authoritativeClassification.highConviction) is
+  // completely unmodified — only its role changes, for 4H: it can no
+  // longer show a star on its own, only as a subordinate fact once
+  // canonical Advisory (d.eval.advisoryState.action) has already granted
+  // TRADE_READY. Counter-HTF is deliberately excluded (reduced-conviction
+  // by definition, matches the sort-key gate). Standalone 1H has no
+  // canonical Advisory authority yet (deferred beyond V5.4.2) — unchanged.
+  const _fourHCanonicalReadyForStar = (d.tf === '4h')
+    ? !!(d.eval && d.eval.advisoryState && d.eval.advisoryState.action === 'TRADE_READY')
+    : true;
   const _authoritativeHighConvictionForStar = !!(
     d.authoritativeClassification &&
     d.authoritativeClassification.highConvictionKnown === true &&
-    d.authoritativeClassification.highConviction === true
+    d.authoritativeClassification.highConviction === true &&
+    _fourHCanonicalReadyForStar
   );
   const _fibRetrace618 = (fibRetrace618!=null&&isFinite(fibRetrace618))?fibRetrace618:null;
   const _stop15 = safeNum(stop15);
@@ -26125,7 +26662,31 @@ function _computeWatchSummary(watchesAll){
 function renderWatchPage(){
   const watchesAll=journal.filter(j=>isActiveWatch(j));
   const oneH = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='1h');
-  const fourH = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='4h');
+  // TDAS V5.4.2 — canonical lifecycle promotion. A 4H Watch record whose
+  // CURRENT canonical Advisory has already resolved to Trade Ready/
+  // Counter-HTF (resolveCanonicalLifecycle()'s own §C: "Trade Ready
+  // promotion — automatic, from either origin") is filtered out of the
+  // visible Watch list here — it already appears in Setups
+  // (_setupsTradeReadyCandidates()/_latestFourHSetupsSnapshot, which
+  // independently and correctly reads the SAME d.eval.advisoryState.action
+  // — no new authority, no duplicate computation). The underlying journal
+  // record is completely untouched (still isActiveWatch===true, still
+  // present for history) so it returns to this list automatically the
+  // moment canonical Advisory is no longer Trade Ready (resolveCanonical-
+  // Lifecycle()'s own §B/D: existing Watch ownership routes back to
+  // Watch). This is the minimum wiring resolving the DI-BNB-01-shaped
+  // defect ("persisted LONG WATCH; Advisory TRADE READY LONG" simultaneously
+  // visible) confirmed by the V5.4.2 read-only audit — resolveCanonical-
+  // Lifecycle() itself is unmodified; this is its first real consumer.
+  const fourHAll = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='4h');
+  const fourH = fourHAll.filter(function(j){
+    try {
+      const _liveRead = getWatchSnapshotData(j);
+      const _liveD = _liveRead && _liveRead.data;
+      const _destination = _liveD && _liveD.eval && _liveD.eval.lifecycle && _liveD.eval.lifecycle.destination;
+      return _destination !== 'setups';
+    } catch (e) { return true; } // fail open — never hide a Watch record on error
+  });
 
   const summary = _computeWatchSummary(watchesAll);
   const statsEl = document.getElementById('watch-page-stats');
@@ -26558,7 +27119,23 @@ function renderWatchCard(e){
   const litCount = evidence.passed;
   // Watch card status — visual guidance, not enforcement. Take Trade is
   // always enabled regardless of condition count.
-  const fullConf  = _tfMatches && litCount === 5;
+  //
+  // TDAS V5.4.2 — Watch Progress is a subordinate presentation checklist,
+  // not an independent readiness authority (owner doctrine). Smallest safe
+  // change: for a 4H watch, "full confirmation" (5/5, green) may no longer
+  // be SHOWN when canonical Advisory (d.eval.advisoryState.action) itself
+  // disagrees that this is a fresh-entry-ready setup right now — the exact
+  // DI-BNB-01-shaped contradiction the V5.4.2 audit confirmed ("Watch
+  // Progress 5/5" alongside a non-ready canonical Advisory). The five
+  // checkpoints/labels/thresholds themselves (buildWatchEvidenceModel())
+  // are completely unmodified — only the "full confirmation" visual state
+  // is now gated by canonical Advisory for 4H. Standalone 1H (no canonical
+  // Advisory authority yet, deferred beyond V5.4.2) is unchanged.
+  const _fourHCanonicalReadyForProgress = (e.tf === '4h')
+    ? !!(liveData && liveData.eval && liveData.eval.advisoryState
+      && (liveData.eval.advisoryState.action === 'TRADE_READY' || liveData.eval.advisoryState.action === 'COUNTER_HTF'))
+    : true;
+  const fullConf  = _tfMatches && litCount === 5 && _fourHCanonicalReadyForProgress;
   // TDAS V5.0.0H — Watch Progress colour is now strictly two-tier (grey
   // below 5/5, green at 5/5 — no intermediate amber tier, no gold): gold
   // stays reserved exclusively for authoritative Stage 10 High Conviction,
@@ -29286,11 +29863,39 @@ function buildAuthoritativeSortKey(d, context) {
   const rawEval = (ac && ac.rawEvaluation) || null;
   const stage = (rawEval && typeof rawEval.stage === 'number') ? rawEval.stage : null;
   const setupPath = (rawEval && rawEval.evidenceSnapshot && rawEval.evidenceSnapshot.setupPath) || 'unknown';
+  // Subordinate quality evidence ONLY — Stage/authoritativeClassification
+  // may no longer independently decide readiness or primary sort bucket
+  // for 4H (owner doctrine, V5.4.2). hcQuality below is the EXISTING
+  // Stage-10/HC quality calculation, completely unmodified — only its
+  // ROLE changes: it becomes a subordinate fact consulted after canonical
+  // Advisory has already granted TRADE_READY permission, never before.
+  const hcQualityKnown = !!(ac && ac.highConvictionKnown === true);
+  const hcQuality = hcQualityKnown && ac.highConviction === true;
 
-  const readyKnown = !!(ac && ac.tradeReadyKnown === true);
-  const ready = readyKnown && ac.tradeReady === true;
-  const hcKnown = !!(ac && ac.highConvictionKnown === true);
-  const hc = hcKnown && ac.highConviction === true;
+  // TDAS V5.4.2 — 4H readiness now sourced from canonical Advisory
+  // (d.eval.advisoryState.action, i.e. buildCanonicalAdvisoryDecision()
+  // via _buildScannerAdvisory()) — the confirmed V5.4.2 audit defect was
+  // that Scanner sort and the visible card headline derived from two
+  // different engines (this function read Stage 0-10; the card read TSE/
+  // TR1-5 + entry-quality). Standalone 1H has no canonical Advisory
+  // authority yet (owner doctrine: 1H authority migration explicitly
+  // deferred beyond V5.4.2) — that branch is completely unchanged,
+  // still legacy Stage-0-10-driven, exactly as before this task.
+  const isFourH = !!(d && d.tf === '4h');
+  const adv = isFourH ? ((d && d.eval && d.eval.advisoryState) || null) : null;
+  const canonicalAction = adv ? adv.action : null;
+
+  let readyKnown, ready;
+  if (isFourH) {
+    readyKnown = (canonicalAction === 'TRADE_READY' || canonicalAction === 'COUNTER_HTF' || canonicalAction === 'WATCH');
+    ready = (canonicalAction === 'TRADE_READY' || canonicalAction === 'COUNTER_HTF');
+  } else {
+    readyKnown = !!(ac && ac.tradeReadyKnown === true);
+    ready = readyKnown && ac.tradeReady === true;
+  }
+  // Legacy alias, kept ONLY so the unchanged 1H branch below reads
+  // identically to the pre-V5.4.2 code (hc/hcKnown names preserved there).
+  const hcKnown = hcQualityKnown, hc = hcQuality;
 
   // TDAS V4.10.3B — active-trade/active-watch context overrides entry
   // quality entirely, even when Evaluation is unknown or malformed, since
@@ -29306,7 +29911,7 @@ function buildAuthoritativeSortKey(d, context) {
       authoritativeHighConviction: hc, authoritativeHighConvictionKnown: hcKnown,
       context: { hasOpenTrade: true, isActiveWatch: isActiveWatch },
       tieBreak: { symbol },
-      source: readyKnown ? 'evaluation_engine' : 'evaluation_unknown',
+      source: readyKnown ? (isFourH ? 'canonical_advisory' : 'evaluation_engine') : (isFourH ? 'canonical_advisory_unknown' : 'evaluation_unknown'),
     };
   }
   if (isActiveWatch) {
@@ -29318,25 +29923,76 @@ function buildAuthoritativeSortKey(d, context) {
       authoritativeHighConviction: hc, authoritativeHighConvictionKnown: hcKnown,
       context: { hasOpenTrade: false, isActiveWatch: true },
       tieBreak: { symbol },
-      source: readyKnown ? 'evaluation_engine' : 'evaluation_unknown',
+      source: readyKnown ? (isFourH ? 'canonical_advisory' : 'evaluation_engine') : (isFourH ? 'canonical_advisory_unknown' : 'evaluation_unknown'),
     };
   }
 
-  // No genuine Evaluation known at all (Stage 0 / missing / malformed
-  // adapter) -> fail closed to 'unknown', the lowest-priority bucket.
-  // Never guessed from a partially-present rawEvaluation.
-  if (!readyKnown) {
-    return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+  if (!isFourH) {
+    // ── Standalone 1H — UNCHANGED legacy Stage-0-10-driven behaviour. ────
+    if (!readyKnown) {
+      return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    }
+    if (hc) {
+      const consistent = hcKnown && ready && readyKnown && stage === 10 &&
+        (setupPath === 'four_h_led' || setupPath === 'standalone_one_h');
+      if (!consistent) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+      const b = SCANNER_SORT_BUCKETS.high_conviction;
+      return {
+        bucket: b.bucket, bucketKey: 'high_conviction', userLabel: b.userLabel,
+        stage, setupPath,
+        authoritativeReady: true, authoritativeReadyKnown: true,
+        authoritativeHighConviction: true, authoritativeHighConvictionKnown: true,
+        context: { hasOpenTrade: false, isActiveWatch: false },
+        tieBreak: { symbol },
+        source: 'evaluation_engine',
+      };
+    }
+    if (stage === 10) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    if (ready) {
+      const pathEntry = _SORT_TRADE_READY_PATH_MAP[setupPath];
+      if (!pathEntry || stage !== pathEntry.expectedStage) {
+        return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+      }
+      const b = SCANNER_SORT_BUCKETS[pathEntry.bucketKey];
+      return {
+        bucket: b.bucket, bucketKey: pathEntry.bucketKey, userLabel: b.userLabel,
+        stage, setupPath,
+        authoritativeReady: true, authoritativeReadyKnown: true,
+        authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
+        context: { hasOpenTrade: false, isActiveWatch: false },
+        tieBreak: { symbol },
+        source: 'evaluation_engine',
+      };
+    }
+    const nonReadyKey = (stage != null) ? _SORT_NON_READY_STAGE_MAP[stage] : undefined;
+    if (!nonReadyKey) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    const nb = SCANNER_SORT_BUCKETS[nonReadyKey];
+    return {
+      bucket: nb.bucket, bucketKey: nonReadyKey, userLabel: nb.userLabel,
+      stage, setupPath,
+      authoritativeReady: false, authoritativeReadyKnown: true,
+      authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
+      context: { hasOpenTrade: false, isActiveWatch: false },
+      tieBreak: { symbol },
+      source: 'evaluation_engine',
+    };
   }
 
-  // ── High Conviction — adapter boolean is authority, Stage 10 is a
-  // consistency check only. Any contradiction fails closed to unknown,
-  // never falls back to a lower (but still "known") bucket, and never
-  // trusts legacy HC. ──────────────────────────────────────────────────
-  if (hc) {
-    const consistent = hcKnown && ready && readyKnown && stage === 10 &&
-      (setupPath === 'four_h_led' || setupPath === 'standalone_one_h');
-    if (!consistent) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+  // ── 4H — canonical Advisory drives readiness. Stage/setupPath survive ──
+  // ── ONLY as a subordinate ordering/sub-bucket hint, never as a second ──
+  // ── gate on whether the setup is ready at all. ──────────────────────────
+  if (!readyKnown) {
+    return _sortKeyUnknown(stage, setupPath, symbol, 'canonical_advisory_unknown');
+  }
+
+  // Gold star — settled doctrine: Trade Ready is permission, the star is a
+  // subordinate Premium/High-Conviction subset of an ALREADY-ready setup.
+  // showGoldStar = canonicalAdvisory.action==='TRADE_READY' && existing HC
+  // quality === true. Counter-HTF is deliberately excluded from HC (a
+  // counter-trend setup is reduced-conviction by definition). The existing
+  // Stage-10 HC *quality* calculation itself is completely unmodified —
+  // only its role (subordinate, gated behind canonical permission) changes.
+  if (ready && canonicalAction === 'TRADE_READY' && hcQuality) {
     const b = SCANNER_SORT_BUCKETS.high_conviction;
     return {
       bucket: b.bucket, bucketKey: 'high_conviction', userLabel: b.userLabel,
@@ -29345,49 +30001,47 @@ function buildAuthoritativeSortKey(d, context) {
       authoritativeHighConviction: true, authoritativeHighConvictionKnown: true,
       context: { hasOpenTrade: false, isActiveWatch: false },
       tieBreak: { symbol },
-      source: 'evaluation_engine',
+      source: 'canonical_advisory',
     };
   }
-  // HC known-true was already handled above; a Stage 10 result that is
-  // NOT flagged HC-true (or a stage/hc mismatch already routed to
-  // 'unknown' above) never falls through to the Trade Ready branch below
-  // as if it were an ordinary Stage 9/8/7 — Stage 10 is exclusively
-  // resolved by the HC branch, consistent or not.
-  if (stage === 10) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
 
-  // ── Trade Ready — setup path determines the bucket, never raw Stage
-  // alone. Malformed Stage/path pairings fail closed. ────────────────────
   if (ready) {
+    // Trade Ready / Counter-HTF, canonically granted. setupPath/Stage are
+    // consulted ONLY to pick the finer display sub-bucket (never to
+    // re-decide readiness) — an unknown or inconsistent setupPath simply
+    // falls to the generic 4H Trade Ready bucket rather than failing
+    // closed to 'unknown', since canonical Advisory has already answered
+    // the actual readiness question.
     const pathEntry = _SORT_TRADE_READY_PATH_MAP[setupPath];
-    if (!pathEntry || stage !== pathEntry.expectedStage) {
-      return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
-    }
-    const b = SCANNER_SORT_BUCKETS[pathEntry.bucketKey];
+    const bucketKey = (pathEntry && stage === pathEntry.expectedStage) ? pathEntry.bucketKey : 'trade_ready_four_h_only';
+    const b = SCANNER_SORT_BUCKETS[bucketKey];
     return {
-      bucket: b.bucket, bucketKey: pathEntry.bucketKey, userLabel: b.userLabel,
+      bucket: b.bucket, bucketKey, userLabel: b.userLabel,
       stage, setupPath,
       authoritativeReady: true, authoritativeReadyKnown: true,
-      authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
+      authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcQualityKnown,
       context: { hasOpenTrade: false, isActiveWatch: false },
       tieBreak: { symbol },
-      source: 'evaluation_engine',
+      source: 'canonical_advisory',
     };
   }
 
-  // ── Non-ready, known Stage — descending Stage order (Section 10 of the
-  // V4.10.3A audit: Stage 5 ranks above Stage 4, matching raw Stage
-  // number directly; no further reordering needed within Stages 0-6). ──
-  const nonReadyKey = (stage != null) ? _SORT_NON_READY_STAGE_MAP[stage] : undefined;
-  if (!nonReadyKey) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+  // Canonical WATCH (either a genuine TR1-5 non-ready result, or a fresh
+  // entry the 1H phase/entry-quality evaluator suppressed). Stage, when
+  // available and known, is used purely as a subordinate finer-ordering
+  // hint; otherwise falls to a single generic non-ready bucket rather than
+  // 'unknown' — canonical Advisory already knows this is a genuine,
+  // known WATCH even when legacy Stage cannot classify it at all.
+  const nonReadyKey = (stage != null && _SORT_NON_READY_STAGE_MAP[stage]) ? _SORT_NON_READY_STAGE_MAP[stage] : 'entry_not_optimal';
   const nb = SCANNER_SORT_BUCKETS[nonReadyKey];
   return {
     bucket: nb.bucket, bucketKey: nonReadyKey, userLabel: nb.userLabel,
     stage, setupPath,
     authoritativeReady: false, authoritativeReadyKnown: true,
-    authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
+    authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcQualityKnown,
     context: { hasOpenTrade: false, isActiveWatch: false },
     tieBreak: { symbol },
-    source: 'evaluation_engine',
+    source: 'canonical_advisory',
   };
 }
 
