@@ -10213,10 +10213,16 @@ function buildCanonicalAdvisoryDecision(d, tseAuth) {
     // TDAS V5.4.2 — EMERGING conditional admission, tried first. Only
     // engages for the specific 'not_trade_ready' classification (a
     // genuine, valid TR1-5 non-ready result) — never for
-    // 'technical_failure' (missing/malformed TSE shadow).
+    // 'technical_failure' (missing/malformed TSE shadow). entryQuality is
+    // computed ONCE here (not just for the admission check) so that a
+    // non-admitted EMERGING case still exposes its own primaryReasonCode/
+    // cautionCodes/entryQuality below for wording — see the Narrative
+    // Engine's S4 branch, which reads exactly this field rather than
+    // re-deriving phase from raw indicators itself.
+    let eqForEmerging = null;
     if (tseAuth.classification === 'not_trade_ready' && dirWord) {
       const trForEmerging = d.tradeReadyV1TseShadow;
-      const eqForEmerging = buildOneHPhaseEntryQuality(dirWord, d.tradeReadyV1TseOneHEvidence, d.v51Evidence);
+      eqForEmerging = buildOneHPhaseEntryQuality(dirWord, d.tradeReadyV1TseOneHEvidence, d.v51Evidence);
       if (_isEmergingConditionallyAdmissible(trForEmerging, eqForEmerging)) {
         const shadow = d.counterHtfShadow;
         const counterHtf = !!(shadow && shadow.eligible === true && shadow.direction === tseAuth.direction);
@@ -10228,14 +10234,20 @@ function buildCanonicalAdvisoryDecision(d, tseAuth) {
         };
       }
     }
-    // TR1-5 already resolved non-ready/technical-failure — canonical
-    // decision mirrors that unchanged. Entry-quality is only relevant
-    // once structural validation has already passed (owner doctrine:
-    // Trade Ready is a validated branch of Advisory, evaluated after it).
+    // TR1-5 already resolved non-ready/technical-failure — action
+    // mirrors that unchanged (owner doctrine: Trade Ready is a validated
+    // branch of Advisory, evaluated after it — this never changes action
+    // to TRADE_READY). When entryQuality WAS computed above (the
+    // not-admitted EMERGING case), its primaryReasonCode/cautionCodes are
+    // still exposed here for wording, exactly like the actionable-
+    // suppressed branch below does — never invented, never re-derived.
     return {
       action: (tseAuth.classification === 'technical_failure') ? 'UNAVAILABLE' : 'WATCH',
-      direction: tseAuth.direction, primaryReasonCode: null, cautionCodes: [], nextCondition: null,
-      entryQuality: { known: false, severity: 'unknown', primaryReasonCode: null, cautionCodes: [], facts: {} },
+      direction: tseAuth.direction,
+      primaryReasonCode: (eqForEmerging && eqForEmerging.known) ? eqForEmerging.primaryReasonCode : null,
+      cautionCodes: (eqForEmerging && eqForEmerging.known) ? eqForEmerging.cautionCodes : [],
+      nextCondition: null,
+      entryQuality: eqForEmerging || { known: false, severity: 'unknown', primaryReasonCode: null, cautionCodes: [], facts: {} },
       source: 'tr1_5',
     };
   }
@@ -10695,7 +10707,14 @@ function buildFourHNarrativeContext(d) {
 // test_v533b's "no raw d access" check). Deterministic, hand-written
 // per-situation templates (S1-S10, audit §1.1/§2/§3) — not a generic NLG
 // generator, per doctrine ("pure helpers ... not a sprawling framework").
-function composeFourHTechnicalNarrative(ctx) {
+// TDAS V5.4.2 — optional second parameter `canonicalDecision` (the SAME
+// buildCanonicalAdvisoryDecision() result the Advisory composer receives
+// — never re-derived here). Used ONLY inside S4 to distinguish the
+// RESUMPTION_NOT_CONFIRMED transitional case from ordinary EMERGING text;
+// every other situation family and RESET_IN_PROGRESS's own S4 Technical
+// text are completely unaffected (see that branch's own header). Missing/
+// null degrades to the exact pre-V5.4.2 S4 behaviour.
+function composeFourHTechnicalNarrative(ctx, canonicalDecision) {
   if (!ctx || ctx.meta.completeness === 'unavailable') {
     return { headline: 'EVALUATION LIMITED', detail: 'Required 4H trend evidence is unavailable this cycle.', factIds: [], colorCls: 'tech-weak' };
   }
@@ -10793,6 +10812,29 @@ function composeFourHTechnicalNarrative(ctx) {
       const beginWord = dirLower === 'bullish' ? 'an upward trend is beginning to form.' : 'a downward trend is beginning to form.';
       const supportiveDir = dirLower === 'bullish' ? 'rising' : 'falling';
       const opposingDir = dirLower === 'bullish' ? 'falling' : 'rising';
+      // TDAS V5.4.2 — RESUMPTION_NOT_CONFIRMED, pure verbalisation of
+      // canonicalDecision.entryQuality.facts (temaOpposing/gapMaterial/
+      // tema92GapWidening/priceOnCorrectSideOfTema92/tema92CrossConfirmed
+      // — all already computed by buildOneHPhaseEntryQuality(), never
+      // re-derived here). A closed-candle TRANSITIONAL state (TEMA gap
+      // below the 0.5 ATR materiality floor, narrowing toward
+      // convergence, price still on the wrong side of TEMA92, no
+      // confirmed cross) — never an inferred intrabar failed/rejected
+      // cross. RESET_IN_PROGRESS's own S4 Technical text (the generic
+      // 200MA/UT wording below) is completely unaffected — this branch
+      // only intercepts the specific transitional pattern.
+      const _s4TechEq = canonicalDecision && canonicalDecision.entryQuality;
+      if (_s4TechEq && _s4TechEq.known && DIR) {
+        const tf = _s4TechEq.facts;
+        const transitionalStalled = tf.temaOpposing && !tf.gapMaterial
+          && tf.tema92GapWidening === 'narrowing' && !tf.priceOnCorrectSideOfTema92 && !tf.tema92CrossConfirmed;
+        if (transitionalStalled) {
+          const structureWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
+          const detail = '4H ' + structureWord + ' structure remains intact. 1H TEMA is converging, but price remains '
+            + (dirLower === 'bullish' ? 'below' : 'above') + ' TEMA92 and ' + structureWord + ' resumption is not yet confirmed.';
+          return { headline: DIR + ' STRUCTURE \u2014 EMERGING', detail: detail, factIds: factIds, colorCls: colorCls };
+        }
+      }
       let detail;
       if (maDir === supportiveDir) {
         detail = 'Price is ' + sideWord + ' a ' + supportiveDir + ' 200MA with ' + utWord + '; ' + beginWord;
@@ -10916,7 +10958,13 @@ function composeFourHTechnicalNarrative(ctx) {
 // permitted exception, per §8.3). `tseAuth` is the EXISTING, UNTOUCHED
 // _buildFourHTseAuthority(d) result — this composer only decides display
 // TEXT; it never reads/writes authority, action, tradeReady, or routing.
-function composeFourHAdvisoryNarrative(ctx, tseAuth) {
+// TDAS V5.4.2 — third parameter `canonicalDecision` added (optional —
+// every existing call site either passes it or omits it safely; a
+// missing/null value degrades to the exact pre-V5.4.2 behaviour for every
+// branch except S4's no-TR2-5-blocker fallback, see that branch's own
+// header). This is the SAME buildCanonicalAdvisoryDecision() result
+// _buildScannerAdvisory() already computed once — never re-derived here.
+function composeFourHAdvisoryNarrative(ctx, tseAuth, canonicalDecision) {
   const factIds = [];
   function use(id) { if (ctx && ctx.facts && ctx.facts[id]) { factIds.push(id); _narrativeConsume(ctx.facts, id, 'advisory'); return ctx.facts[id].value; } return null; }
 
@@ -11066,7 +11114,50 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth) {
       const detail = _tr2to5AdvisoryDetail(s4Blocker);
       return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: detail, factIds: factIds };
     }
-    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Wait for the initial move to gain strength before entry.', factIds: factIds };
+    // TDAS V5.4.2 — S4 EMERGING, TR2-5 all pass. The obsolete generic
+    // fallback ('Wait for the initial move to gain strength before
+    // entry.') is retired. Verbalises the canonical 1H entry-quality
+    // reason (canonicalDecision.primaryReasonCode, already computed by
+    // buildCanonicalAdvisoryDecision()/buildOneHPhaseEntryQuality() —
+    // never re-derived here from raw indicators) when one is available.
+    // RESET_IN_PROGRESS (materially opposed, |gap|>=0.5 ATR — existing
+    // suppression path, unchanged) and RESUMPTION_NOT_CONFIRMED (a
+    // DISTINCT, narrative-layer-only transitional pattern — |gap|<0.5 ATR
+    // narrowing toward convergence, price still on the wrong side of
+    // TEMA92, no confirmed cross — pure verbalisation of
+    // canonicalDecision.entryQuality.facts, NEVER a new suppression rule:
+    // buildOneHPhaseEntryQuality()'s severity/primaryReasonCode are
+    // completely untouched by this branch, so this can never change
+    // `action`, EMERGING admission, TR1-5, lifecycle, sort, or the star)
+    // are both mapped. PULLBACK_IN_PROGRESS/BOUNCE_IN_PROGRESS/
+    // ENTRY_EXTENDED and the unmapped/unknown case fall through to the
+    // existing generic TR2-5-family default sentence a few lines above
+    // ('Trend phase is not yet eligible for entry.') — reused, not a new
+    // invented string.
+    const _s4ReasonCode = canonicalDecision && canonicalDecision.primaryReasonCode;
+    if (_s4ReasonCode === 'RESET_IN_PROGRESS' && DIR) {
+      factIds.push('TRADE_READY_STATUS');
+      const isLongS4 = DIR === 'LONG';
+      const s4Detail = isLongS4
+        ? 'Reassess when 1H price reclaims TEMA92 and bullish momentum resumes.'
+        : 'Reassess when 1H price breaks back below TEMA92 and bearish momentum resumes.';
+      return { displayHeadline: 'WATCH ' + DIR + ' \u2014 RESET IN PROGRESS', detail: s4Detail, factIds: factIds };
+    }
+    const _s4Eq = canonicalDecision && canonicalDecision.entryQuality;
+    if (_s4Eq && _s4Eq.known && DIR) {
+      const f = _s4Eq.facts;
+      const transitionalStalled = f.temaOpposing && !f.gapMaterial
+        && f.tema92GapWidening === 'narrowing' && !f.priceOnCorrectSideOfTema92 && !f.tema92CrossConfirmed;
+      if (transitionalStalled) {
+        factIds.push('TRADE_READY_STATUS');
+        const isLongS4b = DIR === 'LONG';
+        const s4Detail = isLongS4b
+          ? 'Reassess on a clean 1H TEMA92 reclaim with renewed bullish momentum.'
+          : 'Reassess on a clean 1H TEMA92 breakdown with renewed bearish momentum.';
+        return { displayHeadline: 'WATCH ' + DIR + ' \u2014 RESUMPTION NOT CONFIRMED', detail: s4Detail, factIds: factIds };
+      }
+    }
+    return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Trend phase is not yet eligible for entry.', factIds: factIds };
   }
 
   const blocker = ctx.decision.blocker;
@@ -12204,11 +12295,19 @@ function _buildScannerAdvisory(d) {
       // as in V5.3.3, satisfying the authority/display separation (audit
       // §5): only `detail`/`summary`/`headline` TEXT may change. A pure
       // no-op when the flag is off (byte-identical to V5.3.3).
+      //
+      // TDAS V5.4.2 — _canonicalDecision (already computed above, the SAME
+      // single canonical decision every consumer shares) is now passed
+      // into the Narrative composer as a third, read-only parameter, so
+      // its S4/EMERGING branch can verbalise canonical primaryReasonCode/
+      // entryQuality/nextCondition instead of re-deriving phase from raw
+      // indicators or falling back to the retired generic S4 string — see
+      // that branch's own header for the full rationale.
       let _narrCtx = null, _narrAdv = null;
       if (DIAG.narrativeEngineLive === true) {
         try {
           _narrCtx = buildFourHNarrativeContext(d);
-          _narrAdv = composeFourHAdvisoryNarrative(_narrCtx, _tseAuth);
+          _narrAdv = composeFourHAdvisoryNarrative(_narrCtx, _tseAuth, _canonicalDecision);
         } catch (e) {
           if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[_buildScannerAdvisory] 4H narrative engine threw, using legacy TSE interpreter', e);
           _narrCtx = null; _narrAdv = null;
@@ -17424,8 +17523,14 @@ function buildNarrativeShadowHtml(d, advisory) {
       + 'Reason: ' + reason;
   }
 
-  const tech = composeFourHTechnicalNarrative(ctx);
-  const adv = composeFourHAdvisoryNarrative(ctx, tseAuth);
+  // TDAS V5.4.2 — this diagnostic shadow reuses the SAME canonical
+  // decision production actually computes (buildCanonicalAdvisoryDecision()),
+  // so both its Technical and Advisory S4/EMERGING wording match the live
+  // card exactly — no second derivation, computed once and shared.
+  let _canonicalDecisionForShadow = null;
+  try { _canonicalDecisionForShadow = (typeof buildCanonicalAdvisoryDecision === 'function') ? buildCanonicalAdvisoryDecision(d, tseAuth) : null; } catch (e) { _canonicalDecisionForShadow = null; }
+  const tech = composeFourHTechnicalNarrative(ctx, _canonicalDecisionForShadow);
+  const adv = composeFourHAdvisoryNarrative(ctx, tseAuth, _canonicalDecisionForShadow);
   const resolvedHeadline = (tseAuth && tseAuth.actionable) ? (tseAuth.headline || 'TRADE READY') : (adv.displayHeadline || 'WATCH');
   const resolvedDetail = adv.detail;
 
@@ -21473,7 +21578,17 @@ function buildTechnicalSummaryHtml(d){
     let narrModel;
     try {
       const ctx = buildFourHNarrativeContext(d);
-      const tech = composeFourHTechnicalNarrative(ctx);
+      // TDAS V5.4.2 — reuse the SAME canonical decision the Advisory box
+      // already computes for this card (buildCanonicalAdvisoryDecision(),
+      // via _buildFourHTseAuthority()) so the Technical box's S4/
+      // RESUMPTION_NOT_CONFIRMED branch verbalises identical facts —
+      // never a second, independently-computed classification.
+      let _techCanonicalDecision = null;
+      try {
+        const _techTseAuth = (typeof _buildFourHTseAuthority === 'function') ? _buildFourHTseAuthority(d) : null;
+        _techCanonicalDecision = (_techTseAuth && typeof buildCanonicalAdvisoryDecision === 'function') ? buildCanonicalAdvisoryDecision(d, _techTseAuth) : null;
+      } catch (e2) { _techCanonicalDecision = null; }
+      const tech = composeFourHTechnicalNarrative(ctx, _techCanonicalDecision);
       narrModel = { label: tech.headline, detail: tech.detail, colorCls: tech.colorCls };
     } catch (e) {
       if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildTechnicalSummaryHtml] 4H narrative engine threw, failing honest', e);
