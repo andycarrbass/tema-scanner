@@ -9942,6 +9942,19 @@ function _buildFourHTseAuthority(d) {
 // interpret with widening/narrowing per the calibrated doctrine.
 const TEMA92_GAP_MATERIALITY_ATR = 0.5;
 
+// TDAS V5.4.2 — TEMA92 gap noise floor, owner-selected after the D0
+// counter-HTF sanity fixture exposed a semantic gap: EXECUTION_WEAKENING
+// (below) had no lower bound distinguishing genuine early deterioration
+// from a persistently near-zero gap that never actually crosses (D0's own
+// facts — gap −0.020 -> −0.023 ATR, tema92CrossConfirmed false, sitting
+// below even the real-market calibration's own cross-bar median
+// separation of ~0.08-0.10 ATR). Distinct from TEMA92_GAP_MATERIALITY_ATR
+// above (the 0.5 ATR "is this a real pullback" boundary, unchanged) —
+// this is a much smaller floor purely for distinguishing "the gap just
+// crossed and is developing" from "the gap has been sitting at noise
+// level with nothing happening."
+const TEMA92_GAP_NOISE_FLOOR_ATR = 0.05;
+
 function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
   const ev = tseOneHEvidence && tseOneHEvidence.evidence;
   if ((direction !== 'long' && direction !== 'short') || !tseOneHEvidence
@@ -10045,7 +10058,7 @@ function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
     (extClimactic && rsiHeat && (adxDecaying || tema92SlopeOpposing)) || (extElevated && adxDecaying);
 
   // TDAS V5.4.2 — pre-cross resumption override. Materially-opposed-but-
-  // NARROWING (RESET_IN_PROGRESS) is NOT an absolute TEMA veto: canonical
+  // NARROWING (RECOVERY_IN_PROGRESS) is NOT an absolute TEMA veto: canonical
   // Advisory may clear it BEFORE the actual 17/92 cross when closed-candle
   // price has already reclaimed TEMA92 in the trade direction, there is no
   // fresh/recent opposing UT, and either fresh/recent aligned UT OR rising
@@ -10061,18 +10074,55 @@ function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
   // Priority 1 — TEMA MATERIALLY opposing the trade direction (owner-
   // calibrated: |gap|>=0.5 ATR). A materially opposed AND WIDENING gap is
   // active deterioration/pullback and always suppresses. Materially
-  // opposed but NARROWING is recovery/stabilisation — still suppresses to
-  // WATCH by default (RESET_IN_PROGRESS: "not resumption either"), UNLESS
-  // the pre-cross resumption override above holds, in which case
-  // canonical Advisory clears it ahead of the actual cross. Below the
-  // materiality floor, TEMA sign is NOT consulted for suppression at all
-  // — the direct fix for the confirmed noise-level (~0.02 ATR)
-  // false-suppression case from the V5.4.2 calibration.
+  // opposed but NARROWING is recovery from that pullback — still
+  // suppresses to WATCH by default (RECOVERY_IN_PROGRESS: "not resumption
+  // either"), UNLESS the pre-cross resumption override above holds, in
+  // which case canonical Advisory clears it ahead of the actual cross.
+  // Below the materiality floor, TEMA sign is NOT consulted for
+  // suppression at all here — the direct fix for the confirmed
+  // noise-level (~0.02 ATR) false-suppression case from the V5.4.2
+  // calibration; the below-materiality opposing cases are handled
+  // separately by Priority 1.5/RESUMPTION_NOT_CONFIRMED below.
+  //
+  // TDAS V5.4.2 (post-audit, taxonomy completion) — RESET_IN_PROGRESS
+  // renamed to RECOVERY_IN_PROGRESS. Canonical enum rename, not a display
+  // relabel: this is the ONLY place the code is assigned; every consumer
+  // (Narrative mapping, tests) reads the same renamed string.
   if (gapMaterial && temaOpposing && !resumptionDevelopingPreCross) {
     severity = 'suppress';
     primaryReasonCode = (tema92GapWidening === 'widening')
       ? (direction === 'long' ? 'PULLBACK_IN_PROGRESS' : 'BOUNCE_IN_PROGRESS')
-      : 'RESET_IN_PROGRESS';
+      : 'RECOVERY_IN_PROGRESS';
+  }
+  // Priority 1.5 (NEW) — EXECUTION_WEAKENING. Below the materiality floor
+  // (|gap|<0.5 ATR — not yet a material pullback) but TEMA is opposing and
+  // price is already on the wrong side of TEMA92: "1H has begun turning
+  // against the setup, but opposing TEMA separation has not yet reached
+  // the material pullback threshold." Fires on EITHER of two genuinely
+  // distinct evidentiary paths (owner-refined after the D0 counter-HTF
+  // sanity fixture exposed the gap — see TEMA92_GAP_NOISE_FLOOR_ATR's own
+  // header): (a) a genuine fresh confirmed opposing cross
+  // (tema92CrossConfirmed===true) — widening is NOT required on the cross
+  // bar itself, since a cross by definition starts from near-zero; or (b)
+  // a persisting/developing opposition — the gap has already crossed at
+  // some earlier bar (not fresh) but is still below the 0.5 materiality
+  // floor, PROVIDED it clears the separate, much smaller noise floor
+  // (|gap|>=0.05 ATR) AND is genuinely widening. A gap that has simply sat
+  // near zero for multiple bars without ever confirming a cross (D0's own
+  // shape: -0.020 -> -0.023 ATR, crossConfirmed false, both readings below
+  // even the real-market calibration's own cross-bar median separation)
+  // satisfies NEITHER path and does not suppress. Mutually exclusive with
+  // Priority 1 by construction (gapMaterial vs !gapMaterial). If price is
+  // instead on the CORRECT side of TEMA92, this does NOT fire regardless
+  // of which path — falls through to the existing low-materiality
+  // transitional/caution behaviour (TEMA_TRANSITIONAL) unchanged, per
+  // owner instruction.
+  else if (temaOpposing && !gapMaterial && !priceOnCorrectSideOfTema92 && (
+    tema92CrossConfirmed === true ||
+    (tema92GapAtr != null && Math.abs(tema92GapAtr) >= TEMA92_GAP_NOISE_FLOOR_ATR && tema92GapWidening === 'widening')
+  )) {
+    severity = 'suppress';
+    primaryReasonCode = 'EXECUTION_WEAKENING';
   }
   // Priority 2 — strong anti-chase: climactic-or-worse extension + RSI
   // heat + genuine weakening evidence (ADX decaying OR the TEMA anchor
@@ -10092,8 +10142,9 @@ function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
   // Not suppressed. Attach non-blocking cautions only (doctrine: RSI/
   // extension/stale-UT alone are context, not blocks) — including the
   // calibrated non-blocking states: materially aligned but narrowing
-  // ("cooling"), a below-materiality opposing gap ("transitional"), and a
-  // pre-cross resumption override (visible for context/transparency).
+  // ("cooling"), a below-materiality opposing gap not otherwise named
+  // ("transitional"), and a pre-cross resumption override (visible for
+  // context/transparency).
   //
   // TDAS V5.4.2 (post-audit F2) — RESUMPTION_NOT_CONFIRMED, moved upstream
   // from the two Narrative composers (which previously evaluated this
@@ -10145,10 +10196,18 @@ function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
 // Trader-facing headline suffix / detail sentence for each canonical
 // suppression reason. Direction-aware. The single wording source for
 // entry-quality-suppressed WATCH cards — never duplicated at a render site.
+//
+// TDAS V5.4.2 (taxonomy completion) — RESET_IN_PROGRESS renamed to
+// RECOVERY_IN_PROGRESS (canonical enum rename, not a display-only
+// relabel — see buildOneHPhaseEntryQuality()'s Priority 1, the sole place
+// this code is assigned). Existing detail phrasing preserved verbatim
+// for this context (ESTABLISHED/PULLBACK, entry-quality-suppressed) — no
+// new wording was approved here; only the code/headline label changed to
+// match the renamed enum.
 function _oneHPhaseReasonText(reasonCode, dirWord) {
   switch (reasonCode) {
-    case 'RESET_IN_PROGRESS':
-      return { headlineSuffix: 'RESET IN PROGRESS',
+    case 'RECOVERY_IN_PROGRESS':
+      return { headlineSuffix: 'RECOVERY IN PROGRESS',
         detail: '4H regime remains ' + dirWord + ', but 1H has not yet resumed. Wait for ' + dirWord + ' structure to resume.' };
     case 'PULLBACK_IN_PROGRESS':
       return { headlineSuffix: 'PULLBACK IN PROGRESS',
@@ -10164,25 +10223,32 @@ function _oneHPhaseReasonText(reasonCode, dirWord) {
   }
 }
 
-// TDAS V5.4.2 (post-audit F1/F2/F5) — canonical wording for the WATCH
-// reasons that apply when TR1 itself is the reason a 4H candidate is not
-// actionable (EMERGING/DETERIORATING/UNRESOLVED — the "S4-family" states).
-// Distinct from _oneHPhaseReasonText() immediately above, which serves a
-// DIFFERENT context (TR1 already passed — ESTABLISHED/PULLBACK — and
-// entry-quality itself suppressed an otherwise-actionable setup); that
-// function's existing RESET_IN_PROGRESS wording is deliberately preserved
-// byte-for-byte and NOT reused here, per owner instruction. This is the
-// single source for both the canonical nextCondition text
-// (buildCanonicalAdvisoryDecision()) and the Narrative headline suffix
-// (composeFourHAdvisoryNarrative()) — computed once, verbalised, never
-// recomputed in the presentation layer.
+// TDAS V5.4.2 (post-audit F1/F2/F5, taxonomy completion) — canonical
+// wording for every reason that can reach the S4-family WATCH path
+// (EMERGING/DETERIORATING/UNRESOLVED — TR1 itself is the reason a 4H
+// candidate is not actionable). Distinct from _oneHPhaseReasonText()
+// immediately above, which serves a DIFFERENT context (TR1 already
+// passed — ESTABLISHED/PULLBACK — and entry-quality itself suppressed an
+// otherwise-actionable setup); reused directly for the three codes
+// (PULLBACK_IN_PROGRESS/BOUNCE_IN_PROGRESS/ENTRY_EXTENDED) that never had
+// dedicated S4-specific wording, rather than duplicating that semantics
+// a second time. RECOVERY_IN_PROGRESS/RESUMPTION_NOT_CONFIRMED/
+// STRUCTURE_NOT_READY/EXECUTION_WEAKENING each have their own approved
+// S4-specific wording below. Every canonical entry-quality reason that
+// can reach S4 is now explicitly mapped — no case may fall through to
+// the caller's terminal invariant guard.
 function _tr1PhaseWatchReasonText(reasonCode, dirWord) {
   switch (reasonCode) {
-    case 'RESET_IN_PROGRESS':
-      return { headlineSuffix: 'RESET IN PROGRESS',
+    case 'RECOVERY_IN_PROGRESS':
+      return { headlineSuffix: 'RECOVERY IN PROGRESS',
         detail: dirWord === 'bullish'
-          ? 'Reassess when 1H price reclaims TEMA92 and bullish momentum resumes.'
-          : 'Reassess when 1H price breaks back below TEMA92 and bearish momentum resumes.' };
+          ? '4H regime remains bullish and 1H is recovering from the pullback. Reassess when price reclaims TEMA92 and bullish momentum resumes.'
+          : '4H regime remains bearish and 1H is recovering from the bounce. Reassess when price breaks back below TEMA92 and bearish momentum resumes.' };
+    case 'EXECUTION_WEAKENING':
+      return { headlineSuffix: 'EXECUTION WEAKENING',
+        detail: dirWord === 'bullish'
+          ? '1H momentum has turned against the bullish setup. Reassess if price reclaims TEMA92 and bullish momentum resumes.'
+          : '1H momentum has turned against the bearish setup. Reassess if price breaks back below TEMA92 and bearish momentum resumes.' };
     case 'RESUMPTION_NOT_CONFIRMED':
       return { headlineSuffix: 'RESUMPTION NOT CONFIRMED',
         detail: dirWord === 'bullish'
@@ -10191,6 +10257,13 @@ function _tr1PhaseWatchReasonText(reasonCode, dirWord) {
     case 'STRUCTURE_NOT_READY':
       return { headlineSuffix: 'STRUCTURE NOT READY',
         detail: '4H ' + dirWord + ' structure is still emerging. Wait for the structure to mature before entry.' };
+    // Reused, not duplicated — same wording _oneHPhaseReasonText() already
+    // provides for the actionable-suppressed context; no S4-specific
+    // wording was ever separately approved for these three.
+    case 'PULLBACK_IN_PROGRESS':
+    case 'BOUNCE_IN_PROGRESS':
+    case 'ENTRY_EXTENDED':
+      return _oneHPhaseReasonText(reasonCode, dirWord);
     default:
       return { headlineSuffix: null, detail: null };
   }
@@ -10352,7 +10425,7 @@ function buildCanonicalAdvisoryDecision(d, tseAuth) {
     // never consulted here, since for every non-ready phase it carries no
     // information beyond the phase itself; (2) the 1H entry-quality
     // reason, if entry-quality (already computed above for the admission
-    // check) produced one — RESET_IN_PROGRESS/PULLBACK_IN_PROGRESS/
+    // check) produced one — RECOVERY_IN_PROGRESS/EXECUTION_WEAKENING/PULLBACK_IN_PROGRESS/
     // BOUNCE_IN_PROGRESS/ENTRY_EXTENDED/RESUMPTION_NOT_CONFIRMED; (3)
     // STRUCTURE_NOT_READY — the residual case where TR2-5 all pass, entry
     // quality has no objection at all, and conditional admission did not
@@ -10844,7 +10917,7 @@ function buildFourHNarrativeContext(d) {
 // buildCanonicalAdvisoryDecision() result the Advisory composer receives
 // — never re-derived here). Used ONLY inside S4 to distinguish the
 // RESUMPTION_NOT_CONFIRMED transitional case from ordinary EMERGING text;
-// every other situation family and RESET_IN_PROGRESS's own S4 Technical
+// every other situation family and RECOVERY_IN_PROGRESS's own S4 Technical
 // text are completely unaffected (see that branch's own header). Missing/
 // null degrades to the exact pre-V5.4.2 S4 behaviour.
 function composeFourHTechnicalNarrative(ctx, canonicalDecision) {
@@ -10953,7 +11026,7 @@ function composeFourHTechnicalNarrative(ctx, canonicalDecision) {
       // below the 0.5 ATR materiality floor, narrowing toward
       // convergence, price still on the wrong side of TEMA92, no
       // confirmed cross) — never an inferred intrabar failed/rejected
-      // cross. RESET_IN_PROGRESS's own S4 Technical text (the generic
+      // cross. RECOVERY_IN_PROGRESS's own S4 Technical text (the generic
       // 200MA/UT wording below) is completely unaffected — this branch
       // only intercepts the one specific canonical reason code.
       if (canonicalDecision && canonicalDecision.primaryReasonCode === 'RESUMPTION_NOT_CONFIRMED' && DIR) {
@@ -11245,7 +11318,7 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth, canonicalDecision) {
     // buildCanonicalAdvisoryDecision() itself now runs — this branch no
     // longer scans tr.checks independently) takes priority, exactly
     // matching the pre-existing priority order. Otherwise
-    // canonicalDecision.primaryReasonCode (RESET_IN_PROGRESS/
+    // canonicalDecision.primaryReasonCode (RECOVERY_IN_PROGRESS/EXECUTION_WEAKENING/
     // RESUMPTION_NOT_CONFIRMED/STRUCTURE_NOT_READY — F1/F2) and
     // canonicalDecision.nextCondition (F5) are read directly — this
     // function computes NO reason/state/wording of its own for S4 beyond
