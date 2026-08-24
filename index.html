@@ -10194,21 +10194,33 @@ function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
 }
 
 // Trader-facing headline suffix / detail sentence for each canonical
-// suppression reason. Direction-aware. The single wording source for
-// entry-quality-suppressed WATCH cards — never duplicated at a render site.
+// phase reason. Direction-aware. The SINGLE wording authority for every
+// reason reachable from BOTH the ESTABLISHED/PULLBACK (entry-quality-
+// suppressed, TR1-5 all pass) and S4-family (EMERGING/DETERIORATING/
+// UNRESOLVED, TR1 itself is the reason) contexts — one canonical reason,
+// one mapping, reused by every 4H presentation branch, per owner
+// consolidation doctrine.
 //
-// TDAS V5.4.2 (taxonomy completion) — RESET_IN_PROGRESS renamed to
-// RECOVERY_IN_PROGRESS (canonical enum rename, not a display-only
-// relabel — see buildOneHPhaseEntryQuality()'s Priority 1, the sole place
-// this code is assigned). Existing detail phrasing preserved verbatim
-// for this context (ESTABLISHED/PULLBACK, entry-quality-suppressed) — no
-// new wording was approved here; only the code/headline label changed to
-// match the renamed enum.
+// TDAS V5.4.2 (final Advisory language consolidation) — RECOVERY_IN_PROGRESS
+// and EXECUTION_WEAKENING now live here (previously duplicated/missing in
+// _tr1PhaseWatchReasonText() below, which independently carried its own,
+// different RECOVERY_IN_PROGRESS wording and had no EXECUTION_WEAKENING
+// case at all — see the V5.4.2 census that found both). This function now
+// owns all five reasons that can occur on either route;
+// _tr1PhaseWatchReasonText() delegates to it for all five and retains
+// only the two genuinely S4-only reasons.
 function _oneHPhaseReasonText(reasonCode, dirWord) {
   switch (reasonCode) {
     case 'RECOVERY_IN_PROGRESS':
       return { headlineSuffix: 'RECOVERY IN PROGRESS',
-        detail: '4H regime remains ' + dirWord + ', but 1H has not yet resumed. Wait for ' + dirWord + ' structure to resume.' };
+        detail: dirWord === 'bullish'
+          ? '4H regime remains bullish and 1H is recovering from the pullback. Reassess when price reclaims TEMA92 and bullish momentum resumes.'
+          : '4H regime remains bearish and 1H is recovering from the bounce. Reassess when price breaks back below TEMA92 and bearish momentum resumes.' };
+    case 'EXECUTION_WEAKENING':
+      return { headlineSuffix: 'EXECUTION WEAKENING',
+        detail: dirWord === 'bullish'
+          ? '1H momentum has turned against the bullish setup. Reassess if price reclaims TEMA92 and bullish momentum resumes.'
+          : '1H momentum has turned against the bearish setup. Reassess if price breaks back below TEMA92 and bearish momentum resumes.' };
     case 'PULLBACK_IN_PROGRESS':
       return { headlineSuffix: 'PULLBACK IN PROGRESS',
         detail: '4H trend remains strong, but 1H is pulling back against it. Wait for 1H structure to stabilise and resume.' };
@@ -10223,32 +10235,20 @@ function _oneHPhaseReasonText(reasonCode, dirWord) {
   }
 }
 
-// TDAS V5.4.2 (post-audit F1/F2/F5, taxonomy completion) — canonical
-// wording for every reason that can reach the S4-family WATCH path
-// (EMERGING/DETERIORATING/UNRESOLVED — TR1 itself is the reason a 4H
-// candidate is not actionable). Distinct from _oneHPhaseReasonText()
-// immediately above, which serves a DIFFERENT context (TR1 already
-// passed — ESTABLISHED/PULLBACK — and entry-quality itself suppressed an
-// otherwise-actionable setup); reused directly for the three codes
-// (PULLBACK_IN_PROGRESS/BOUNCE_IN_PROGRESS/ENTRY_EXTENDED) that never had
-// dedicated S4-specific wording, rather than duplicating that semantics
-// a second time. RECOVERY_IN_PROGRESS/RESUMPTION_NOT_CONFIRMED/
-// STRUCTURE_NOT_READY/EXECUTION_WEAKENING each have their own approved
-// S4-specific wording below. Every canonical entry-quality reason that
-// can reach S4 is now explicitly mapped — no case may fall through to
-// the caller's terminal invariant guard.
+// TDAS V5.4.2 (final Advisory language consolidation) — now carries ONLY
+// the two genuinely S4-only reasons (RESUMPTION_NOT_CONFIRMED and
+// STRUCTURE_NOT_READY structurally cannot occur on the ESTABLISHED/
+// PULLBACK entry-quality-suppressed path — see buildOneHPhaseEntryQuality()/
+// buildCanonicalAdvisoryDecision()'s own headers). Every other reason that
+// can reach the S4-family WATCH path delegates to _oneHPhaseReasonText()
+// above — the single wording authority — rather than carrying a second,
+// independently-maintained copy. This eliminates the confirmed live
+// divergence (RECOVERY_IN_PROGRESS previously rendered different text
+// depending on 4H phase for the identical canonical reason) and the
+// confirmed live gap (EXECUTION_WEAKENING was unmapped on the ESTABLISHED
+// path, falling through to a generic fallback string).
 function _tr1PhaseWatchReasonText(reasonCode, dirWord) {
   switch (reasonCode) {
-    case 'RECOVERY_IN_PROGRESS':
-      return { headlineSuffix: 'RECOVERY IN PROGRESS',
-        detail: dirWord === 'bullish'
-          ? '4H regime remains bullish and 1H is recovering from the pullback. Reassess when price reclaims TEMA92 and bullish momentum resumes.'
-          : '4H regime remains bearish and 1H is recovering from the bounce. Reassess when price breaks back below TEMA92 and bearish momentum resumes.' };
-    case 'EXECUTION_WEAKENING':
-      return { headlineSuffix: 'EXECUTION WEAKENING',
-        detail: dirWord === 'bullish'
-          ? '1H momentum has turned against the bullish setup. Reassess if price reclaims TEMA92 and bullish momentum resumes.'
-          : '1H momentum has turned against the bearish setup. Reassess if price breaks back below TEMA92 and bearish momentum resumes.' };
     case 'RESUMPTION_NOT_CONFIRMED':
       return { headlineSuffix: 'RESUMPTION NOT CONFIRMED',
         detail: dirWord === 'bullish'
@@ -10257,9 +10257,11 @@ function _tr1PhaseWatchReasonText(reasonCode, dirWord) {
     case 'STRUCTURE_NOT_READY':
       return { headlineSuffix: 'STRUCTURE NOT READY',
         detail: '4H ' + dirWord + ' structure is still emerging. Wait for the structure to mature before entry.' };
-    // Reused, not duplicated — same wording _oneHPhaseReasonText() already
-    // provides for the actionable-suppressed context; no S4-specific
-    // wording was ever separately approved for these three.
+    // Delegated, not duplicated — _oneHPhaseReasonText() is the single
+    // wording authority for all five of these; this function never
+    // carries its own copy.
+    case 'RECOVERY_IN_PROGRESS':
+    case 'EXECUTION_WEAKENING':
     case 'PULLBACK_IN_PROGRESS':
     case 'BOUNCE_IN_PROGRESS':
     case 'ENTRY_EXTENDED':
