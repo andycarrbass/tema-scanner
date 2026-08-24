@@ -14232,11 +14232,24 @@ function buildTradeReadyChecklistHtml(symbol, d, advisory, opts) {
   else if (_htfState === 'supportive') cautions.push('HTF partially aligned \u2014 not fully confirmed');
   // TEMA structure — direction-aware, matches the trade direction being
   // evaluated. Canonical source: MarketEvidence's temaStructure fact.
+  //
+  // TDAS V5.4.2 (live smoke correction) — label changed from "TEMA
+  // bullish/bearish" to "4H TEMA bullish/bearish". Source trace confirmed
+  // this checklist row reads comp.temaStructure.direction, which traces
+  // to setupTemaDir <- st.crossLong/crossShort — a 4H/setup-timeframe
+  // TEMA cross fact, NOT the canonical 1H TEMA state
+  // (entryQuality.facts.temaDirection) that V5.4.2's pre-cross admission
+  // override actually depends on. The underlying fact/readiness
+  // calculation/checklist eligibility are completely unchanged — this is
+  // a trader-facing label-only correction so the row can no longer be
+  // misread as describing 1H TEMA state when the two can now legitimately
+  // disagree (e.g. a BTC-shaped pre-cross admission: 4H TEMA bullish,
+  // confirmed 1H TEMA not yet crossed).
   const _temaDir = (comp.temaStructure && comp.temaStructure.direction) || 'unknown';
   const temaSupports = dirLower === 'long' ? _temaDir === 'bullish' : _temaDir === 'bearish';
   if (temaSupports) {
     const _temaWidening = comp.temaStructure && comp.temaStructure.momentum === 'widening';
-    rows.push('TEMA ' + (dir === 'LONG' ? 'bullish' : 'bearish') + (_temaWidening ? ' \u00b7 widening' : ''));
+    rows.push('4H TEMA ' + (dir === 'LONG' ? 'bullish' : 'bearish') + (_temaWidening ? ' \u00b7 widening' : ''));
   }
   // UT Bot — direction-aware confirmation. Canonical source:
   // MarketEvidence's utDirection fact. Freshness intentionally omitted
@@ -26847,10 +26860,52 @@ function updateJournalCount(){
 
 // TDAS V5.0.0C — new Watch tab badge. Mirrors updateTradeCount()'s
 // existing pattern exactly, scoped to active Watches only.
+// TDAS V5.4.2 (Watch badge lifecycle consistency) — the ONE canonical
+// "is this persisted Watch record currently in the visible Watch lane"
+// predicate. A 4H record whose CURRENT canonical Advisory has resolved to
+// Trade Ready/Counter-HTF (resolveCanonicalLifecycle()'s own §C: "Trade
+// Ready promotion — automatic, from either origin") is canonically
+// promoted to Setups and is therefore NOT counted/shown as Watch, even
+// though the underlying journal record remains fully persisted
+// (isActiveWatch()===true, untouched) so a later canonical demotion
+// routes it back to Watch automatically (§B/D) without recreating
+// anything. 1H records have no Setups promotion concept at all (standalone
+// 1H authority migration remains deferred) and are always visible.
+// Extracted here as the single shared authority so every consumer —
+// renderWatchPage()'s own grid/summary and updateWatchCount()'s nav
+// badge — reads exactly the same definition; no second copy of this
+// lifecycle check exists anywhere.
+function _isWatchRecordCanonicallyVisible(j){
+  if (String(j.tf||'').toLowerCase() !== '4h') return true; // 1H: always visible
+  try {
+    const _liveRead = getWatchSnapshotData(j);
+    const _liveD = _liveRead && _liveRead.data;
+    const _destination = _liveD && _liveD.eval && _liveD.eval.lifecycle && _liveD.eval.lifecycle.destination;
+    return _destination !== 'setups';
+  } catch (e) { return true; } // fail open — never hide a Watch record on error
+}
+
+// TDAS V5.4.2 (Watch badge lifecycle consistency) — the canonically
+// visible Watch set (active trade exclusion is already implicit:
+// isActiveWatch() itself is untouched and open trades are never
+// isActiveWatch records in the first place — see isActiveWatch()'s own
+// definition). Single shared source for both the nav badge and the
+// Watch page, so they can never disagree.
+function _visibleWatchRecords(){
+  return journal.filter(isActiveWatch).filter(_isWatchRecordCanonicallyVisible);
+}
+
 function updateWatchCount(){
   const el=document.getElementById('watchCount');
   if(!el)return;
-  const n=journal.filter(j=>isActiveWatch(j)).length;
+  // TDAS V5.4.2 (Watch badge lifecycle consistency) — was
+  // journal.filter(isActiveWatch).length (raw persisted count, including
+  // records canonically promoted to Setups). Now uses the SAME canonical
+  // visibility definition renderWatchPage()'s summary already uses (via
+  // the shared _visibleWatchRecords() helper above) — no second
+  // lifecycle check, no duplicated logic. Never mutates/deletes any
+  // journal record; purely which set is counted.
+  const n=_visibleWatchRecords().length;
   el.textContent=n?`(${n})`:'';
 }
 // TDAS V5.0.0C — now active-trade-only (previously watches+active
@@ -26990,17 +27045,24 @@ function renderWatchPage(){
   // defect ("persisted LONG WATCH; Advisory TRADE READY LONG" simultaneously
   // visible) confirmed by the V5.4.2 read-only audit — resolveCanonical-
   // Lifecycle() itself is unmodified; this is its first real consumer.
+  //
+  // TDAS V5.4.2 (Watch badge lifecycle consistency) — now reads
+  // _isWatchRecordCanonicallyVisible(), the SAME shared predicate
+  // updateWatchCount()'s nav badge uses, rather than its own inline copy
+  // — the two can no longer disagree by construction.
   const fourHAll = watchesAll.filter(j=>String(j.tf||'').toLowerCase()==='4h');
-  const fourH = fourHAll.filter(function(j){
-    try {
-      const _liveRead = getWatchSnapshotData(j);
-      const _liveD = _liveRead && _liveRead.data;
-      const _destination = _liveD && _liveD.eval && _liveD.eval.lifecycle && _liveD.eval.lifecycle.destination;
-      return _destination !== 'setups';
-    } catch (e) { return true; } // fail open — never hide a Watch record on error
-  });
+  const fourH = fourHAll.filter(_isWatchRecordCanonicallyVisible);
 
-  const summary = _computeWatchSummary(watchesAll);
+  // TDAS V5.4.2 (live smoke correction — Watch summary count mismatch) —
+  // summary counts (total/1H/4H/betterEntry/avgProgress) must describe
+  // the CURRENTLY VISIBLE canonical Watch lane (oneH + fourH, the exact
+  // same two sets rendered into the grid below), not the raw persisted
+  // watchesAll — which still includes records canonically promoted to
+  // Setups (still isActiveWatch===true by design, so a later canonical
+  // demotion returns them to Watch without recreating the record — see
+  // the fourH filter's own comment above). Never deletes or mutates any
+  // journal record; purely which array feeds the display.
+  const summary = _computeWatchSummary(oneH.concat(fourH));
   const statsEl = document.getElementById('watch-page-stats');
   if(statsEl) statsEl.innerHTML = [
     `<div class="log-stat">Watching<span>${summary.total}</span></div>`,
@@ -27034,26 +27096,35 @@ function renderWatchPage(){
 // Setups (currentScanData is symbol-keyed only, so a 1H scan's writes
 // used to silently overwrite the same slot a 4H candidate had occupied).
 // A 1H scan can never reach the commit site above, so it can never
-// affect this state at all. Active-trade suppression is applied HERE, at
-// read time — using the same isScannerSymbolSuppressed() authority
-// Scanner's own summary tile already uses — rather than baked into the
-// retained record itself, so a candidate that becomes temporarily
-// suppressed by an active trade is hidden from the rendered list without
-// being deleted from retained state; removing the trade later makes it
-// visible again without waiting for another 4H scan. Symbol-only
-// identity remains correct for this bounded shadow fix because current
-// invariants (calcPair() produces exactly one result per symbol per
-// scan) prevent simultaneous competing 4H candidate identities for the
-// same symbol — this is a CURRENT INVARIANT of the existing architecture,
-// not an eternal rule, and may need revisiting once genuine Setups
-// ownership/lifecycle work begins. Cards remain fully Scanner-owned:
-// this function never writes to journal, never calls
-// reconcileScannerOwnership(), never mutates currentScanData, and never
-// triggers a fetch or classifier execution — a pure read of already-
-// retained state.
+// affect this state at all.
+//
+// TDAS V5.4.2 (live smoke correction — Watch/Setups lifecycle collision) —
+// Active-trade suppression is applied HERE, at read time, using
+// findOpenTrade() directly rather than isScannerSymbolSuppressed(). This
+// is a deliberate narrowing, not a weakening: isScannerSymbolSuppressed()
+// (via isExactSymbolTfWatched()/resolveOwnership()) also suppresses on a
+// merely-PERSISTED, active Watch record — correct for Scanner's own
+// dedup doctrine, but wrong here. resolveCanonicalLifecycle() already
+// promotes a symbol to destination:'setups' "automatically, from either
+// origin (Scanner or Watch)... applies identically whether or not a
+// Watch record currently exists" (see its own §C) — but a symbol
+// promoted FROM Watch still carries its now-stale isActiveWatch journal
+// record (never auto-closed on promotion, by design, so a later
+// canonical demotion can return it to Watch without recreating it). Under
+// the old blanket check, that same still-open record made
+// isScannerSymbolSuppressed() true, which silently excluded the symbol
+// from Setups too — canonically promoted, visible nowhere. An open TRADE
+// must still suppress (unchanged, findOpenTrade() is the exact same
+// primitive isScannerSymbolSuppressed()'s own hasOpenTrade check and
+// resolveOwnership()'s owner:'trade' branch both use); an active WATCH
+// record must not. No Scanner duplication is introduced — this function
+// only feeds the Setups list; Scanner's own suppression (renderCard's
+// isScannerSymbolSuppressed() calls) and Watch's own visibility filter
+// (renderWatchPage()'s d.eval.lifecycle.destination check) are both
+// completely untouched.
 function _setupsTradeReadyCandidates(){
   if (!_latestFourHSetupsSnapshot) return [];
-  return _latestFourHSetupsSnapshot.filter(({sym}) => !isScannerSymbolSuppressed(sym, '4h'));
+  return _latestFourHSetupsSnapshot.filter(({sym}) => !findOpenTrade(sym));
 }
 
 // TDAS V5.4.0F1 — Card body now reuses the SAME canonical rear authority
