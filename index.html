@@ -10094,14 +10094,35 @@ function buildOneHPhaseEntryQuality(direction, tseOneHEvidence, v51Evidence) {
   // calibrated non-blocking states: materially aligned but narrowing
   // ("cooling"), a below-materiality opposing gap ("transitional"), and a
   // pre-cross resumption override (visible for context/transparency).
+  //
+  // TDAS V5.4.2 (post-audit F2) — RESUMPTION_NOT_CONFIRMED, moved upstream
+  // from the two Narrative composers (which previously evaluated this
+  // exact five-fact predicate independently, twice) into the single
+  // canonical entry-quality evaluator. Deliberately NON-SUPPRESSING —
+  // `severity` stays 'clear', never 'suppress' — so actionability is
+  // completely unaffected: on the actionable (TR1-5-pass) path this is
+  // purely an informational primaryReasonCode alongside an unchanged
+  // TRADE_READY action (buildCanonicalAdvisoryDecision()'s actionable
+  // branch already hardcodes primaryReasonCode:null on its TRADE_READY
+  // return, so it never surfaces there); on the not-actionable path
+  // (EMERGING etc.) it becomes the WATCH reason. Below the materiality
+  // floor (already established, "sign alone cannot block"), opposed,
+  // narrowing toward convergence, price still on the wrong side of
+  // TEMA92, no confirmed cross yet — a closed-candle transitional state,
+  // never an inferred intrabar failed/rejected cross.
   else {
+    const resumptionNotConfirmed = temaOpposing && !gapMaterial
+      && tema92GapWidening === 'narrowing' && !priceOnCorrectSideOfTema92 && !tema92CrossConfirmed;
+    if (resumptionNotConfirmed) {
+      primaryReasonCode = 'RESUMPTION_NOT_CONFIRMED';
+    }
     if (rsiHeat) cautionCodes.push('RSI_HEAT');
     if (extElevated) cautionCodes.push('EXTENSION_ELEVATED');
     if (utOpposingStale) cautionCodes.push('UT_STALE_OPPOSING');
     if (adxDecaying) cautionCodes.push('ADX_DECAYING');
     if (!sma135Held) cautionCodes.push('SMA135_NOT_HELD');
     if (gapMaterial && temaAligned && tema92GapWidening === 'narrowing') cautionCodes.push('TEMA_COOLING');
-    if (!gapMaterial && temaOpposing) cautionCodes.push('TEMA_TRANSITIONAL');
+    if (!gapMaterial && temaOpposing && !resumptionNotConfirmed) cautionCodes.push('TEMA_TRANSITIONAL');
     if (resumptionDevelopingPreCross) cautionCodes.push('RESUMPTION_DEVELOPING_PRECROSS');
   }
 
@@ -10140,6 +10161,91 @@ function _oneHPhaseReasonText(reasonCode, dirWord) {
         detail: 'Strong 4H trend, but 1H entry is extended with weakening execution. Wait for a reset.' };
     default:
       return { headlineSuffix: null, detail: null };
+  }
+}
+
+// TDAS V5.4.2 (post-audit F1/F2/F5) — canonical wording for the WATCH
+// reasons that apply when TR1 itself is the reason a 4H candidate is not
+// actionable (EMERGING/DETERIORATING/UNRESOLVED — the "S4-family" states).
+// Distinct from _oneHPhaseReasonText() immediately above, which serves a
+// DIFFERENT context (TR1 already passed — ESTABLISHED/PULLBACK — and
+// entry-quality itself suppressed an otherwise-actionable setup); that
+// function's existing RESET_IN_PROGRESS wording is deliberately preserved
+// byte-for-byte and NOT reused here, per owner instruction. This is the
+// single source for both the canonical nextCondition text
+// (buildCanonicalAdvisoryDecision()) and the Narrative headline suffix
+// (composeFourHAdvisoryNarrative()) — computed once, verbalised, never
+// recomputed in the presentation layer.
+function _tr1PhaseWatchReasonText(reasonCode, dirWord) {
+  switch (reasonCode) {
+    case 'RESET_IN_PROGRESS':
+      return { headlineSuffix: 'RESET IN PROGRESS',
+        detail: dirWord === 'bullish'
+          ? 'Reassess when 1H price reclaims TEMA92 and bullish momentum resumes.'
+          : 'Reassess when 1H price breaks back below TEMA92 and bearish momentum resumes.' };
+    case 'RESUMPTION_NOT_CONFIRMED':
+      return { headlineSuffix: 'RESUMPTION NOT CONFIRMED',
+        detail: dirWord === 'bullish'
+          ? 'Reassess on a clean 1H TEMA92 reclaim with renewed bullish momentum.'
+          : 'Reassess on a clean 1H TEMA92 breakdown with renewed bearish momentum.' };
+    case 'STRUCTURE_NOT_READY':
+      return { headlineSuffix: 'STRUCTURE NOT READY',
+        detail: '4H ' + dirWord + ' structure is still emerging. Wait for the structure to mature before entry.' };
+    default:
+      return { headlineSuffix: null, detail: null };
+  }
+}
+
+// TDAS V5.4.2 (post-audit F4) — the ONE TR2-5-first-blocker scan (TR1
+// deliberately skipped — it carries no information beyond "phase is
+// EMERGING/DETERIORATING/UNRESOLVED", already conveyed by the phase
+// itself). Previously duplicated inline in buildFourHNarrativeContext()
+// AND absent entirely from buildCanonicalAdvisoryDecision() (audit F4).
+// Now the single shared authority both call — same already-computed
+// tr.checks objects, no re-derivation, no new evidence.
+function _tr2to5FirstBlocker(tr) {
+  if (!tr || !tr.checks) return null;
+  const order = [['trendQuality', 'TR2'], ['executionRegime', 'TR3'],
+    ['intermediateTrendSupport', 'TR4'], ['extension', 'TR5']];
+  for (let i = 0; i < order.length; i++) {
+    const c = tr.checks[order[i][0]];
+    if (c && c.status === 'fail') {
+      return { checkId: order[i][1], reasonCode: (c.reasonCodes && c.reasonCodes[0]) || null, raw: c.raw || null, threshold: c.threshold || null };
+    }
+  }
+  return null;
+}
+
+// TDAS V5.4.2 (post-audit F4/F5) — canonical nextCondition text for a
+// TR2-5 blocker, usable without a Narrative ctx (unlike Narrative's own
+// _tr2to5AdvisoryDetail(), which also does ctx-bound fact-provenance
+// tracking via use() and is intentionally left in place for that purpose
+// — see that function's own header). Reads only blk.raw/blk.threshold,
+// already present on the TR check object; no new computation, no ctx
+// dependency, so buildCanonicalAdvisoryDecision() can call it directly.
+function _canonicalTr2to5NextCondition(blk, dirWord) {
+  if (!blk) return null;
+  const isLong = dirWord === 'bullish';
+  const raw = blk.raw || {};
+  switch (blk.checkId) {
+    case 'TR2':
+      return 'Wait for 4H trend quality (ADX) to strengthen before entry.';
+    case 'TR3':
+      return isLong ? 'Wait for 1H execution regime to align bullish before entry.' : 'Wait for 1H execution regime to align bearish before entry.';
+    case 'TR4': {
+      const rc = blk.reasonCode;
+      if (rc === 'TR4_SMA80_PRICE_OPPOSING') return isLong ? 'Wait for price to reclaim the 4H SMA80 before entry.' : 'Wait for price to break back below the 4H SMA80 before entry.';
+      if (rc === 'TR4_SMA135_PRICE_OPPOSING') return isLong ? 'Wait for price to reclaim the 1H SMA135 before entry.' : 'Wait for price to break back below the 1H SMA135 before entry.';
+      if (rc === 'TR4_SMA80_SLOPE_OPPOSING') return 'Wait for the 4H SMA80 to turn ' + (isLong ? 'higher' : 'lower') + ' before entry.';
+      if (rc === 'TR4_SMA135_SLOPE_OPPOSING') return 'Wait for the 1H SMA135 to turn ' + (isLong ? 'higher' : 'lower') + ' before entry.';
+      return 'Wait for intermediate structure to realign before entry.';
+    }
+    case 'TR5': {
+      const dist = raw.extensionAbsoluteAtr;
+      return (dist != null) ? ('1H price is ' + Number(dist).toFixed(1) + ' ATR from TEMA92. Wait for price to reset before entry.') : 'Price is too extended from TEMA92. Wait for price to reset before entry.';
+    }
+    default:
+      return 'Wait for structure to realign before entry.';
   }
 }
 
@@ -10228,7 +10334,7 @@ function buildCanonicalAdvisoryDecision(d, tseAuth) {
         const counterHtf = !!(shadow && shadow.eligible === true && shadow.direction === tseAuth.direction);
         return {
           action: counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
-          direction: tseAuth.direction, primaryReasonCode: null,
+          direction: tseAuth.direction, primaryReasonCode: null, blocker: null,
           cautionCodes: ['EMERGING_CONDITIONAL_ADMISSION'],
           nextCondition: null, entryQuality: eqForEmerging, source: 'emerging_conditional_admission',
         };
@@ -10237,16 +10343,48 @@ function buildCanonicalAdvisoryDecision(d, tseAuth) {
     // TR1-5 already resolved non-ready/technical-failure — action
     // mirrors that unchanged (owner doctrine: Trade Ready is a validated
     // branch of Advisory, evaluated after it — this never changes action
-    // to TRADE_READY). When entryQuality WAS computed above (the
-    // not-admitted EMERGING case), its primaryReasonCode/cautionCodes are
-    // still exposed here for wording, exactly like the actionable-
-    // suppressed branch below does — never invented, never re-derived.
+    // to TRADE_READY).
+    //
+    // TDAS V5.4.2 (post-audit F1/F4/F5) — canonical reason completeness.
+    // Priority, matching the pre-existing Narrative S4 priority exactly
+    // (relocated here, not re-invented — see _tr2to5FirstBlocker()'s own
+    // header): (1) a genuine TR2-5 blocker, if one exists — TR1 itself is
+    // never consulted here, since for every non-ready phase it carries no
+    // information beyond the phase itself; (2) the 1H entry-quality
+    // reason, if entry-quality (already computed above for the admission
+    // check) produced one — RESET_IN_PROGRESS/PULLBACK_IN_PROGRESS/
+    // BOUNCE_IN_PROGRESS/ENTRY_EXTENDED/RESUMPTION_NOT_CONFIRMED; (3)
+    // STRUCTURE_NOT_READY — the residual case where TR2-5 all pass, entry
+    // quality has no objection at all, and conditional admission did not
+    // qualify: the phase itself (EMERGING/DETERIORATING/UNRESOLVED) is
+    // genuinely the only reason left. primaryReasonCode is therefore
+    // non-null for every legitimate 4H WATCH this function can produce.
+    const _tr2to5Blocker = (tseAuth.classification === 'not_trade_ready') ? _tr2to5FirstBlocker(d.tradeReadyV1TseShadow) : null;
+    const _watchDirWord = dirWord === 'long' ? 'bullish' : (dirWord === 'short' ? 'bearish' : null);
+
+    let _watchReasonCode = null, _watchNextCondition = null, _watchCautionCodes = [];
+    if (_tr2to5Blocker) {
+      _watchReasonCode = _tr2to5Blocker.reasonCode || _tr2to5Blocker.checkId;
+      _watchNextCondition = _watchDirWord ? _canonicalTr2to5NextCondition(_tr2to5Blocker, _watchDirWord) : null;
+      _watchCautionCodes = (eqForEmerging && eqForEmerging.known) ? eqForEmerging.cautionCodes : [];
+    } else if (eqForEmerging && eqForEmerging.known && eqForEmerging.primaryReasonCode) {
+      _watchReasonCode = eqForEmerging.primaryReasonCode;
+      const _txt = _watchDirWord ? _tr1PhaseWatchReasonText(_watchReasonCode, _watchDirWord) : { detail: null };
+      _watchNextCondition = _txt.detail;
+      _watchCautionCodes = eqForEmerging.cautionCodes;
+    } else if (tseAuth.classification === 'not_trade_ready') {
+      _watchReasonCode = 'STRUCTURE_NOT_READY';
+      const _txt = _watchDirWord ? _tr1PhaseWatchReasonText('STRUCTURE_NOT_READY', _watchDirWord) : { detail: null };
+      _watchNextCondition = _txt.detail;
+      _watchCautionCodes = (eqForEmerging && eqForEmerging.known) ? eqForEmerging.cautionCodes : [];
+    }
     return {
       action: (tseAuth.classification === 'technical_failure') ? 'UNAVAILABLE' : 'WATCH',
       direction: tseAuth.direction,
-      primaryReasonCode: (eqForEmerging && eqForEmerging.known) ? eqForEmerging.primaryReasonCode : null,
-      cautionCodes: (eqForEmerging && eqForEmerging.known) ? eqForEmerging.cautionCodes : [],
-      nextCondition: null,
+      primaryReasonCode: _watchReasonCode,
+      blocker: _tr2to5Blocker,
+      cautionCodes: _watchCautionCodes,
+      nextCondition: _watchNextCondition,
       entryQuality: eqForEmerging || { known: false, severity: 'unknown', primaryReasonCode: null, cautionCodes: [], facts: {} },
       source: 'tr1_5',
     };
@@ -10258,7 +10396,7 @@ function buildCanonicalAdvisoryDecision(d, tseAuth) {
     const txt = _oneHPhaseReasonText(entryQuality.primaryReasonCode, dirWord === 'long' ? 'bullish' : 'bearish');
     return {
       action: 'WATCH', direction: tseAuth.direction,
-      primaryReasonCode: entryQuality.primaryReasonCode, cautionCodes: entryQuality.cautionCodes,
+      primaryReasonCode: entryQuality.primaryReasonCode, blocker: null, cautionCodes: entryQuality.cautionCodes,
       nextCondition: txt.detail, entryQuality, source: 'entry_quality_suppressed',
     };
   }
@@ -10269,7 +10407,7 @@ function buildCanonicalAdvisoryDecision(d, tseAuth) {
   // caution where genuinely useful").
   return {
     action: tseAuth.counterHtf ? 'COUNTER_HTF' : 'TRADE_READY',
-    direction: tseAuth.direction, primaryReasonCode: null,
+    direction: tseAuth.direction, primaryReasonCode: null, blocker: null,
     cautionCodes: (entryQuality.known && entryQuality.cautionCodes.length ? [entryQuality.cautionCodes[0]] : []),
     nextCondition: null, entryQuality, source: 'tr1_5_and_entry_quality',
   };
@@ -10631,29 +10769,20 @@ function buildFourHNarrativeContext(d) {
     }
   }
 
-  // TDAS V5.4.0F3A — S4 EMERGING presentation adapter data only (owner-
-  // approved hotfix). TR1 fails tautologically for every EMERGING phase
-  // by design (tradeReadyV1Check1TseShadow's own unchanged logic) and
-  // carries no information beyond "phase is EMERGING" — already conveyed
-  // by the S4 headline — so it is never a meaningful Advisory blocker for
-  // S4 specifically. This is a SEPARATE, additive field carrying the
-  // first TR2-5 failure only (skipping TR1 entirely); `blocker` above is
-  // completely untouched and remains the single canonical first-failing-
-  // check field for every other consumer. No re-derivation, no new
-  // computation — same already-computed tr.checks objects, just a
-  // narrower scan starting at TR2.
-  let blockerSkippingTr1 = null;
-  if (tr && tr.checks) {
-    const orderSkipTr1 = [['trendQuality', 'TR2'], ['executionRegime', 'TR3'],
-      ['intermediateTrendSupport', 'TR4'], ['extension', 'TR5']];
-    for (let i = 0; i < orderSkipTr1.length; i++) {
-      const c = tr.checks[orderSkipTr1[i][0]];
-      if (c && c.status === 'fail') {
-        blockerSkippingTr1 = { checkId: orderSkipTr1[i][1], reasonCode: (c.reasonCodes && c.reasonCodes[0]) || null, raw: c.raw || null, threshold: c.threshold || null };
-        break;
-      }
-    }
-  }
+  // TDAS V5.4.2 (post-audit F4, corrected) — REMOVED. This field
+  // previously carried a second, independent call to
+  // _tr2to5FirstBlocker() — even after that scan became a shared helper,
+  // Narrative was still permitted to invoke it directly, which is exactly
+  // the parallel-derivation shape the audit flagged: `TR facts ->
+  // canonical Advisory blocker` and separately `TR facts -> Narrative
+  // blocker`, rather than one chain `TR facts -> canonical Advisory
+  // blocker -> Narrative renderer`. _tr2to5FirstBlocker() is now invoked
+  // ONLY by buildCanonicalAdvisoryDecision() (see that function's own
+  // header); Narrative receives the result exclusively via the
+  // canonicalDecision parameter composeFourHAdvisoryNarrative() already
+  // takes, and verbalises it — it does not call the scan itself, ever.
+  // No consumer of the old blockerSkippingTr1ForS4Presentation field
+  // remains (confirmed by source search); nothing else changes.
 
   return {
     meta: meta,
@@ -10690,10 +10819,14 @@ function buildFourHNarrativeContext(d) {
       authorityDirection: sit.direction,
       displayAction: null,
       blocker: blocker,
-      // TDAS V5.4.0F3A — additive, S4-Advisory-presentation-only. Not
-      // read by any other consumer; `blocker` above remains the single
-      // canonical field for everything else.
-      blockerSkippingTr1ForS4Presentation: blockerSkippingTr1,
+      // TDAS V5.4.2 (post-audit F4, corrected) — blockerSkippingTr1ForS4Presentation
+      // REMOVED. Narrative's S4 branch now receives the TR2-5-first
+      // blocker exclusively via the canonicalDecision parameter
+      // composeFourHAdvisoryNarrative(ctx, tseAuth, canonicalDecision)
+      // already takes (canonicalDecision.blocker) — it never computes or
+      // holds its own copy. `blocker` above (the full TR1-5-order scan)
+      // is untouched and remains the single canonical field for every
+      // other consumer.
       nextCondition: null,
       counterHtf: !!(ch && ch.eligible),
     },
@@ -10812,28 +10945,22 @@ function composeFourHTechnicalNarrative(ctx, canonicalDecision) {
       const beginWord = dirLower === 'bullish' ? 'an upward trend is beginning to form.' : 'a downward trend is beginning to form.';
       const supportiveDir = dirLower === 'bullish' ? 'rising' : 'falling';
       const opposingDir = dirLower === 'bullish' ? 'falling' : 'rising';
-      // TDAS V5.4.2 — RESUMPTION_NOT_CONFIRMED, pure verbalisation of
-      // canonicalDecision.entryQuality.facts (temaOpposing/gapMaterial/
-      // tema92GapWidening/priceOnCorrectSideOfTema92/tema92CrossConfirmed
-      // — all already computed by buildOneHPhaseEntryQuality(), never
-      // re-derived here). A closed-candle TRANSITIONAL state (TEMA gap
+      // TDAS V5.4.2 (post-audit F2) — RESUMPTION_NOT_CONFIRMED, pure
+      // verbalisation of canonicalDecision.primaryReasonCode — the
+      // predicate itself now lives ONLY in buildOneHPhaseEntryQuality()
+      // (moved upstream, no longer independently re-evaluated here from
+      // entryQuality.facts). A closed-candle TRANSITIONAL state (TEMA gap
       // below the 0.5 ATR materiality floor, narrowing toward
       // convergence, price still on the wrong side of TEMA92, no
       // confirmed cross) — never an inferred intrabar failed/rejected
       // cross. RESET_IN_PROGRESS's own S4 Technical text (the generic
       // 200MA/UT wording below) is completely unaffected — this branch
-      // only intercepts the specific transitional pattern.
-      const _s4TechEq = canonicalDecision && canonicalDecision.entryQuality;
-      if (_s4TechEq && _s4TechEq.known && DIR) {
-        const tf = _s4TechEq.facts;
-        const transitionalStalled = tf.temaOpposing && !tf.gapMaterial
-          && tf.tema92GapWidening === 'narrowing' && !tf.priceOnCorrectSideOfTema92 && !tf.tema92CrossConfirmed;
-        if (transitionalStalled) {
-          const structureWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
-          const detail = '4H ' + structureWord + ' structure remains intact. 1H TEMA is converging, but price remains '
-            + (dirLower === 'bullish' ? 'below' : 'above') + ' TEMA92 and ' + structureWord + ' resumption is not yet confirmed.';
-          return { headline: DIR + ' STRUCTURE \u2014 EMERGING', detail: detail, factIds: factIds, colorCls: colorCls };
-        }
+      // only intercepts the one specific canonical reason code.
+      if (canonicalDecision && canonicalDecision.primaryReasonCode === 'RESUMPTION_NOT_CONFIRMED' && DIR) {
+        const structureWord = dirLower === 'bullish' ? 'bullish' : 'bearish';
+        const detail = '4H ' + structureWord + ' structure remains intact. 1H TEMA is converging, but price remains '
+          + (dirLower === 'bullish' ? 'below' : 'above') + ' TEMA92 and ' + structureWord + ' resumption is not yet confirmed.';
+        return { headline: DIR + ' STRUCTURE \u2014 EMERGING', detail: detail, factIds: factIds, colorCls: colorCls };
       }
       let detail;
       if (maDir === supportiveDir) {
@@ -11102,60 +11229,54 @@ function composeFourHAdvisoryNarrative(ctx, tseAuth, canonicalDecision) {
   // Advisory blocker for S4 — it carries no information beyond "phase is
   // EMERGING", already conveyed by the S4 headline. This branch is
   // evaluated BEFORE the shared blocker table below specifically so S4
-  // never falls into that table's TR1-driven default text. Uses only the
-  // additive, S4-presentation-only blockerSkippingTr1ForS4Presentation
-  // field (first TR2-5 failure, already-computed data, no new
-  // computation) — ctx.decision.blocker itself, and every other
-  // consumer of it, is completely untouched.
+  // never falls into that table's TR1-driven default text.
+  //
+  // TDAS V5.4.2 (post-audit F4, corrected) — the TR2-5-first-blocker scan
+  // itself now lives EXCLUSIVELY in buildCanonicalAdvisoryDecision() (via
+  // the shared _tr2to5FirstBlocker() helper — see its own header). This
+  // branch is handed the result through the canonicalDecision parameter
+  // and never calls the scan itself: `TR facts -> canonical Advisory
+  // blocker -> Narrative renderer`, not two independent derivations.
+  // ctx.decision.blocker (the full TR1-5-order scan) remains untouched
+  // for every other consumer.
   if (sit === 'S4') {
-    const s4Blocker = ctx.decision.blockerSkippingTr1ForS4Presentation;
+    // TDAS V5.4.2 (post-audit F3/F4/F5) — pure verbalisation only.
+    // canonicalDecision.blocker (F4, the SAME _tr2to5FirstBlocker() scan
+    // buildCanonicalAdvisoryDecision() itself now runs — this branch no
+    // longer scans tr.checks independently) takes priority, exactly
+    // matching the pre-existing priority order. Otherwise
+    // canonicalDecision.primaryReasonCode (RESET_IN_PROGRESS/
+    // RESUMPTION_NOT_CONFIRMED/STRUCTURE_NOT_READY — F1/F2) and
+    // canonicalDecision.nextCondition (F5) are read directly — this
+    // function computes NO reason/state/wording of its own for S4 beyond
+    // mapping a reason code to a headline suffix via the shared
+    // _tr1PhaseWatchReasonText() lookup (also canonical-facing, not a
+    // second derivation). Per owner doctrine, buildCanonicalAdvisoryDecision()
+    // now guarantees primaryReasonCode is non-null for every legitimate
+    // 4H WATCH, so the terminal fallback below is an unreachable
+    // invariant guard, not a live trader-facing path (F3).
+    const s4Blocker = canonicalDecision && canonicalDecision.blocker;
     if (s4Blocker) {
       factIds.push('TRADE_READY_STATUS');
       const detail = _tr2to5AdvisoryDetail(s4Blocker);
       return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: detail, factIds: factIds };
     }
-    // TDAS V5.4.2 — S4 EMERGING, TR2-5 all pass. The obsolete generic
-    // fallback ('Wait for the initial move to gain strength before
-    // entry.') is retired. Verbalises the canonical 1H entry-quality
-    // reason (canonicalDecision.primaryReasonCode, already computed by
-    // buildCanonicalAdvisoryDecision()/buildOneHPhaseEntryQuality() —
-    // never re-derived here from raw indicators) when one is available.
-    // RESET_IN_PROGRESS (materially opposed, |gap|>=0.5 ATR — existing
-    // suppression path, unchanged) and RESUMPTION_NOT_CONFIRMED (a
-    // DISTINCT, narrative-layer-only transitional pattern — |gap|<0.5 ATR
-    // narrowing toward convergence, price still on the wrong side of
-    // TEMA92, no confirmed cross — pure verbalisation of
-    // canonicalDecision.entryQuality.facts, NEVER a new suppression rule:
-    // buildOneHPhaseEntryQuality()'s severity/primaryReasonCode are
-    // completely untouched by this branch, so this can never change
-    // `action`, EMERGING admission, TR1-5, lifecycle, sort, or the star)
-    // are both mapped. PULLBACK_IN_PROGRESS/BOUNCE_IN_PROGRESS/
-    // ENTRY_EXTENDED and the unmapped/unknown case fall through to the
-    // existing generic TR2-5-family default sentence a few lines above
-    // ('Trend phase is not yet eligible for entry.') — reused, not a new
-    // invented string.
     const _s4ReasonCode = canonicalDecision && canonicalDecision.primaryReasonCode;
-    if (_s4ReasonCode === 'RESET_IN_PROGRESS' && DIR) {
-      factIds.push('TRADE_READY_STATUS');
-      const isLongS4 = DIR === 'LONG';
-      const s4Detail = isLongS4
-        ? 'Reassess when 1H price reclaims TEMA92 and bullish momentum resumes.'
-        : 'Reassess when 1H price breaks back below TEMA92 and bearish momentum resumes.';
-      return { displayHeadline: 'WATCH ' + DIR + ' \u2014 RESET IN PROGRESS', detail: s4Detail, factIds: factIds };
-    }
-    const _s4Eq = canonicalDecision && canonicalDecision.entryQuality;
-    if (_s4Eq && _s4Eq.known && DIR) {
-      const f = _s4Eq.facts;
-      const transitionalStalled = f.temaOpposing && !f.gapMaterial
-        && f.tema92GapWidening === 'narrowing' && !f.priceOnCorrectSideOfTema92 && !f.tema92CrossConfirmed;
-      if (transitionalStalled) {
+    if (_s4ReasonCode && DIR) {
+      const _watchDirWord = DIR === 'LONG' ? 'bullish' : 'bearish';
+      const _txt = _tr1PhaseWatchReasonText(_s4ReasonCode, _watchDirWord);
+      if (_txt.headlineSuffix) {
         factIds.push('TRADE_READY_STATUS');
-        const isLongS4b = DIR === 'LONG';
-        const s4Detail = isLongS4b
-          ? 'Reassess on a clean 1H TEMA92 reclaim with renewed bullish momentum.'
-          : 'Reassess on a clean 1H TEMA92 breakdown with renewed bearish momentum.';
-        return { displayHeadline: 'WATCH ' + DIR + ' \u2014 RESUMPTION NOT CONFIRMED', detail: s4Detail, factIds: factIds };
+        const _detail = (canonicalDecision && canonicalDecision.nextCondition) || _txt.detail;
+        return { displayHeadline: 'WATCH ' + DIR + ' \u2014 ' + _txt.headlineSuffix, detail: _detail, factIds: factIds };
       }
+    }
+    // TDAS V5.4.2 (F3) — invariant guard only. Reachable only if canonical
+    // reason completeness is somehow violated (a genuine defect elsewhere,
+    // never a normal live state) — logged, not silently rendered as a
+    // polished trader-facing sentence.
+    if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) {
+      console.warn('[composeFourHAdvisoryNarrative] S4 reached with no canonical blocker/reason — canonical reason completeness invariant violated', canonicalDecision);
     }
     return { displayHeadline: DIR ? ('WATCH ' + DIR) : 'WATCH', detail: 'Trend phase is not yet eligible for entry.', factIds: factIds };
   }
@@ -12416,12 +12537,13 @@ function _buildScannerAdvisory(d) {
       return {
         mode: 'scanner', action: 'WATCH',
         headline: _narrAdv ? (_narrAdv.displayHeadline || (_watchDir ? ('WATCH ' + _watchDir) : 'WATCH')) : (_watchDir ? ('WATCH ' + _watchDir) : 'WATCH'),
-        detail: _narrAdv ? _narrAdv.detail : (_interp.explanation + (_interp.guidance ? ' ' + _interp.guidance : '')),
+        detail: _narrAdv ? _narrAdv.detail : (_canonicalDecision.nextCondition || (_interp.explanation + (_interp.guidance ? ' ' + _interp.guidance : ''))),
         summary: _interp.summary, // unreachable field — see reachability note above
         direction: _watchDir, tradeReady: false, readyLabel: null,
         supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [_tseAuth.reason],
-        next: '', authoritySource: 'tse_4h',
-        primaryReasonCode: null, cautionCodes: [], entryQuality: _canonicalDecision.entryQuality,
+        next: _canonicalDecision.nextCondition || '', authoritySource: 'tse_4h',
+        primaryReasonCode: _canonicalDecision.primaryReasonCode, blocker: _canonicalDecision.blocker,
+        cautionCodes: _canonicalDecision.cautionCodes, entryQuality: _canonicalDecision.entryQuality,
       };
     }
   }
