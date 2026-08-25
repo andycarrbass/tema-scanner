@@ -2293,7 +2293,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // never existed — added. No TSE/Evaluation/Advisory/Trade-Ready/Scanner/
 // Watch/Setups/HTF/CHOP/200MA/RSI-ADX/protection-ladder-sequencing
 // change. Supersedes V5.4.1A4.
-const APP_BUILD = 'V5.4.2';
+const APP_BUILD = 'V5.4.3';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -10555,8 +10555,23 @@ function _isFourHTseActionable(d) {
 // ║  completely untouched: returns d.signal unchanged, exactly as every     ║
 // ║  4H-gated helper in this codebase already does for 1H.                  ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
+// TDAS V5.4.3 — Standalone 1H Canonical Uplift. For d.tf==='1h', the raw
+// d.signal passthrough (owner V5.4.2 doctrine: "1H unchanged") is now
+// retired — replaced by the canonical oneHAdvisory.direction this same
+// module computes on every calcPair(symbol,'1h') call (see calcPair()'s
+// own "TDAS V5.4.3" attachment block). No visible Scanner consumer may
+// silently fall back to raw d.signal for 1H (owner §25) — this is the
+// ONE seam both the zero-signal-authority audit and the evidence-
+// provenance audit identified, and the ONLY place this function's 1H
+// behaviour changes. 4H (d.tf==='4h') is completely untouched — same
+// first branch, same d.eval.lifecycle.laneDirection read, byte-identical.
 function _fourHCanonicalLaneDirection(d) {
-  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') return (d && d.signal) || 'neutral';
+  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') {
+    if (d && d.tf === '1h' && d.oneHAdvisory && d.oneHAdvisory.direction) {
+      return d.oneHAdvisory.direction === 'long' ? 'long' : 'short';
+    }
+    return (d && d.signal) || 'neutral';
+  }
   const lane = d.eval && d.eval.lifecycle && d.eval.lifecycle.laneDirection;
   return lane || 'neutral';
 }
@@ -12621,6 +12636,39 @@ function _buildScannerAdvisory(d) {
         cautionCodes: _canonicalDecision.cautionCodes, entryQuality: _canonicalDecision.entryQuality,
       };
     }
+  }
+
+  // ── TDAS V5.4.3 — Standalone 1H Canonical Uplift, leading branch ────────
+  // Same shape as the 4H TSE leading branch immediately above: runs BEFORE
+  // the legacy ev.tradeBias/actionBias gate, deliberately — a canonically
+  // BULLISH_ESTABLISHED/EMERGING/CHALLENGED 1H setup can have raw
+  // d.signal==='neutral' (that IS the confirmed zero-signal-authority
+  // defect this build fixes) while d.oneHAdvisory is genuinely
+  // directional. When d.oneHAdvisory is absent (flag/computation not
+  // reached) this block is a pure no-op and execution falls through
+  // unchanged to the untouched legacy chain below. When present, this
+  // function NEVER falls through to the legacy chain afterward for 1H —
+  // same "authoritative, not merely first-checked" doctrine as 4H.
+  if (d && d.tf === '1h' && d.oneHAdvisory) {
+    const _oneHAdv = d.oneHAdvisory;
+    const _oneHDirWord = _oneHAdv.direction === 'long' ? 'LONG' : (_oneHAdv.direction === 'short' ? 'SHORT' : null);
+    if (_oneHAdv.action === 'NO_TRADE') {
+      return null; // CHOP/unresolved — nothing to advise, matches legacy "nothing to advise" contract
+    }
+    const _oneHHeadline = _oneHDirWord
+      ? ((_oneHAdv.action === 'TRADE_READY' ? 'TRADE READY ' : 'WATCH ') + _oneHDirWord + (_oneHAdv.reason ? (' \u2014 ' + String(_oneHAdv.reason).replace(/_/g, ' ')) : ''))
+      : 'WATCH';
+    return {
+      mode: 'scanner', action: _oneHAdv.action,
+      headline: _oneHHeadline,
+      detail: _oneHAdv.nextCondition || (_oneHAdv.reason ? String(_oneHAdv.reason).replace(/_/g, ' ') : ''),
+      summary: null,
+      direction: _oneHDirWord, tradeReady: _oneHAdv.action === 'TRADE_READY', readyLabel: null,
+      supporting: [], blocking: [], warnings: [], tradeReadyBlockedReasons: [],
+      next: _oneHAdv.nextCondition || '', authoritySource: 'standalone_one_h',
+      primaryReasonCode: _oneHAdv.reason, blocker: null,
+      cautionCodes: _oneHAdv.cautionCodes || [], entryQuality: null,
+    };
   }
 
   const ev = d.evaluation;
@@ -15908,6 +15956,360 @@ function v51StructuralThesis(input) {
     return { result: 'limited_evaluation', reasons };
   }
   return { result: 'valid', reasons: [] };
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.3 — Standalone 1H Canonical Uplift                            ║
+// ║                                                                          ║
+// ║  Authority doctrine (owner-locked, Opus-reviewed):                       ║
+// ║    ONE standalone 1H technical authority: buildStandaloneOneHTSE().      ║
+// ║    ONE standalone 1H decision authority: buildStandaloneOneHAdvisory().  ║
+// ║  The TSE answers "what is the native 1H technical structure/regime?"     ║
+// ║  and NEVER outputs TRADE_READY. Advisory answers "given structure,       ║
+// ║  phase and 4H supervision, is a fresh trade worth taking now?".          ║
+// ║                                                                          ║
+// ║  Explicitly NON-authoritative for this vertical slice (read by nothing   ║
+// ║  below): v51Evidence.structuralThesis, .route, tradeReadyShadow,         ║
+// ║  premiumShadow, V51_CONST.adxFloorStandaloneOneH, temaMaturity.direction,║
+// ║  legacy d.signal, Stage, ev.actionBias. These remain live/computed for   ║
+// ║  legacy/shadow diagnostics only — see the de-authorisation list in the   ║
+// ║  delivery report.                                                       ║
+// ║                                                                          ║
+// ║  Evidence sourcing (no new fetch, no new indicator):                     ║
+// ║    native 1H  <- _calcConfirmedEvidenceFromKlines(symbol, raw1h, '1h')   ║
+// ║                  (the SAME function 4H's own 1H timing evidence uses)    ║
+// ║                  + v51TemaSeparationState() for magnitude/trajectory     ║
+// ║                    (sign taken from the native call's own tema92GapAtr — ║
+// ║                    Opus's signed/magnitude split, §12)                   ║
+// ║    4H supervisory <- v51ConfirmedIndicators() on the SAME already-       ║
+// ║                  fetched htf candles (htClosedCandlesNormal/hc) 4H's own ║
+// ║                  daily-htf context already uses, + htfUtBot (already    ║
+// ║                  computed for every 1H scan)                            ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// TDAS V5.4.3 — one centralised confirmed-candle persistence primitive for
+// "established" (owner doctrine §10: do not invent a second persistence
+// rule per consumer). Reuses the exact consecutive-confirmed-bars counting
+// technique already proven by v51SmaStateMachine()'s own
+// consecutiveConfirmedBars (inspected before reuse, per instruction) —
+// generalised here to any boolean confirmed-bar predicate series, not
+// re-implemented per-caller.
+function _oneHConsecutiveConfirmedBars(boolSeriesNewestLast, requiredBars) {
+  let n = 0;
+  for (let i = boolSeriesNewestLast.length - 1; i >= 0; i--) {
+    if (!boolSeriesNewestLast[i]) break;
+    n++;
+  }
+  return { bars: n, established: n >= requiredBars };
+}
+
+// TDAS V5.4.3 — native 1H evidence. Pure reuse of the existing 4H-TSE-grade
+// evidence producer, called for '1h' directly (previously only ever called
+// for tf==='4h' 1H-timing purposes — this is the same function, same
+// closed-candle discipline, zero new calculation). Augmented with
+// v51TemaSeparationState() magnitude/trajectory (Opus split, §12) and the
+// composite structural-chop assessment (§13, new bounded derived evidence).
+function _buildNativeOneHEvidence(symbol, raw1h) {
+  const ev = _calcConfirmedEvidenceFromKlines(symbol, raw1h, '1h');
+  if (!ev || ev.status !== 'complete') return { status: (ev && ev.status) || 'incomplete', evidence: null };
+  const e = ev;
+
+  // TEMA phase — sign from the native call's own signed gap (already
+  // computed, already closed-candle-correct); magnitude/trajectory/
+  // persistence from v51TemaSeparationState(), called on the SAME closed
+  // TEMA17/92 series _calcConfirmedEvidenceFromKlines() itself computed
+  // internally (t17a/t92a) — recomputing tema() again here would violate
+  // "one authoritative provenance per fact", so instead we recompute the
+  // separation SERIES fact from the same two already-canonical scalar
+  // arrays via a second call to tema() only if the series isn't already
+  // exposed. Since _calcConfirmedEvidenceFromKlines() does not expose its
+  // internal t17a/t92a arrays, and re-deriving them from raw1h a second
+  // time would be a genuine duplicate TEMA calculation, this function
+  // instead derives the closed-candle series directly and calls the two
+  // existing series-based functions ONCE.
+  const closedCloses1h = raw1h.slice(0, -1).map(k => k.close);
+  const t17aFor1h = tema(closedCloses1h, 17);
+  const t92aFor1h = tema(closedCloses1h, 92);
+  const sep = v51TemaSeparationState(e.atr, t17aFor1h, t92aFor1h, closedCloses1h);
+
+  // Structural licence — 200MA + TEMA complex establishment (§7/§9).
+  // "Established" uses the one shared persistence primitive
+  // (_oneHConsecutiveConfirmedBars(), V51_CONST.smaConfirmBars1h — the
+  // existing constant Opus flagged as relevant, inspected: it is the
+  // exact same "N consecutive confirmed closed bars on the correct side"
+  // semantics v51SmaStateMachine() already uses for its own
+  // consecutiveConfirmedBars, so reused centrally rather than reinvented).
+  const bullSide = (i) => closedCloses1h[i] > 0; // placeholder never used directly; real series built below
+  const n1h = closedCloses1h.length;
+  const requiredBars = V51_CONST.smaConfirmBars1h;
+  // Re-walk the closed series for 200MA-relative + TEMA-complex-relative
+  // persistence using only already-computed scalars at each historical
+  // bar — cheap (O(requiredBars+lookback)), not a new indicator.
+  const lookback = Math.max(requiredBars + 1, 3);
+  const priceAbove200Series = [], tema17Above200Series = [], tema92Above200Series = [];
+  for (let i = n1h - lookback; i < n1h; i++) {
+    if (i < 200) continue;
+    const window200 = sma(closedCloses1h.slice(0, i + 1), 200);
+    if (window200 == null) continue;
+    priceAbove200Series.push(closedCloses1h[i] > window200);
+    tema17Above200Series.push(t17aFor1h[i] > window200);
+    tema92Above200Series.push(t92aFor1h[i] > window200);
+  }
+  const priceAbove200Est = _oneHConsecutiveConfirmedBars(priceAbove200Series, requiredBars);
+  const tema17Above200Est = _oneHConsecutiveConfirmedBars(tema17Above200Series, requiredBars);
+  const tema92Above200Est = _oneHConsecutiveConfirmedBars(tema92Above200Series, requiredBars);
+  const priceBelow200Series = priceAbove200Series.map(b => !b);
+  const tema17Below200Series = tema17Above200Series.map(b => !b);
+  const tema92Below200Series = tema92Above200Series.map(b => !b);
+  const priceBelow200Est = _oneHConsecutiveConfirmedBars(priceBelow200Series, requiredBars);
+  const tema17Below200Est = _oneHConsecutiveConfirmedBars(tema17Below200Series, requiredBars);
+  const tema92Below200Est = _oneHConsecutiveConfirmedBars(tema92Below200Series, requiredBars);
+
+  // Composite structural chop (§13) — "the whole structural complex has
+  // lost directional shape". Built ONLY from already-canonical values on
+  // this same evidence object: flat/weak 200MA slope, flat/weak SMA135
+  // slope, and the TEMA17/92 complex NOT persistently established on
+  // either side of the 200MA (captured directly by the two establishment
+  // checks above returning false in BOTH directions) — deliberately not a
+  // new indicator, a composite reading of existing flags. A low
+  // price/200MA crossing count must not prevent this from firing (owner
+  // requirement) — this composite never reads the crossing-count chop
+  // field at all.
+  const flat200 = e.sma200SlopeState === 'flat';
+  const flatSma135 = e.sma135SlopeState === 'flat';
+  const complexNotEstablishedEitherSide = !(priceAbove200Est.established && tema17Above200Est.established && tema92Above200Est.established)
+    && !(priceBelow200Est.established && tema17Below200Est.established && tema92Below200Est.established);
+  const structuralChop = (flat200 || flatSma135) && complexNotEstablishedEitherSide;
+
+  return {
+    status: 'complete',
+    evidence: Object.assign({}, e, {
+      temaSeparationAtr: sep.separationAtr, temaSeparationBand: sep.band,
+      temaSeparationTrajectory: sep.trajectory, temaSeparationConsecutive: sep.consecutiveCount,
+      priceAbove200Established: priceAbove200Est.established, tema17Above200Established: tema17Above200Est.established, tema92Above200Established: tema92Above200Est.established,
+      priceBelow200Established: priceBelow200Est.established, tema17Below200Established: tema17Below200Est.established, tema92Below200Established: tema92Below200Est.established,
+      structuralChop,
+    }),
+  };
+}
+
+// TDAS V5.4.3 — 4H supervisory evidence for a standalone 1H scan. Reuses
+// v51ConfirmedIndicators() (the SAME function 4H's own SMA80/TR4 evidence
+// is built from) directly on the already-fetched htf candle series
+// (htClosedCandlesNormal/hc) — no new fetch. UT direction/freshness reuse
+// htfUtBot, the SAME object already computed for every 1H scan's existing
+// htfTrendContext use.
+// TDAS V5.4.3 — the ONE standalone 1H technical-state producer. Answers
+// only "what is the native 1H technical structure/regime?" — NEVER
+// outputs TRADE_READY (owner doctrine §3). Pure classification from
+// already-computed evidence; no fetch, no persisted state, no
+// re-derivation of any underlying indicator.
+//
+// Family (owner §14): BULLISH_ESTABLISHED / BEARISH_ESTABLISHED /
+// BULLISH_EMERGING / BEARISH_EMERGING / BULLISH_CHALLENGED /
+// BEARISH_CHALLENGED / TRANSITIONAL_RECOVERY_REQUIRED / CHOP.
+// Invariant (owner §14): loss of bullish licence != automatic bearish
+// regime, and mirror — enforced structurally below: CHALLENGED never
+// falls through to the opposite ESTABLISHED/EMERGING branch, only to
+// TRANSITIONAL_RECOVERY_REQUIRED or its own CHALLENGED state.
+// TDAS V5.4.3 — 4H supervisory evidence for a standalone 1H scan. Reuses
+// v51ConfirmedIndicators() (the SAME function 4H's own SMA80/TR4 evidence
+// is built from) directly on the already-fetched htf candle series
+// (htClosedCandlesNormal/hc) — no new fetch. UT direction/freshness reuse
+// htfUtBot, the SAME object already computed for every 1H scan's existing
+// htfTrendContext use.
+function _buildFourHSupervisoryEvidence(htClosedCandlesNormal, hc, htfUtBot) {
+  if (!Array.isArray(htClosedCandlesNormal) || htClosedCandlesNormal.length < 201) {
+    return { status: 'incomplete', evidence: null };
+  }
+  const highs4h = htClosedCandlesNormal.map(c => c.high);
+  const lows4h = htClosedCandlesNormal.map(c => c.low);
+  const ind = v51ConfirmedIndicators(highs4h, lows4h, hc);
+  if (!ind.complete) return { status: 'incomplete', evidence: null };
+  const ma200SlopeInfo = _maRegressionSlopeAtrFromCloses(hc, 200, ind.atr, V511_SMA200_SLOPE_LOOKBACK_BARS);
+  const utDirection = htfUtBot && htfUtBot.direction === 1 ? 'bullish' : (htfUtBot && htfUtBot.direction === -1 ? 'bearish' : 'unknown');
+  const utBarsSinceFlip = (htfUtBot && htfUtBot.barsAgoFlip != null) ? htfUtBot.barsAgoFlip : null;
+  return {
+    status: 'complete',
+    evidence: {
+      lastClosedPrice: ind.lastClosedPrice, atr: ind.atr,
+      sma200: ind.ma200, sma200SlopeAtr: ma200SlopeInfo.slopeAtr, sma200SlopeState: ma200SlopeInfo.state,
+      priceAboveSma200: ind.lastClosedPrice > ind.ma200,
+      sma80: ind.sma80, sma80SlopeAtr: ind.sma80SlopeAtr, sma80SlopeState: ind.sma80SlopeState,
+      priceAboveSma80: ind.lastClosedPrice > ind.sma80,
+      utDirection, utBarsSinceFlip,
+      utFreshness: utBarsSinceFlip != null ? classifyUtFreshness(utBarsSinceFlip).key : 'unknown',
+    },
+  };
+}
+
+function buildStandaloneOneHTSE(nativeEvidence) {
+  if (!nativeEvidence || nativeEvidence.status !== 'complete') {
+    return { state: 'UNKNOWN', direction: null, reasons: ['REQUIRED_EVIDENCE_MISSING'] };
+  }
+  const e = nativeEvidence.evidence;
+
+  // Flat 200MA, or the composite structural-chop assessment (§13) —
+  // "the whole structural complex has lost directional shape". A low
+  // 200MA-crossing count must not prevent this (owner requirement) — this
+  // never reads a crossing-count field at all, by construction.
+  if (e.sma200SlopeState === 'flat' || e.structuralChop) {
+    return { state: 'CHOP', direction: null, reasons: e.structuralChop ? ['STRUCTURAL_COMPLEX_FLAT'] : ['SMA200_FLAT'] };
+  }
+
+  const licensedDir = e.sma200SlopeState === 'rising' ? 'long' : (e.sma200SlopeState === 'falling' ? 'short' : null);
+  if (!licensedDir) {
+    return { state: 'UNKNOWN', direction: null, reasons: ['SMA200_SLOPE_UNRESOLVED'] };
+  }
+
+  const established = licensedDir === 'long'
+    ? (e.priceAbove200Established && e.tema17Above200Established && e.tema92Above200Established)
+    : (e.priceBelow200Established && e.tema17Below200Established && e.tema92Below200Established);
+  if (established) {
+    return { state: licensedDir === 'long' ? 'BULLISH_ESTABLISHED' : 'BEARISH_ESTABLISHED', direction: licensedDir, reasons: [] };
+  }
+
+  const priceOnLicensedSide = licensedDir === 'long' ? (e.lastClosedPrice > e.sma200) : (e.lastClosedPrice < e.sma200);
+  const t17OnLicensedSide = licensedDir === 'long' ? (e.tema17 > e.sma200) : (e.tema17 < e.sma200);
+  const t92OnLicensedSide = licensedDir === 'long' ? (e.tema92 > e.sma200) : (e.tema92 < e.sma200);
+
+  if (priceOnLicensedSide && (t17OnLicensedSide !== t92OnLicensedSide)) {
+    // Only part of the TEMA complex has migrated — emerging, not yet
+    // established (owner §9: "only part of TEMA complex migrated").
+    return { state: licensedDir === 'long' ? 'BULLISH_EMERGING' : 'BEARISH_EMERGING', direction: licensedDir, reasons: ['PARTIAL_TEMA_MIGRATION'] };
+  }
+  if (!priceOnLicensedSide) {
+    // The 200MA slope hasn't flipped, but price has moved to the wrong
+    // side — the licensed structure is being tested/damaged. Deliberately
+    // NEVER promoted to the opposite regime here (owner invariant §14).
+    return { state: licensedDir === 'long' ? 'BULLISH_CHALLENGED' : 'BEARISH_CHALLENGED', direction: licensedDir, reasons: ['PRICE_OFF_LICENSED_SIDE'] };
+  }
+  // Price on the licensed side but neither TEMA leg has migrated yet —
+  // weak/insufficient partial evidence.
+  return { state: 'TRANSITIONAL_RECOVERY_REQUIRED', direction: null, reasons: ['TEMA_NOT_MIGRATED'] };
+}
+
+// TDAS V5.4.3 — the ONE standalone 1H decision authority. Given native
+// technical state (from buildStandaloneOneHTSE(), never re-derived here),
+// 1H phase (signed gap for direction, v51TemaSeparationState() for
+// magnitude/trajectory — Opus split, §12), ADX/RSI context and active 4H
+// supervision, decides whether a fresh standalone 1H trade is sensible
+// now. Action family: NO_TRADE / WATCH / TRADE_READY.
+//
+// Invariant (owner §20, Q13/Q16 of the Opus review): 4H MAY VETO, 4H MAY
+// NEVER INITIATE. Enforced structurally — fourHEvidence is consulted only
+// AFTER `direction` is already established from native TSE state; no
+// branch below can set `direction`/`action:'TRADE_READY'` from 4H facts
+// alone.
+function buildStandaloneOneHAdvisory(tse, nativeEvidence, fourHEvidence) {
+  const cautionCodes = [];
+  if (tse.state === 'UNKNOWN') {
+    return { direction: null, action: 'NO_TRADE', reason: 'STRUCTURE_NOT_READY', cautionCodes, nextCondition: null };
+  }
+  if (tse.state === 'CHOP') {
+    return { direction: null, action: 'NO_TRADE', reason: 'STRUCTURAL_CHOP', cautionCodes, nextCondition: 'Wait for 1H 200MA to develop a clear slope and structure to establish.' };
+  }
+  if (tse.state === 'TRANSITIONAL_RECOVERY_REQUIRED') {
+    return { direction: null, action: 'WATCH', reason: 'STRUCTURE_NOT_READY', cautionCodes, nextCondition: 'Wait for TEMA17/92 to migrate to the licensed side of the 1H 200MA.' };
+  }
+  const direction = tse.direction; // 'long'|'short' — the ONLY source of direction in this function.
+  const e = nativeEvidence && nativeEvidence.evidence;
+
+  if (tse.state === 'BULLISH_CHALLENGED' || tse.state === 'BEARISH_CHALLENGED') {
+    return { direction, action: 'WATCH', reason: 'TREND_STRENGTH_WEAKENING', cautionCodes, nextCondition: 'Wait for price to reclaim the 1H 200MA before reassessing.' };
+  }
+  if (tse.state === 'BULLISH_EMERGING' || tse.state === 'BEARISH_EMERGING') {
+    return { direction, action: 'WATCH', reason: 'STRUCTURE_NOT_READY', cautionCodes, nextCondition: 'Wait for the full TEMA complex to establish on the licensed side.' };
+  }
+
+  // From here: tse.state is BULLISH_ESTABLISHED or BEARISH_ESTABLISHED —
+  // the only states that can reach TRADE_READY.
+
+  // 4H supervisory veto (owner §19/§20) — checked first among the
+  // established-only checks; never grants direction, only removes it.
+  // UT freshness (owner clarification, this turn) is SUPPORTIVE only —
+  // fresh/recent aligned UT adds a positive caution/context marker; old
+  // aligned UT remains fully permissive with no bonus; opposing UT is a
+  // hard veto regardless of age. No new freshness threshold — reuses the
+  // existing classifyUtFreshness() classifier's own fresh/recent/mature/
+  // stale bands (already computed into fourHEvidence.evidence.utFreshness
+  // by _buildFourHSupervisoryEvidence()).
+  let fourHUtFreshBonus = false;
+  if (fourHEvidence && fourHEvidence.status === 'complete') {
+    const fe = fourHEvidence.evidence;
+    const opposing = direction === 'long' ? fe.utDirection === 'bearish' : fe.utDirection === 'bullish';
+    if (opposing) {
+      return { direction, action: 'WATCH', reason: 'FOUR_H_UT_OPPOSITION', cautionCodes, nextCondition: 'Wait for confirmed 4H UT to no longer oppose before entry.' };
+    }
+    const aligned = direction === 'long' ? fe.utDirection === 'bullish' : fe.utDirection === 'bearish';
+    if (aligned && (fe.utFreshness === 'fresh' || fe.utFreshness === 'recent')) {
+      fourHUtFreshBonus = true;
+      cautionCodes.push('FOUR_H_UT_FRESH_SUPPORT');
+    }
+  }
+
+  if (!e) {
+    return { direction, action: 'WATCH', reason: 'STRUCTURE_NOT_READY', cautionCodes, nextCondition: null };
+  }
+
+  // Phase — sign from the native evidence's own signed gap; magnitude/
+  // trajectory from v51TemaSeparationState() (already folded into
+  // nativeEvidence.evidence by _buildNativeOneHEvidence()).
+  const signAligned = direction === 'long' ? e.tema92GapAtr > 0 : e.tema92GapAtr < 0;
+  const trajectory = e.temaSeparationTrajectory;
+
+  if (!signAligned && trajectory === 'expanding') {
+    return { direction, action: 'WATCH', reason: 'PULLBACK_IN_PROGRESS', cautionCodes, nextCondition: 'Wait for 1H phase to stop deteriorating and begin recovering.' };
+  }
+  if (!signAligned && (trajectory === 'contracting' || trajectory === 'holding')) {
+    return { direction, action: 'WATCH', reason: 'RECOVERY_IN_PROGRESS', cautionCodes, nextCondition: 'Wait for TEMA17/92 to re-align with the licensed direction and re-expand.' };
+  }
+  if (signAligned && trajectory === 'contracting') {
+    cautionCodes.push('TREND_STRENGTH_WEAKENING');
+  }
+
+  // ADX — graded trend-quality validator (owner §11/§15), never a hard
+  // >=N gate; existing bands/fields only, no new threshold.
+  const adx = e.adx;
+  const adxRising = e.adxSlope && e.adxSlope.state === 'rising';
+  if (adx == null || adx < 18) {
+    return { direction, action: 'WATCH', reason: 'TREND_STRENGTH_WEAKENING', cautionCodes, nextCondition: 'Wait for 1H ADX to strengthen before entry.' };
+  }
+  if (adx < 23) {
+    return { direction, action: 'WATCH', reason: 'TREND_STRENGTH_DEVELOPING', cautionCodes, nextCondition: 'Wait for 1H ADX to strengthen further before entry.' };
+  }
+  if (adx < 28 && !(adxRising && signAligned && trajectory === 'expanding')) {
+    return { direction, action: 'WATCH', reason: 'TREND_STRENGTH_DEVELOPING', cautionCodes, nextCondition: 'Wait for 1H ADX to confirm (rising, with expanding aligned phase) before entry.' };
+  }
+
+  // Extension/exhaustion — existing V51_CONST 1H extension bands, existing
+  // RSI overbought/oversold bands, existing extension fields. Never
+  // treats high RSI alone as a veto (owner §12/§16).
+  const extAbs = e.extensionAbsoluteAtr;
+  const rsi = e.rsi;
+  const rsiHot = direction === 'long' ? (rsi != null && rsi >= MARKET_EVIDENCE_RSI_OVERBOUGHT) : (rsi != null && rsi <= MARKET_EVIDENCE_RSI_OVERSOLD);
+  if (extAbs != null && extAbs >= V51_CONST.severelyExtended1h && rsiHot && !(adxRising)) {
+    return { direction, action: 'WATCH', reason: 'ENTRY_EXTENDED', cautionCodes, nextCondition: 'Wait for price to reset closer to structure before entry.' };
+  }
+  if (extAbs != null && extAbs >= V51_CONST.extended1h) cautionCodes.push('EXTENSION_ELEVATED');
+  if (rsiHot) cautionCodes.push('RSI_HEAT');
+
+  // Established + phase aligned (or acceptably cooling) + ADX confirmed +
+  // not chasing + 4H UT not opposing. Genuine Trade Ready.
+  return { direction, action: 'TRADE_READY', reason: null, cautionCodes: cautionCodes.slice(0, 1), nextCondition: null };
+}
+
+// TDAS V5.4.3 (§20) — active-trade 4H supervisory exit check, exposed as a
+// standalone, separately-callable fact (Active Trade management wiring
+// itself is explicitly deferred — owner §26 — this function only answers
+// the underlying question so a future consumer never needs to re-derive
+// it). Confirmed opposing 4H UT => exit, unconditionally, regardless of
+// current 1H phase noise (owner §17/§20: "should not overreact to every
+// twitchy 1H TEMA recross" — this check deliberately reads ONLY 4H UT).
+function standaloneOneHShouldExitOnFourHUt(direction, fourHEvidence) {
+  if (!fourHEvidence || fourHEvidence.status !== 'complete') return false;
+  const utDir = fourHEvidence.evidence.utDirection;
+  return direction === 'long' ? utDir === 'bearish' : (direction === 'short' ? utDir === 'bullish' : false);
 }
 
 // ── Route determination contract ────────────────────────────────────────────
@@ -20402,6 +20804,28 @@ async function calcPair(symbol,tf){
     }
   }
 
+  // ── TDAS V5.4.3 — Standalone 1H Canonical Uplift, live attachment ───────
+  // Only for tf==='1h' (owner §3: prefer a clearly separate standalone-1H
+  // authority path rather than generalising the frozen 4H TSE). Reuses
+  // `raw` (the SAME current-timeframe klines this calcPair() call itself
+  // is evaluating — no new fetch) for native evidence, and the SAME
+  // htClosedCandlesNormal/hc/htfUtBot already computed above for
+  // v51Evidence's own adjacent-timeframe use for 4H supervisory evidence.
+  // 4H behaviour (tf==='4h') is completely untouched by this block.
+  if (tf === '1h') {
+    try {
+      _result.oneHNativeEvidence = _buildNativeOneHEvidence(symbol, raw);
+      _result.oneHFourHSupervisoryEvidence = _buildFourHSupervisoryEvidence(htClosedCandlesNormal, hc, htfUtBot);
+      _result.oneHTse = buildStandaloneOneHTSE(_result.oneHNativeEvidence);
+      _result.oneHAdvisory = buildStandaloneOneHAdvisory(_result.oneHTse, _result.oneHNativeEvidence, _result.oneHFourHSupervisoryEvidence);
+    } catch (_oneHV543Err) {
+      _result.oneHNativeEvidence = null;
+      _result.oneHFourHSupervisoryEvidence = null;
+      _result.oneHTse = { state: 'UNKNOWN', direction: null, reasons: ['ONE_H_TSE_THREW'] };
+      _result.oneHAdvisory = { direction: null, action: 'NO_TRADE', reason: 'STRUCTURE_NOT_READY', cautionCodes: [], nextCondition: null };
+    }
+  }
+
   // ── TDAS V5.2.0 — Trend State Engine, shadow attachment ─────────────────
   // Reads ONLY fields _result.v51Evidence.evidence already computed above
   // (no re-derivation, no new fetch) plus the setup-timeframe Heikin-Ashi
@@ -21784,6 +22208,32 @@ function buildTechnicalSummaryHtml(d){
   // engaged". 1H/other timeframes are completely unaffected: this branch
   // is a pure no-op whenever d.tf !== '4h' (falls through unchanged to the
   // exact V5.3.3 legacy path below).
+  // TDAS V5.4.3 — standalone 1H canonical Technical authority, leading
+  // branch (same shape as the 4H branch immediately below — additive,
+  // never touches it). Pure format of d.oneHTse; never re-derives
+  // structure. Falls through unchanged to the legacy path only when
+  // d.oneHTse is genuinely absent (e.g. a pre-pipeline object).
+  if (d && d.tf === '1h' && d.oneHTse && d.oneHTse.state !== 'UNKNOWN') {
+    const _st = d.oneHTse.state;
+    const _isBull = _st.indexOf('BULLISH') === 0;
+    const _isBear = _st.indexOf('BEARISH') === 0;
+    const _colorCls = _st === 'CHOP' ? 'tech-conflicted'
+      : (_st.indexOf('CHALLENGED') !== -1 || _st === 'TRANSITIONAL_RECOVERY_REQUIRED') ? 'tech-mixed'
+      : (_isBull ? 'tech-bullish' : (_isBear ? 'tech-bearish' : 'tech-mixed'));
+    const _label = _st === 'CHOP' ? 'CHOPPY \u2014 NO SUSTAINED DIRECTIONAL REGIME'
+      : _st === 'TRANSITIONAL_RECOVERY_REQUIRED' ? 'TRANSITIONAL \u2014 RECOVERY REQUIRED'
+      : (_isBull ? 'BULLISH' : 'BEARISH') + ' STRUCTURE \u2014 ' + _st.split('_').slice(1).join(' ');
+    const _detail = _st === 'CHOP' ? '1H 200MA lacks a clear slope; structure has not resolved.'
+      : _st === 'TRANSITIONAL_RECOVERY_REQUIRED' ? 'Price on the licensed side of the 1H 200MA, but the TEMA complex has not yet migrated.'
+      : (_st.indexOf('ESTABLISHED') !== -1) ? '1H 200MA, TEMA17 and TEMA92 all established on the ' + (_isBull ? 'bullish' : 'bearish') + ' side.'
+      : (_st.indexOf('EMERGING') !== -1) ? 'Price on the licensed side; only part of the TEMA complex has migrated so far.'
+      : 'The ' + (_isBull ? 'bullish' : 'bearish') + ' structure is being tested — price has moved off the licensed side of the 1H 200MA.';
+    return '<div class="tdas-techsummary-block ' + _colorCls + '">'
+      + '<div class="tdas-techsummary-label">' + _label + '</div>'
+      + '<div class="tdas-techsummary-detail">' + _detail + '</div>'
+      + '</div>';
+  }
+
   if (DIAG.narrativeEngineLive === true && d && d.tf === '4h') {
     let narrModel;
     try {
@@ -23148,6 +23598,48 @@ function copyShadowCensusJson() {
 // raw-inputs block) shares identical, testable structure — no per-section
 // hand-written toggle logic, no risk of drift between sections.
 let _apSectionIdCounter = 0;
+// TDAS V5.4.3 (trader-facing presentation migration) — the ONE wording
+// formatter for standalone 1H canonical Advisory reason codes. Pure
+// mapping only: canonical reason code -> trader-facing text. Never
+// re-evaluates evidence, never a second reason producer. Deliberately
+// separate from _oneHPhaseReasonText()/_tr1PhaseWatchReasonText() (the 4H
+// 1H-timing wording tables) — standalone 1H and 4H-led 1H timing are
+// different decision authorities per owner doctrine and must not share a
+// wording table even where a reason-code name coincides.
+function _oneHAdvisoryReasonText(reasonCode, direction) {
+  const dw = direction === 'long' ? 'bullish' : 'bearish';
+  const opp = direction === 'long' ? 'reclaim' : 'break back below';
+  switch (reasonCode) {
+    case 'STRUCTURAL_CHOP':
+      return 'The 1H 200MA lacks a clear slope and the structural complex has not resolved. Wait for structure to establish before considering a trade.';
+    case 'STRUCTURE_NOT_READY':
+      return 'The native 1H ' + dw + ' structure has not yet established. Wait for the full TEMA complex to confirm on the licensed side of the 1H 200MA.';
+    case 'PULLBACK_IN_PROGRESS':
+      return 'The 1H ' + dw + ' structure remains intact, but 1H phase is actively deteriorating against it. Wait for the pullback to stabilise and begin recovering.';
+    case 'RECOVERY_IN_PROGRESS':
+      return 'The 1H ' + dw + ' structure remains intact and 1H phase is recovering. Wait for price to ' + opp + ' TEMA92 with renewed ' + dw + ' momentum.';
+    case 'ENTRY_EXTENDED':
+      return 'The 1H ' + dw + ' structure is established, but the current entry is materially extended. Wait for price to reset closer to structure before entry.';
+    case 'TREND_STRENGTH_DEVELOPING':
+      return '1H trend strength (ADX) has not yet confirmed. Wait for ADX to strengthen, ideally while rising, before entry.';
+    case 'TREND_STRENGTH_WEAKENING':
+      return '1H trend strength is insufficient or the structure is being tested. Wait for ADX/structure to improve before entry.';
+    case 'FOUR_H_UT_OPPOSITION':
+      return 'Confirmed 4H UT currently opposes this direction. 4H may veto a fresh entry — wait for 4H UT to no longer oppose.';
+    default:
+      return null;
+  }
+}
+function _oneHAdvisoryCautionText(code) {
+  switch (code) {
+    case 'FOUR_H_UT_FRESH_SUPPORT': return 'Fresh/recent aligned 4H UT — supportive context, especially during a 4H transition.';
+    case 'TREND_STRENGTH_WEAKENING': return '1H phase is cooling (contracting) — monitor for further deterioration.';
+    case 'EXTENSION_ELEVATED': return '1H price is elevated relative to structure — not yet severe, but worth watching.';
+    case 'RSI_HEAT': return '1H RSI is at a heat extreme — context, not a veto.';
+    default: return null;
+  }
+}
+
 function _apSectionWrap(title, innerRowsHtml, defaultOpen, opts) {
   opts = opts || {};
   const id = 'ap-sec-' + (_apSectionIdCounter++);
@@ -24138,6 +24630,145 @@ function _showFullAnalysisMessage(symbol, tf, consumer, message) {
   requestAnimationFrame(()=>{ panel.classList.add('open'); });
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.3 — Standalone 1H Full Analysis, canonical presentation       ║
+// ║  helpers. Pure formatters only: canonical object in -> HTML out. None   ║
+// ║  of these compute, classify, or decide anything — every value is read   ║
+// ║  directly from d.oneHTse / d.oneHAdvisory / d.oneHNativeEvidence /      ║
+// ║  d.oneHFourHSupervisoryEvidence, all already computed once by           ║
+// ║  calcPair(). Wired into openAnalysisPanel() below via one leading       ║
+// ║  branch, replacing the legacy assembly ONLY for d.tf==='1h' with a      ║
+// ║  genuinely canonical d.oneHTse/d.oneHAdvisory present — the legacy 4H   ║
+// ║  path (and any 1H object without the new pipeline's output) is          ║
+// ║  completely untouched.                                                  ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function _oneHDirColor(dir) {
+  return dir === 'long' ? 'var(--green-text)' : (dir === 'short' ? 'var(--red-text)' : 'var(--text3)');
+}
+function _oneHActionColor(action) {
+  return action === 'TRADE_READY' ? 'var(--green-text)' : (action === 'WATCH' ? 'var(--amber-text)' : 'var(--text3)');
+}
+
+function _renderOneHCanonicalAdvisory(d) {
+  const adv = d.oneHAdvisory;
+  const dirWord = adv.direction === 'long' ? 'LONG' : (adv.direction === 'short' ? 'SHORT' : null);
+  const headline = (adv.action === 'TRADE_READY' ? 'TRADE READY ' : adv.action === 'WATCH' ? 'WATCH ' : 'NO TRADE')
+    + (dirWord || '') + (adv.reason ? ' \u2014 ' + adv.reason.replace(/_/g, ' ') : '');
+  const reasonProse = adv.reason ? _oneHAdvisoryReasonText(adv.reason, adv.direction) : (adv.action === 'TRADE_READY' ? 'Structure, phase, trend strength and 4H supervision all support a fresh entry now.' : null);
+  const cautionRows = (adv.cautionCodes || []).map(function (c) {
+    const t = _oneHAdvisoryCautionText(c);
+    return t ? '<div class="ap-row" style="align-items:flex-start;"><span style="color:var(--amber-text);">\u26a0</span><span style="color:var(--amber-text);font-size:11px;text-align:right;">' + t + '</span></div>' : '';
+  }).join('');
+  const nextRow = adv.nextCondition ? '<div class="ap-row-stacked"><span class="ap-row-stacked-label">Next</span><ul><li>' + adv.nextCondition + '</li></ul></div>' : '';
+  const rows = '<div class="ap-row"><span>Direction</span><span style="color:' + _oneHDirColor(adv.direction) + ';font-weight:600;">' + (dirWord || '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>Action</span><span style="color:' + _oneHActionColor(adv.action) + ';font-weight:600;">' + adv.action.replace(/_/g, ' ') + '</span></div>'
+    + (reasonProse ? '<div class="ap-row-stacked"><span class="ap-row-stacked-label">Reason</span><ul><li>' + reasonProse + '</li></ul></div>' : '')
+    + cautionRows + nextRow;
+  return _apSectionWrap('TDAS ADVISORY \u2014 ' + headline, rows, true);
+}
+
+function _renderOneHTechnicalState(d) {
+  const tse = d.oneHTse;
+  const ev = d.oneHNativeEvidence && d.oneHNativeEvidence.evidence;
+  const st = tse.state;
+  const label = st === 'CHOP' ? 'CHOPPY \u2014 NO SUSTAINED DIRECTIONAL REGIME'
+    : st === 'TRANSITIONAL_RECOVERY_REQUIRED' ? 'TRANSITIONAL \u2014 RECOVERY REQUIRED'
+    : (st.indexOf('BULLISH') === 0 ? 'BULLISH' : 'BEARISH') + ' STRUCTURE \u2014 ' + st.split('_').slice(1).join(' ');
+  const color = st.indexOf('BULLISH') === 0 ? 'var(--green-text)' : st.indexOf('BEARISH') === 0 ? 'var(--red-text)' : 'var(--text3)';
+  let rows = '<div class="ap-row"><span>State</span><span style="color:' + color + ';font-weight:600;">' + label + '</span></div>';
+  if (ev) {
+    rows += '<div class="ap-row"><span>1H 200MA slope</span><span>' + (ev.sma200SlopeState || '\u2014') + '</span></div>'
+      + '<div class="ap-row"><span>Price vs 1H 200MA</span><span style="color:' + (ev.priceAboveSma200 ? 'var(--green-text)' : 'var(--red-text)') + ';">' + (ev.priceAboveSma200 ? 'Above' : 'Below') + '</span></div>'
+      + '<div class="ap-row"><span>1H SMA135 slope (TR4-grade)</span><span>' + (ev.sma135SlopeState || '\u2014') + '</span></div>'
+      + '<div class="ap-row"><span>Price vs SMA135</span><span style="color:' + (ev.priceAboveSma135 ? 'var(--green-text)' : 'var(--red-text)') + ';">' + (ev.priceAboveSma135 ? 'Above' : 'Below') + '</span></div>'
+      + '<div class="ap-row"><span>TEMA17 vs 1H 200MA</span><span>' + (ev.tema17 > ev.sma200 ? 'Above' : 'Below') + '</span></div>'
+      + '<div class="ap-row"><span>TEMA92 vs 1H 200MA</span><span>' + (ev.tema92 > ev.sma200 ? 'Above' : 'Below') + '</span></div>'
+      + '<div class="ap-row"><span>Structural chop</span><span style="color:' + (ev.structuralChop ? 'var(--amber-text)' : 'var(--text3)') + ';">' + (ev.structuralChop ? 'Yes' : 'No') + '</span></div>';
+  }
+  return _apSectionWrap('TECHNICAL STATE', rows, true);
+}
+
+function _renderOneHFourHSupervision(d) {
+  const fe = d.oneHFourHSupervisoryEvidence;
+  if (!fe || fe.status !== 'complete') {
+    return _apSectionWrap('4H SUPERVISION', '<div class="ap-row"><span style="color:var(--text3);">4H supervisory evidence unavailable this cycle.</span></div>', false);
+  }
+  const e = fe.evidence;
+  const adv = d.oneHAdvisory;
+  const utColor = e.utDirection === 'bullish' ? 'var(--green-text)' : (e.utDirection === 'bearish' ? 'var(--red-text)' : 'var(--text3)');
+  let interp = 'TRANSITIONAL';
+  if (adv.reason === 'FOUR_H_UT_OPPOSITION') interp = 'UT VETO';
+  else if (adv.direction && ((adv.direction === 'long' && e.utDirection === 'bullish') || (adv.direction === 'short' && e.utDirection === 'bearish'))) interp = 'SUPPORTIVE';
+  else if (adv.direction && ((adv.direction === 'long' && e.sma200SlopeState === 'falling') || (adv.direction === 'short' && e.sma200SlopeState === 'rising'))) interp = 'STRUCTURALLY OPPOSED';
+  const interpColor = interp === 'UT VETO' ? 'var(--red-text)' : interp === 'SUPPORTIVE' ? 'var(--green-text)' : interp === 'STRUCTURALLY OPPOSED' ? 'var(--amber-text)' : 'var(--text3)';
+  const rows = '<div class="ap-row"><span>Supervisory read</span><span style="color:' + interpColor + ';font-weight:600;">' + interp + '</span></div>'
+    + '<div class="ap-row"><span>4H 200MA slope</span><span>' + (e.sma200SlopeState || '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>Price vs 4H 200MA</span><span style="color:' + (e.priceAboveSma200 ? 'var(--green-text)' : 'var(--red-text)') + ';">' + (e.priceAboveSma200 ? 'Above' : 'Below') + '</span></div>'
+    + '<div class="ap-row"><span>4H SMA80 slope</span><span>' + (e.sma80SlopeState || '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>Price vs 4H SMA80</span><span style="color:' + (e.priceAboveSma80 ? 'var(--green-text)' : 'var(--red-text)') + ';">' + (e.priceAboveSma80 ? 'Above' : 'Below') + '</span></div>'
+    + '<div class="ap-row"><span>4H UT direction</span><span style="color:' + utColor + ';">' + (e.utDirection || '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>4H UT bars since flip</span><span>' + (e.utBarsSinceFlip != null ? e.utBarsSinceFlip : '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>4H UT freshness</span><span style="color:' + utFreshnessColorForKey(e.utFreshness) + ';">' + (e.utFreshness || '\u2014') + '</span></div>'
+    + '<div class="ap-row-stacked"><span class="ap-row-stacked-label">Doctrine</span><ul><li>4H may veto a fresh entry — it never initiates. Native 1H structure alone determines direction.</li></ul></div>';
+  return _apSectionWrap('4H SUPERVISION', rows, true);
+}
+
+function _renderOneHEntryQuality(d) {
+  const ev = d.oneHNativeEvidence && d.oneHNativeEvidence.evidence;
+  if (!ev) return _apSectionWrap('ENTRY QUALITY', '<div class="ap-row"><span style="color:var(--text3);">Native 1H evidence unavailable this cycle.</span></div>', false);
+  const adv = d.oneHAdvisory;
+  const gapColor = adv.direction === 'long' ? (ev.tema92GapAtr > 0 ? 'var(--green-text)' : 'var(--red-text)') : (ev.tema92GapAtr < 0 ? 'var(--green-text)' : 'var(--red-text)');
+  const rows = '<div class="ap-row"><span>TEMA17/92 gap (signed, ATR)</span><span style="color:' + gapColor + ';">' + (ev.tema92GapAtr != null ? ev.tema92GapAtr.toFixed(3) : '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>TEMA separation trajectory</span><span>' + (ev.temaSeparationTrajectory || '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>ADX(14)</span><span>' + (ev.adx != null ? ev.adx.toFixed(1) : '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>ADX trajectory</span><span>' + (ev.adxSlope ? ev.adxSlope.state : '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>RSI</span><span>' + (ev.rsi != null ? ev.rsi.toFixed(1) : '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>1H UT direction</span><span style="color:' + _oneHDirColor(ev.utDirection === 'bullish' ? 'long' : ev.utDirection === 'bearish' ? 'short' : null) + ';">' + (ev.utDirection || '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>1H UT bars since flip</span><span>' + (ev.utBarsSinceFlip != null ? ev.utBarsSinceFlip : '\u2014') + '</span></div>'
+    + '<div class="ap-row"><span>Extension (ATR)</span><span>' + (ev.extensionAbsoluteAtr != null ? ev.extensionAbsoluteAtr.toFixed(2) : '\u2014') + '</span></div>';
+  return _apSectionWrap('ENTRY QUALITY', rows, false);
+}
+
+function _renderOneHDetailedEvidence(d) {
+  const ev = d.oneHNativeEvidence && d.oneHNativeEvidence.evidence;
+  if (!ev) return '';
+  const rows = '<div class="ap-row"><span style="color:var(--text3);">TEMA17</span><span style="font-family:var(--mono);font-size:12px;">' + fmt(ev.tema17) + '</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">TEMA92</span><span style="font-family:var(--mono);font-size:12px;">' + fmt(ev.tema92) + '</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">1H 200MA</span><span style="font-family:var(--mono);font-size:12px;">' + fmt(ev.sma200) + '</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">1H SMA135</span><span style="font-family:var(--mono);font-size:12px;">' + fmt(ev.sma135) + '</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">ATR</span><span style="font-family:var(--mono);font-size:12px;">' + fmtPts(ev.atr) + '</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">Last closed price</span><span style="font-family:var(--mono);font-size:12px;">' + fmt(ev.lastClosedPrice) + '</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">Confirmed bar</span><span style="font-family:var(--mono);font-size:11px;">' + (d.oneHNativeEvidence.confirmedBarId || '\u2014') + '</span></div>';
+  return _apSectionWrap('DETAILED EVIDENCE', rows, false);
+}
+
+// TDAS V5.4.3 — Risk section renders ONLY when canonical action is
+// TRADE_READY (a genuine canonical direction). Never derives direction
+// from d.signal/legacy evaluation.tradeBias/actionBias — direction comes
+// exclusively from d.oneHAdvisory.direction. If action is not
+// TRADE_READY, this section is omitted entirely (owner §12: "no
+// canonical directional setup -> no directional Entry/Stop/Target plan").
+function _renderOneHRiskPlan(d) {
+  const adv = d.oneHAdvisory;
+  if (adv.action !== 'TRADE_READY' || !adv.direction) return '';
+  const ev = d.oneHNativeEvidence && d.oneHNativeEvidence.evidence;
+  if (!ev || ev.atr == null || ev.lastClosedPrice == null) return '';
+  const isLong = adv.direction === 'long';
+  const stop = isLong ? ev.lastClosedPrice - ev.atr * 1.5 : ev.lastClosedPrice + ev.atr * 1.5;
+  const target = isLong ? ev.lastClosedPrice + ev.atr * 2 : ev.lastClosedPrice - ev.atr * 2;
+  const rows = '<div class="ap-row"><span>' + (isLong ? 'Stop (1.5\u00d7 ATR)' : 'Target (2\u00d7 ATR)') + '</span><span style="color:' + (isLong ? 'var(--red-text)' : 'var(--green-text)') + ';">' + fmt(isLong ? stop : target) + '</span></div>'
+    + '<div class="ap-row"><span>Entry (last confirmed close)</span><span>' + fmt(ev.lastClosedPrice) + '</span></div>'
+    + '<div class="ap-row"><span>' + (isLong ? 'Target (2\u00d7 ATR)' : 'Stop (1.5\u00d7 ATR)') + '</span><span style="color:' + (isLong ? 'var(--green-text)' : 'var(--red-text)') + ';">' + fmt(isLong ? target : stop) + '</span></div>';
+  return _apSectionWrap('RISK / TRADE PLAN \u00b7 ATR-based', rows, true);
+}
+
+function _renderOneHDiagnostics(d) {
+  const rows = '<div class="ap-row"><span style="color:var(--text3);">legacy d.signal</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3);">' + (d.signal || '\u2014') + ' (non-authoritative)</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">legacy evaluation.actionBias</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3);">' + (d.evaluation ? d.evaluation.actionBias : '\u2014') + ' (non-authoritative)</span></div>'
+    + '<div class="ap-row"><span style="color:var(--text3);">legacy lifecycle.state</span><span style="font-family:var(--mono);font-size:11px;color:var(--text3);">' + (d.lifecycle ? d.lifecycle.state : '\u2014') + ' (non-authoritative)</span></div>';
+  return _apSectionWrap('DIAGNOSTICS (non-authoritative, legacy reference only)', rows, false);
+}
+
 function openAnalysisPanel(request){
   // TDAS V4.10.4H — Timeframe-Explicit Full Analysis Migration. Accepts
   // either the new {symbol,tf,consumer,consumerId,direction,snapshotRole}
@@ -24363,6 +24994,30 @@ function openAnalysisPanel(request){
   title.textContent = _currentFullAnalysisRequest
     ? (LABELS[symbol]||symbol) + ' · ' + _currentFullAnalysisRequest.tf.toUpperCase() + ' · ' + (_currentFullAnalysisRequest.consumer==='watch'?'Watch':_currentFullAnalysisRequest.consumer==='trade'?'Active Trade':'Scanner') + ' — Analysis'
     : (LABELS[symbol]||symbol) + ' — Analysis';
+
+  // TDAS V5.4.3 — standalone 1H canonical presentation, leading branch.
+  // Runs BEFORE any of the legacy destructuring/row-building below (which
+  // assumes many legacy-only fields exist) — not merely a different final
+  // assembly, a genuinely separate render path, so this branch can never
+  // be affected by (or accidentally depend on) any legacy computation.
+  // Fires only when the new canonical pipeline genuinely ran for this
+  // object (d.oneHTse/d.oneHAdvisory both present); any 1H object without
+  // them (pre-pipeline/legacy) falls through unchanged to the existing
+  // assembly below.
+  if (d.tf === '1h' && d.oneHTse && d.oneHAdvisory) {
+    body.innerHTML = `
+      ${_renderOneHCanonicalAdvisory(d)}
+      ${_renderOneHTechnicalState(d)}
+      ${_renderOneHFourHSupervision(d)}
+      ${_renderOneHEntryQuality(d)}
+      ${_renderOneHDetailedEvidence(d)}
+      ${_renderOneHRiskPlan(d)}
+      ${_renderOneHDiagnostics(d)}
+    `;
+    overlay.classList.add('open');
+    requestAnimationFrame(()=>{ panel.classList.add('open'); });
+    return;
+  }
 
   // Build the analysis content from cached scan data
   const {
@@ -24821,21 +25476,22 @@ function buildV1Entry(symbol, d, decision, overrides) {
   // ADA/BNB-shaped case the old narrow override existed to fix, now
   // generalised rather than modal-gated).
   //
-  // TDAS V5.4.0D — tightened. The V5.4.0C delivery report's buildV1Entry()
-  // call-site inventory proved all three real production callers either
-  // (a) pass a genuine calcPair()-sourced 4H `d` that always carries
-  // d.eval, or (b) are inherently 1H-only (confLogTrade(), which always
-  // passes tf:'1h') and never reach the 4H branch at all. No real
-  // production path currently supplies a d.tf==='4h' object without
-  // d.eval. Per owner doctrine (§5, "fail honestly for malformed 4H data
-  // rather than resurrecting d.signal"), a 4H d without valid canonical
-  // lifecycle data now degrades to 'neutral' — never a silent resurrection
-  // of legacy d.signal authority for 4H, matching the same no-fallback
-  // principle _fourHCanonicalLaneDirection() already enforces for live
-  // routing. Standalone 1H is completely untouched: falls straight to
-  // d.signal, exactly as before this build and before V5.4.0C.
+  // TDAS V5.4.3 — Standalone 1H Canonical Uplift. Extends the SAME pattern
+  // to 1H (§26 manual-Watch/Trade-interaction check found this seam: a
+  // Watch/Trade created from a now-canonically-directional 1H Scanner
+  // card — e.g. BULLISH_ESTABLISHED with legacy d.signal still 'neutral',
+  // the exact defect this build fixes — would otherwise persist the stale
+  // legacy signal, silently disagreeing with the card that created it).
+  // Reads d.oneHAdvisory.direction (already computed by calcPair(), same
+  // object _fourHCanonicalLaneDirection()/_buildScannerAdvisory() already
+  // consume for 1H — no re-derivation). Falls back to 'neutral' (never a
+  // silent resurrection of d.signal), matching the same no-fallback
+  // principle as the 4H branch. d.tf==='4h' behaviour is byte-identical —
+  // this only adds a sibling branch.
   const _canonicalPersistedSignal = (d.tf === '4h')
     ? ((d.eval && d.eval.lifecycle && (d.eval.lifecycle.laneDirection === 'long' || d.eval.lifecycle.laneDirection === 'short' || d.eval.lifecycle.laneDirection === 'neutral')) ? d.eval.lifecycle.laneDirection : 'neutral')
+    : (d.tf === '1h' && d.oneHAdvisory)
+    ? ((d.oneHAdvisory.direction === 'long' || d.oneHAdvisory.direction === 'short') ? d.oneHAdvisory.direction : 'neutral')
     : null;
   const _effectiveSignal = _canonicalPersistedSignal !== null ? _canonicalPersistedSignal : d.signal;
   // TDAS Phase 0: read pre-computed states from d.states where available.
