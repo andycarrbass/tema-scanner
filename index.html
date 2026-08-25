@@ -3399,6 +3399,20 @@ async function pushToSheets(){
   const safeToPush = journal.filter(j =>
     sessionDirtyIds.has(j.id) || j.syncStatus === 'synced'
   );
+  // TDAS V5.4.3 — same-id in-flight mutation race fix. Capture each
+  // pushed entry's OWN updatedAt at the moment this snapshot is taken
+  // (stampUpdate() already stamps a fresh updatedAt on every mutation —
+  // reused here as a version marker, not a new field). journal entries
+  // are mutated IN PLACE (confirmStopPlacement writes entry.* directly,
+  // never replacing the object), so if a second same-id mutation lands
+  // while this push's sheetsPost() await is still in flight, that later
+  // mutation is NOT gated by _commitLock (only starting a new commit is)
+  // — it changes entry.updatedAt immediately. Without this guard, the
+  // acknowledgement-clearing step below would only re-check
+  // sessionDirtyIds.has(id) (id-aware, not mutation-aware) and would
+  // incorrectly stampSynced() the NEWER unpushed mutation once THIS
+  // push's OLDER payload is acknowledged.
+  const _pushedVersions = new Map(safeToPush.map(j => [j.id, j.updatedAt]));
   // TDAS V5.4.0P1 (P1.3) — expectedCount lets sheetsPost() verify the
   // server's own acknowledgement count against exactly what was sent,
   // rather than accepting any success-shaped response.
@@ -3406,7 +3420,29 @@ async function pushToSheets(){
   const ok = await sheetsPost('saveJournal', [...sentinel, ...safeToPush], _expected);
   if(ok){
     if(DEBUG_MODE) console.log('[SYNC] Push complete');
-    journal = journal.map(j => sessionDirtyIds.has(j.id) ? stampSynced(j) : j);
+    // TDAS V5.4.3 — sessionDirtyIds fix. Restores the Set to its intended
+    // meaning ("currently unacknowledged local writes") rather than "ids
+    // ever edited this session" (the confirmed defect — see the SOL
+    // forensic audit). Only an id that was genuinely part of THIS push's
+    // acknowledged batch is removed, and only once sheetsPost() has
+    // actually confirmed it (inside this `if(ok)` branch) — an id never
+    // sent this cycle, or a failed push, leaves sessionDirtyIds untouched,
+    // so the existing syncStatus!=='synced' pending-write protection in
+    // pullFromSheets() is completely unaffected.
+    //
+    // TDAS V5.4.3 — mutation-aware acknowledgement (race fix, above). Only
+    // clears/stamps-synced when the entry's CURRENT updatedAt still
+    // matches what was actually sent in THIS push's payload. If a newer
+    // same-id mutation landed while this push was in flight, updatedAt
+    // has since moved on — leave that entry's syncStatus/sessionDirtyIds
+    // exactly as the newer mutation left them (pending, dirty), so its
+    // own future push is what clears it, never this stale acknowledgement.
+    journal = journal.map(j => {
+      if(!sessionDirtyIds.has(j.id)) return j;
+      if(_pushedVersions.get(j.id) !== j.updatedAt) return j; // superseded by a newer in-flight mutation — leave pending
+      sessionDirtyIds.delete(j.id);
+      return stampSynced(j);
+    });
     saveJournal();
     _syncDirty = false;
   }
@@ -3619,6 +3655,11 @@ async function commitJournalChange(reason, changedEntryId){
     const sentinel = journalResetAt ? [{id:0,decision:'__reset__',updatedAt:journalResetAt}] : [];
     const safeToPush = journal.filter(j => sessionDirtyIds.has(j.id) || j.syncStatus==='synced');
     console.log('[SYNC] payload rows:', safeToPush.length, '| new entry included:', safeToPush.some(j=>j.id==changedEntryId));
+    // TDAS V5.4.3 — same-id in-flight mutation race fix. See pushToSheets()'s
+    // own identical comment for the full rationale — captured here too
+    // since commitJournalChange() has its own separate inline push/ack
+    // cycle, not a call to pushToSheets().
+    const _pushedVersions = new Map(safeToPush.map(j => [j.id, j.updatedAt]));
 
     // TDAS V5.4.0P1 (P1.3) — verify the server's acknowledgement count
     // against exactly what this call sent (sentinel + safeToPush).
@@ -3645,7 +3686,18 @@ async function commitJournalChange(reason, changedEntryId){
     }
 
     // Mark pushed entries as synced
-    journal = journal.map(j => sessionDirtyIds.has(j.id) ? stampSynced(j) : j);
+    // TDAS V5.4.3 — sessionDirtyIds fix (same rationale as pushToSheets()'s
+    // own identical change, above — see that site's comment for the full
+    // explanation). Only ids genuinely acknowledged in THIS push are
+    // removed from sessionDirtyIds. Mutation-aware guard (race fix) —
+    // only clears/stamps-synced when updatedAt still matches what this
+    // push actually sent; a newer in-flight mutation is left pending.
+    journal = journal.map(j => {
+      if(!sessionDirtyIds.has(j.id)) return j;
+      if(_pushedVersions.get(j.id) !== j.updatedAt) return j;
+      sessionDirtyIds.delete(j.id);
+      return stampSynced(j);
+    });
     saveJournal();
     _syncDirty = false;
 
