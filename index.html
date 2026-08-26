@@ -30350,10 +30350,40 @@ async function _tdLightweightRefresh(){
 // ║  candles, UT/TEMA/RSI/ADX/regime) is untouched — only current price and  ║
 // ║  P&L for existing active trades are refreshed here.                     ║
 // ╚══════════════════════════════════════════════════════════════════════════╝
+// Pure classifier, extracted verbatim from the live exit-latch path (no
+// logic change) so the historical catch-up path below can reuse the
+// EXACT SAME reason-derivation — never a second, independently
+// re-derived rule. Returns null when R cannot be computed (defensive;
+// mirrors the live path's own early-return).
+function _classifyStopBreachReason(entry, stopLevel){
+  const r = calcTradeR(entry, stopLevel);
+  if(r==null) return null;
+  const _tol = (typeof OUTCOME_BE_TOLERANCE_R === 'number') ? OUTCOME_BE_TOLERANCE_R : 0.01;
+  if(Math.abs(r) <= _tol) return 'BREAK_EVEN_STOP';
+  if(r > 0) return 'PROFIT_PROTECTION_STOP';
+  const _mgmtAtBreach = _computeStopManagementState(entry);
+  return (_mgmtAtBreach && _mgmtAtBreach.source==='BE') ? 'BREAK_EVEN_STOP' : 'INITIAL_SL';
+}
+
 let _activeTradePricingBusy = false;
+// TDAS — owner decision §1 (Reliable Active-Trade Stop-Breach Reminder):
+// the `if(document.hidden) return;` guard formerly here was an unintended
+// consequence of this function inheriting _tdLightweightRefresh()'s
+// display-refresh guard after stop-breach monitoring was added into this
+// SAME function (V5.4.1A/V5.4.1A5) — see the forensic audit for the full
+// history. Removed: Active Trade stop monitoring must remain eligible to
+// run while the tab is hidden, per this function's own original
+// "tab-independent" doctrine (see header block above). Scanner
+// (_scannerAutoRefreshGate) and Watch (_tdLightweightRefresh) are
+// completely untouched — their own document.hidden guards remain exactly
+// as before; this change is scoped to Active Trade monitoring only.
+// Browser background-tab timer throttling (not something this code can
+// control) means this interval firing every 30s is still not guaranteed
+// while hidden — see _runActiveTradeResumeCatchUp() below, which is the
+// mechanism that makes monitoring reliable despite that throttling,
+// rather than this change alone.
 async function _ensureActiveTradeLivePricing(){
   if(_activeTradePricingBusy) return;
-  if(document.hidden) return; // browser tab hidden — same guard as the Trade Desk refresh
   const active = journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&(j.actualEntry||j.price));
   const symbols = [...new Set(active.map(j=>j.symbol))];
   if(!symbols.length) return; // near-zero cost when there are no active trades
@@ -30384,22 +30414,42 @@ async function _ensureActiveTradeLivePricing(){
     // resolves the trade (which clears the latch — see that function's
     // own comment). Preserves the existing, unmodified ratchet mechanics
     // for every trade that has NOT yet had a breach latched.
-    const _ratchetChangedIds = [];
-    active.forEach(e=>{
-      if(e.pendingExitReason != null) return; // exit event pending -- ladder progression frozen
-      const px = prices[e.symbol];
-      if(px==null) return;
-      if(_advanceProtectionLadder(e, px)){
-        Object.assign(e, stampUpdate(e));
-        _ratchetChangedIds.push(e.id);
-      }
-    });
-    if(_ratchetChangedIds.length){
-      _ratchetChangedIds.forEach(id=>sessionDirtyIds.add(id));
-      if(DEBUG_MODE) console.log('[ProtectionRatchet] advanced for', _ratchetChangedIds.join(','));
-      commitJournalChange('protectionRatchet', null).catch(err=>{
-        console.warn('[ProtectionRatchet] commit error:', err && err.message);
+    //
+    // Final scope correction — no persisted protection-stage mutation may
+    // run from hidden-tab polling, for the same reason stop-breach
+    // latching is suppressed while hidden (see below): this device has no
+    // way to know whether another device has since confirmed newer
+    // management state while it was hidden (no background Sheets pull
+    // exists), and mutating highestProtectionTriggerR/pendingProtectionStage
+    // here would risk exactly that cross-device staleness. Before this
+    // whole feature existed, the original document.hidden guard suppressed
+    // this ENTIRE function while hidden — allowing the ladder to keep
+    // mutating while hidden would be a new behavioural change outside this
+    // stop-breach-reminder's own scope. Ephemeral price/registry updates
+    // above are unaffected; only PERSISTED protection-stage mutation is
+    // gated here. Once visible and reconciled (via
+    // _runActiveTradeResumeCatchUp()'s pullFromSheets() on resume), normal
+    // live ratchet behaviour resumes from the current price/state — no
+    // retrospective reconstruction of missed R-stage crossings is
+    // performed; that remains explicitly out of scope.
+    if(!document.hidden){
+      const _ratchetChangedIds = [];
+      active.forEach(e=>{
+        if(e.pendingExitReason != null) return; // exit event pending -- ladder progression frozen
+        const px = prices[e.symbol];
+        if(px==null) return;
+        if(_advanceProtectionLadder(e, px)){
+          Object.assign(e, stampUpdate(e));
+          _ratchetChangedIds.push(e.id);
+        }
       });
+      if(_ratchetChangedIds.length){
+        _ratchetChangedIds.forEach(id=>sessionDirtyIds.add(id));
+        if(DEBUG_MODE) console.log('[ProtectionRatchet] advanced for', _ratchetChangedIds.join(','));
+        commitJournalChange('protectionRatchet', null).catch(err=>{
+          console.warn('[ProtectionRatchet] commit error:', err && err.message);
+        });
+      }
     }
 
     // TDAS V5.4.1A5 — pending exit-event latch. A confirmed Active Trade
@@ -30416,37 +30466,42 @@ async function _ensureActiveTradeLivePricing(){
     // absent an explicit BE-sourced confirmation, is the initial SL) —
     // not a duplicated rule, the same reasoning applied at detection time
     // instead of at save time.
-    const _exitLatchChangedIds = [];
-    active.forEach(e=>{
-      if(e.pendingExitReason != null) return; // already latched -- never overwritten by a later price
-      const px = prices[e.symbol];
-      if(px==null) return;
-      if(!e.protectionStage || e.protectionStage==='NONE') return; // no confirmed stop exists at all yet
-      const breach = getStopBreachState(e, px);
-      if(!breach || !breach.breached || breach.stop==null) return;
-      const r = calcTradeR(e, breach.stop);
-      if(r==null) return;
-      const _tol = (typeof OUTCOME_BE_TOLERANCE_R === 'number') ? OUTCOME_BE_TOLERANCE_R : 0.01;
-      let _reason;
-      if(Math.abs(r) <= _tol){ _reason = 'BREAK_EVEN_STOP'; }
-      else if(r > 0){ _reason = 'PROFIT_PROTECTION_STOP'; }
-      else {
-        const _mgmtAtBreach = _computeStopManagementState(e);
-        _reason = (_mgmtAtBreach && _mgmtAtBreach.source==='BE') ? 'BREAK_EVEN_STOP' : 'INITIAL_SL';
-      }
-      e.pendingExitReason = _reason;
-      e.pendingExitStop = breach.stop;
-      e.pendingExitDetectedAt = new Date().toISOString();
-      e.pendingExitProtectionStage = e.protectionStage;
-      Object.assign(e, stampUpdate(e));
-      _exitLatchChangedIds.push(e.id);
-    });
-    if(_exitLatchChangedIds.length){
-      _exitLatchChangedIds.forEach(id=>sessionDirtyIds.add(id));
-      if(DEBUG_MODE) console.log('[PendingExitLatch] latched for', _exitLatchChangedIds.join(','));
-      commitJournalChange('pendingExitLatch', null).catch(err=>{
-        console.warn('[PendingExitLatch] commit error:', err && err.message);
+    //
+    // Pre-release correction (final) §1 — a hidden-tab tick may continue
+    // fetching price (P&L/ratchet above are unaffected) but must NEVER
+    // latch a stop breach: this device has no way to know whether
+    // another device has since confirmed a NEWER stop while it was
+    // hidden (no background Sheets pull exists). Latching against
+    // possibly-stale local stop authority here would be exactly the
+    // cross-device staleness risk the resume catch-up path already
+    // guards against via pullFromSheets() — latching live, from a hidden
+    // tick, would bypass that guard entirely. Deferred to
+    // _runActiveTradeResumeCatchUp() on resume, which reconciles first.
+    if(!document.hidden){
+      const _exitLatchChangedIds = [];
+      active.forEach(e=>{
+        if(e.pendingExitReason != null) return; // already latched -- never overwritten by a later price
+        const px = prices[e.symbol];
+        if(px==null) return;
+        if(!e.protectionStage || e.protectionStage==='NONE') return; // no confirmed stop exists at all yet
+        const breach = getStopBreachState(e, px);
+        if(!breach || !breach.breached || breach.stop==null) return;
+        const _reason = _classifyStopBreachReason(e, breach.stop);
+        if(_reason==null) return;
+        e.pendingExitReason = _reason;
+        e.pendingExitStop = breach.stop;
+        e.pendingExitDetectedAt = new Date().toISOString();
+        e.pendingExitProtectionStage = e.protectionStage;
+        Object.assign(e, stampUpdate(e));
+        _exitLatchChangedIds.push(e.id);
       });
+      if(_exitLatchChangedIds.length){
+        _exitLatchChangedIds.forEach(id=>sessionDirtyIds.add(id));
+        if(DEBUG_MODE) console.log('[PendingExitLatch] latched for', _exitLatchChangedIds.join(','));
+        commitJournalChange('pendingExitLatch', null).catch(err=>{
+          console.warn('[PendingExitLatch] commit error:', err && err.message);
+        });
+      }
     }
 
     // Re-render Trade Desk active cards in place, if present in the DOM
@@ -30471,6 +30526,341 @@ async function _ensureActiveTradeLivePricing(){
     console.warn('[ActiveTradePricing] refresh error:', e.message);
   }finally{
     _activeTradePricingBusy = false;
+  }
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS — Active-Trade Resume Catch-Up (Reliable Stop-Breach Reminder)     ║
+// ║                                                                          ║
+// ║  Owner decision §2: browsers throttle/suspend setInterval timers in a   ║
+// ║  hidden tab regardless of removing our own document.hidden guard (see   ║
+// ║  the forensic audit) — so removing that guard alone cannot GUARANTEE    ║
+// ║  the confirmed Current SL is checked while backgrounded. This is the    ║
+// ║  bounded recovery mechanism: on tab resume, reconstruct whether the     ║
+// ║  confirmed Current SL was crossed during the gap using real Bitunix     ║
+// ║  LAST_PRICE candle extrema, then latch the SAME existing               ║
+// ║  pendingExitReason/pendingExitStop/pendingExitDetectedAt fields the     ║
+// ║  live tick already uses — no new authority, no new CLOSE path, no      ║
+// ║  duplicate stop state (owner doctrine §10/§11 — Charts compatibility).  ║
+// ║                                                                          ║
+// ║  CRITICAL invariant (owner §3/§4): a historical candle may NEVER be     ║
+// ║  compared against a stop level before that exact level became the      ║
+// ║  confirmed Current Stop. entry.slConfirmedAt (set atomically with      ║
+// ║  entry.slConfirmedLevel by confirmStopPlacement() — see that           ║
+// ║  function's own field-assignment block, and clearStopConfirmation()'s  ║
+// ║  own full-reset block, both of which are the ONLY two places these two ║
+// ║  fields are ever written, always together) is the authoritative        ║
+// ║  "this exact stop became effective at" timestamp — traced and          ║
+// ║  confirmed reliable for this purpose; no approximation, no new field.  ║
+// ║                                                                          ║
+// ║  Owner doctrine §5: the protection ladder (protectionStage/            ║
+// ║  pendingProtectionStage/highestProtectionTriggerR) is NEVER touched by ║
+// ║  this mechanism — historical candles are used ONLY to check the        ║
+// ║  confirmed Current SL, never to retrospectively advance the ladder.    ║
+// ║                                                                          ║
+// ║  Pre-release correction (4 items):                                      ║
+// ║  1. Lookback floor is _activeTradeHiddenSinceMs (stamped once, the     ║
+// ║     moment the tab genuinely went hidden), NEVER the latest successful ║
+// ║     background ticker sample — a throttled-but-successful background   ║
+// ║     poll must not shrink the eventual historical window and hide a     ║
+// ║     breach-and-recovery that happened between two such samples.        ║
+// ║  2. Boundary-safe candle resolution: the coarse (gap-tier) candle       ║
+// ║     whose own span straddles lookbackStartMs is NEVER tested at coarse ║
+// ║     resolution (would risk a false breach from pre-effective price, or ║
+// ║     a missed breach if excluded outright) — that boundary window is    ║
+// ║     always re-fetched and tested at 1-minute resolution instead, only  ║
+// ║     the genuinely-interior remainder of a long gap uses coarse         ║
+// ║     candles. Residual uncertainty: down to ~60s (Bitunix's finest      ║
+// ║     available granularity), never fully eliminated — disclosed, not    ║
+// ║     claimed as exact.                                                   ║
+// ║  3. pendingExitDetectedAt for a catch-up-discovered breach is the       ║
+// ║     ACTUAL TDAS detection time (new Date().toISOString(), the same     ║
+// ║     moment the live-tick path already stamps) — never widened into a   ║
+// ║     historical market-event timestamp. Accurate breach-candle/event    ║
+// ║     time is deferred to the future Charts-ready event architecture,    ║
+// ║     not this field.                                                    ║
+// ║  4. pullFromSheets() runs FIRST, before any stop authority is read for ║
+// ║     ANY trade, so a newer confirmation from another device is always   ║
+// ║     reconciled before catch-up evaluates history against it. A pull    ║
+// ║     failure degrades gracefully (proceeds with whatever local state is ║
+// ║     available) rather than blocking the live-price refresh/repaint —   ║
+// ║     same "never a false negative presented as a clear result, but      ║
+// ║     never let a check block the safety-net tick either" philosophy     ║
+// ║     already used throughout this mechanism.                            ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// Stamped once, the moment document.hidden genuinely transitions to true
+// (see the dedicated visibilitychange listener in the startup IIFE below)
+// — NEVER updated by a successful background ticker sample. This is the
+// owner-specified lookback floor (§1): "max(tradeEntryTime,
+// currentStopEffectiveAt, hiddenSince) rather than the latest background
+// scalar ticker sample." null while visible / not currently in a hidden
+// period.
+let _activeTradeHiddenSinceMs = null;
+
+// The authoritative "this exact confirmed Current Stop became effective
+// at" timestamp, in epoch ms — or null if no confirmed stop exists yet
+// (never approximated from trade entry, R-threshold-reached time, or
+// nominal TP-stage time; see this section's header comment). Reuses
+// _computeStopManagementState()'s own `confirmed` gate — the SAME
+// authority getStopBreachState() itself already defers to — so this can
+// never disagree with what the live path considers "confirmed."
+function _activeTradeCurrentStopEffectiveAtMs(entry){
+  const mgmt = (typeof _computeStopManagementState==='function') ? _computeStopManagementState(entry) : null;
+  if(!mgmt || !mgmt.confirmed || !entry || !entry.slConfirmedAt) return null;
+  const t = new Date(entry.slConfirmedAt).getTime();
+  return isFinite(t) ? t : null;
+}
+
+// lookbackStart = max(tradeEntryTime, currentStopEffectiveAt,
+// hiddenSince) — never before trade entry, never before the confirmed
+// stop was placed, and (owner §1 correction) never narrowed by a merely-
+// successful intervening background sample, only by the tab genuinely
+// having been visible (hiddenSince null) or the hidden period's own true
+// start. Returns null (never a guessed value) if any required timestamp
+// is missing — the caller must skip catch-up entirely in that case
+// rather than search from an unsafe/approximated start.
+function _activeTradeSafeLookbackStartMs(entry){
+  if(!entry) return null;
+  const stopEffectiveAt = _activeTradeCurrentStopEffectiveAtMs(entry);
+  if(stopEffectiveAt==null) return null; // no confirmed stop -- nothing safe to check retrospectively
+  const entryTimeRaw = entry.entryTimestamp || entry.id;
+  const entryTimeMs = entryTimeRaw ? new Date(entryTimeRaw).getTime() : NaN;
+  if(!isFinite(entryTimeMs)) return null; // never approximate trade entry time
+  let start = Math.max(entryTimeMs, stopEffectiveAt);
+  if(_activeTradeHiddenSinceMs!=null && isFinite(_activeTradeHiddenSinceMs)){
+    start = Math.max(start, _activeTradeHiddenSinceMs);
+  }
+  return start;
+}
+
+// Gap-aware candle resolution — finer for short gaps, coarser for long
+// ones, so the number of candles needed to cover ANY realistic gap
+// (minutes to weeks) stays within fetchKlines()'s own existing bounded
+// pagination (200/page, auto-paginated). Only crossing (candle
+// high/low vs. the confirmed stop) is ever evaluated — never exact fill
+// price or timing — so coarser candles remain a legitimate, honest
+// approximation for the genuinely-interior part of a long gap (owner
+// §7), never a precision claim. The boundary period around
+// lookbackStartMs itself is never left at this coarse resolution — see
+// _checkHistoricalStopBreach()'s boundary-refinement step (owner §2).
+function _chooseHistoricalKlineInterval(gapMs){
+  const gapMin = gapMs / 60000;
+  if(gapMin <= 90)    return { interval: '1m',  approxMinutes: 1   }; // up to 1.5h -> <=90 candles
+  if(gapMin <= 600)   return { interval: '5m',  approxMinutes: 5   }; // up to 10h  -> <=120 candles
+  if(gapMin <= 4000)  return { interval: '15m', approxMinutes: 15  }; // up to ~2.8 days -> <=~267 candles (2 pages)
+  if(gapMin <= 16000) return { interval: '1h',  approxMinutes: 60  }; // up to ~11 days -> <=~267 candles (2 pages)
+  return { interval: '4h', approxMinutes: 240 }; // beyond ~11 days -> 4h candles, ~200 candles/page covers ~33 days/page
+}
+
+// Fetches Bitunix LAST_PRICE candles covering [lookbackStartMs, nowMs]
+// for one symbol and returns the EARLIEST candle whose extrema cross the
+// given stop level (direction-relative), or null if none found / data
+// unavailable. Deliberately conservative: any fetch failure returns null
+// (treated as "no evidence of a breach found," never as a false
+// negative that's presented as a positive "clear" — the live tick and
+// the next successful catch-up remain the safety net either way).
+//
+// Owner §2 boundary-safety: the chosen (gap-tier) interval's candles are
+// only trusted for the genuinely-interior part of the window — i.e.
+// candles whose FULL span starts at or after lookbackStartMs, which can
+// never straddle the stop-effective boundary. The remainder — from
+// lookbackStartMs up to the start of the first such safe-interior coarse
+// candle — is ALWAYS re-checked at 1-minute resolution instead, so a
+// coarse candle whose span crosses the exact moment the stop became
+// effective is never tested wholesale (would risk crediting pre-
+// effective price movement to the new stop) and never silently skipped
+// either (would risk missing a genuine breach inside it). This bounds
+// the remaining temporal uncertainty to at most ~60s (Bitunix's finest
+// available candle granularity) — the boundary refinement itself uses
+// the same floor/inclusion rule recursively at 1-minute resolution, so a
+// breach that occurs and fully reverses within that single boundary
+// 1-minute candle is the one residual case this cannot resolve exactly;
+// it is disclosed, not claimed away.
+async function _checkHistoricalStopBreach(entry, lookbackStartMs, nowMs){
+  const gapMs = nowMs - lookbackStartMs;
+  if(gapMs <= 0) return null;
+
+  const mgmt = _computeStopManagementState(entry);
+  const stop = (mgmt && mgmt.confirmed && mgmt.confirmedLevel!=null) ? mgmt.confirmedLevel : null;
+  if(stop==null) return null;
+  const isLong = entry.signal==='long';
+
+  function firstCrossing(candles){
+    if(!Array.isArray(candles) || !candles.length) return null;
+    const inWindow = candles
+      .filter(c => c && isFinite(c.time) && c.time >= lookbackStartMs && c.time <= nowMs)
+      .sort((a,b) => a.time - b.time);
+    for(const c of inWindow){
+      if(c.high==null || c.low==null || !isFinite(c.high) || !isFinite(c.low)) continue;
+      const crossed = isLong ? (c.low <= stop) : (c.high >= stop);
+      if(crossed) return { candle: c, stop };
+    }
+    return null;
+  }
+
+  const { interval, approxMinutes } = _chooseHistoricalKlineInterval(gapMs);
+  const approxMs = approxMinutes * 60000;
+
+  // 1-minute tier: no boundary ambiguity to refine (already the finest
+  // available resolution) -- fetch once, test directly.
+  if(interval === '1m'){
+    const limit = Math.min(400, Math.max(2, Math.ceil(gapMs / approxMs) + 2));
+    let candles;
+    try { candles = await fetchKlines(entry.symbol, interval, limit); }
+    catch(e){ console.warn('[ActiveTradeResumeCatchUp] historical kline fetch failed for', entry.symbol, e.message); return null; }
+    return firstCrossing(candles);
+  }
+
+  // Coarser tier: split into (a) a 1-minute boundary-refinement window
+  // covering [lookbackStartMs, lookbackStartMs+approxMs) -- guaranteed to
+  // fully contain any coarse candle that could straddle the boundary,
+  // regardless of the exchange's own candle alignment -- and (b) the
+  // genuinely-interior remainder, tested at the coarse resolution.
+  const boundaryEndMs = Math.min(nowMs, lookbackStartMs + approxMs);
+  let boundaryResult = null;
+  try {
+    const boundaryLimit = Math.min(400, Math.max(2, Math.ceil((boundaryEndMs - lookbackStartMs) / 60000) + 2));
+    const boundaryCandles = await fetchKlines(entry.symbol, '1m', boundaryLimit);
+    boundaryResult = firstCrossing(boundaryCandles);
+  } catch(e){
+    console.warn('[ActiveTradeResumeCatchUp] boundary kline fetch failed for', entry.symbol, e.message);
+    // Fall through -- the interior check below still runs; a boundary
+    // fetch failure never silently reports "no breach" for the whole gap.
+  }
+  if(boundaryResult) return boundaryResult;
+
+  if(boundaryEndMs >= nowMs) return null; // gap entirely covered by the boundary refinement already
+
+  const interiorStartMs = boundaryEndMs;
+  const interiorGapMs = nowMs - interiorStartMs;
+  const limit = Math.min(400, Math.max(2, Math.ceil(interiorGapMs / approxMs) + 2));
+  let interiorCandles;
+  try { interiorCandles = await fetchKlines(entry.symbol, interval, limit); }
+  catch(e){ console.warn('[ActiveTradeResumeCatchUp] historical kline fetch failed for', entry.symbol, e.message); return null; }
+  // Re-run firstCrossing with the interior floor -- candles are already
+  // filtered against lookbackStartMs inside firstCrossing, but the
+  // interior fetch may legitimately include candles at/after
+  // interiorStartMs only; the shared filter is still correct since
+  // interiorStartMs >= lookbackStartMs.
+  const inWindow = (interiorCandles||[])
+    .filter(c => c && isFinite(c.time) && c.time >= interiorStartMs && c.time <= nowMs)
+    .sort((a,b) => a.time - b.time);
+  for(const c of inWindow){
+    if(c.high==null || c.low==null || !isFinite(c.high) || !isFinite(c.low)) continue;
+    const crossed = isLong ? (c.low <= stop) : (c.high >= stop);
+    if(crossed) return { candle: c, stop };
+  }
+  return null;
+}
+
+let _activeTradeResumeCatchUpBusy = false;
+// Orchestrates the full resume sequence (owner §8, steps 1-8). Called
+// from a dedicated, tab-independent visibilitychange listener (see the
+// startup IIFE below) -- deliberately NOT wired through
+// _tdVisibilityHandler, which is only registered while the Trade/Watch
+// tab has been opened this session (startTradeDeskAutoRefresh()) and
+// would silently never fire for a session spent entirely on Scanner.
+async function _runActiveTradeResumeCatchUp(){
+  if(_activeTradeResumeCatchUpBusy) return;
+  _activeTradeResumeCatchUpBusy = true;
+  const _hiddenSinceAtStart = _activeTradeHiddenSinceMs; // capture before any await can race a re-hide
+  let _pullSucceeded = false;
+  try{
+    // Owner §4 -- cross-device stop freshness. Reconcile the local
+    // journal against Sheets FIRST, before any trade's stop authority is
+    // read for the historical check below -- otherwise a newer
+    // confirmation from another device (e.g. Device A moved the stop
+    // while this device was hidden) could be missed, and catch-up could
+    // evaluate history against this device's own stale, superseded local
+    // stop.
+    //
+    // Pre-release correction (final) §2 -- a FAILED reconciliation must
+    // NOT permit retrospective catch-up against possibly-stale local
+    // authority. pullFromSheets() returns false (not just throws) on a
+    // normal failed-fetch case, so both must be checked. On failure: skip
+    // historical breach inference entirely for this run, do NOT clear
+    // the hidden-gap marker (preserved for a later successful attempt to
+    // consume), and do NOT latch anything -- but the live-price
+    // safety-net tick in the finally block below still runs regardless,
+    // so current UI/live-price behaviour resumes safely either way.
+    try{
+      const _pullResult = await pullFromSheets();
+      _pullSucceeded = (_pullResult !== false);
+    } catch(err){
+      console.warn('[ActiveTradeResumeCatchUp] pre-catchup Sheets reconciliation failed:', err && err.message);
+      _pullSucceeded = false;
+    }
+    if(!_pullSucceeded){
+      if(DEBUG_MODE) console.log('[ActiveTradeResumeCatchUp] Sheets reconciliation failed -- skipping historical inference this run, hidden-gap marker preserved for next resume');
+      return; // finally{} still resets busy/runs the live-price tick; hiddenSince is left untouched below
+    }
+
+    const active = journal.filter(j=>!j.deleted&&j.decision==='took'&&!j.outcome&&(j.actualEntry||j.price));
+    const nowMs = Date.now();
+    const _catchUpChangedIds = [];
+
+    for(const e of active){
+      if(e.pendingExitReason != null) continue; // never duplicate an existing latch (owner §8)
+      const lookbackStartMs = _activeTradeSafeLookbackStartMs(e);
+      if(lookbackStartMs==null) continue; // no confirmed stop, or entry time unavailable -- never approximate
+      const gapMs = nowMs - lookbackStartMs;
+      // Skip trivially small gaps -- the ordinary live tick (now
+      // hidden-tab-eligible per owner §1) will cover these within one
+      // cycle; historical reconstruction is for genuine gaps only.
+      if(gapMs < TRADE_DESK_REFRESH_MS * 2) continue;
+
+      let result;
+      try{
+        result = await _checkHistoricalStopBreach(e, lookbackStartMs, nowMs);
+      } catch(err){
+        console.warn('[ActiveTradeResumeCatchUp] check failed for', e.symbol, err && err.message);
+        continue;
+      }
+      if(!result) continue;
+      if(e.pendingExitReason != null) continue; // re-check -- another async path may have latched meanwhile
+
+      const _reason = _classifyStopBreachReason(e, result.stop);
+      if(_reason==null) continue;
+      e.pendingExitReason = _reason;
+      e.pendingExitStop = result.stop;
+      // Owner §3 (pre-release correction) -- preserve pendingExitDetectedAt's
+      // existing semantic meaning exactly: the time TDAS actually
+      // detected/latched the condition, identical to the live-tick path's
+      // own `new Date().toISOString()`. NEVER widened into the historical
+      // candle/market-event time -- that belongs to the forthcoming
+      // Charts-ready event architecture, not this field, and no new field
+      // is added in this build to carry it separately.
+      e.pendingExitDetectedAt = new Date().toISOString();
+      e.pendingExitProtectionStage = e.protectionStage;
+      Object.assign(e, stampUpdate(e));
+      _catchUpChangedIds.push(e.id);
+    }
+
+    if(_catchUpChangedIds.length){
+      _catchUpChangedIds.forEach(id=>sessionDirtyIds.add(id));
+      if(DEBUG_MODE) console.log('[ActiveTradeResumeCatchUp] latched from history for', _catchUpChangedIds.join(','));
+      commitJournalChange('activeTradeResumeCatchUp', null).catch(err=>{
+        console.warn('[ActiveTradeResumeCatchUp] commit error:', err && err.message);
+      });
+    }
+  } catch(err){
+    console.warn('[ActiveTradeResumeCatchUp] error:', err && err.message);
+  } finally{
+    _activeTradeResumeCatchUpBusy = false;
+    // The hidden period this run was meant to cover has now been
+    // evaluated (or attempted) -- clear the marker so the NEXT hidden
+    // period starts its own fresh floor, never accumulating stale state
+    // across repeated hide/show cycles. Pre-release correction §2: only
+    // clear it when reconciliation actually succeeded -- on a failed
+    // pull, the gap must remain intact so a LATER successful
+    // reconciliation/catch-up can still consume it.
+    if(_pullSucceeded && _activeTradeHiddenSinceMs === _hiddenSinceAtStart) _activeTradeHiddenSinceMs = null;
+    // Owner §8 steps 7-8 -- immediately fetch current live price and
+    // repaint from canonical state, regardless of whether catch-up found
+    // anything. Reuses the exact same guaranteed pricing tick -- no
+    // separate repaint path.
+    _ensureActiveTradeLivePricing();
   }
 }
 
@@ -33997,6 +34387,30 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
   // TRADE_DESK_REFRESH_MS (30s) matches the cadence Trade Desk itself used.
   setInterval(_ensureActiveTradeLivePricing, TRADE_DESK_REFRESH_MS);
   setTimeout(_ensureActiveTradeLivePricing, 3000);
+
+  // TDAS — Reliable Active-Trade Stop-Breach Reminder (resume catch-up).
+  // Deliberately a SEPARATE listener from _tdVisibilityHandler/
+  // _scannerVisibilityHandler (both of which are only registered while
+  // their own tab has been opened this session — see
+  // startTradeDeskAutoRefresh()/startScannerAutoRefresh()) — this one is
+  // registered once, unconditionally, at startup, so it fires on resume
+  // regardless of which in-app tab the user was on. See
+  // _runActiveTradeResumeCatchUp()'s own header comment for the full
+  // mechanism. Pre-release correction §1 — also stamps
+  // _activeTradeHiddenSinceMs the moment the tab genuinely goes hidden
+  // (never updated by a merely-successful background ticker sample), so
+  // the eventual catch-up's lookback floor reflects the TRUE start of the
+  // unsupervised period, not shrunk by any intervening background poll
+  // that happened to catch a recovered price.
+  document.addEventListener('visibilitychange', function(){
+    if(document.hidden){
+      if(_activeTradeHiddenSinceMs==null) _activeTradeHiddenSinceMs = Date.now();
+    } else {
+      _runActiveTradeResumeCatchUp().catch(err=>{
+        console.warn('[ActiveTradeResumeCatchUp] unhandled error:', err && err.message);
+      });
+    }
+  });
 
   // TDAS V4.10.4F/G — one shared managed-surface (Watch + active Trade)
   // snapshot refresh tick, tab-independent, same established pattern as
