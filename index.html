@@ -11755,33 +11755,146 @@ function _formatOneHHtfPillHover(liveData, direction) {
   return 'HTF \u2014 4H UT direction unresolved.';
 }
 
-// ── Standalone 1H decision-dot rollovers (Regime / TEMA / UT) ─────────────
+// ── Standalone 1H decision-dot rollovers (Trend / SMA135 / TEMA / UT) ─────
 // Descriptive only. Each reads directly from the same canonical objects the
 // Technical/Advisory panels already read from — no independent computation.
-function _oneHRegimeDotHover(tse) {
-  if (!tse || !tse.direction) {
-    const stateWord = (tse && tse.state) ? tse.state.replace(/_/g, ' ').toLowerCase() : 'unresolved';
-    return 'Regime \u2014 no licensed 1H direction (' + stateWord + ').';
-  }
-  const dirWord = tse.direction === 'long' ? 'bullish' : 'bearish';
-  if (tse.state === 'BULLISH_ESTABLISHED' || tse.state === 'BEARISH_ESTABLISHED') {
-    return 'Regime \u2014 native 1H structure is established ' + dirWord + '.';
-  }
-  if (tse.state === 'BULLISH_EMERGING' || tse.state === 'BEARISH_EMERGING') {
-    return 'Regime \u2014 native 1H structure is emerging ' + dirWord + ' (partial TEMA migration).';
-  }
-  return 'Regime \u2014 native 1H structure is licensed ' + dirWord + ' but currently challenged (price off the licensed side).';
+//
+// TDAS — 1H dot grammar alignment with 4H. The lower four-dot strip now
+// mirrors the established 4H card grammar (Trend / SMA80 / TEMA / UT)
+// instead of the previous, presentation-only Regime/HTF pairing — the top
+// HTF pill already owns 4H supervision (unchanged, see
+// _oneHFourHSupervisoryState()/_formatOneHHtfPillHover() above), so the
+// four lower dots now describe native 1H evidence only, exactly as the 4H
+// card's four lower dots describe native 4H evidence only. 1H uses SMA135
+// where 4H uses SMA80 (the intermediate-structure MA already computed for
+// every 1H scan). Colour logic and rollover phrasing are adapted directly
+// from _fourHTrendDotState()/_fourHTrendDotHover()/_fourHSma80DotState()/
+// _fourHSma80DotHover()/_fourHTemaDotHover() (all unmodified, still 4H-only)
+// — same structure, same approved copy templates, fed 1H's own equivalent
+// evidence fields (ev.priceAboveSma200/sma200SlopeState in place of
+// raw.priceVsMa200/ma200DirectionState; ev.priceAboveSma135/sma135SlopeState
+// in place of the SMA80 state machine's Holding/Reclaimed/Testing/Lost —
+// 1H has no equivalent state machine, so price-location-primary +
+// slope-secondary is used instead, per owner instruction). No new
+// threshold, no new indicator, no change to buildStandaloneOneHTSE().
+
+// Trend dot — native 1H broad structure: price vs 200MA + 200MA slope,
+// relative to the card's own licensed direction. Mirrors
+// _fourHTrendDotState()/_fourHTrendDotHover() exactly; structuralChop is
+// never separately branched on here because buildStandaloneOneHTSE()
+// already resolves direction:null whenever structuralChop is true (the
+// CHOP state), so a resolved direction here guarantees structuralChop was
+// already false — no new chop-handling logic is needed to preserve that
+// invariant.
+function _oneHTrendDotState(ev, direction) {
+  if (!ev || ev.priceAboveSma200 == null || !ev.sma200SlopeState || ev.sma200SlopeState === 'unknown') return 'na';
+  const isLong = direction === 'long';
+  const priceSupports = isLong ? ev.priceAboveSma200 === true : ev.priceAboveSma200 === false;
+  const maSupports = isLong ? ev.sma200SlopeState === 'rising' : ev.sma200SlopeState === 'falling';
+  const priceOpposes = isLong ? ev.priceAboveSma200 === false : ev.priceAboveSma200 === true;
+  const maOpposes = isLong ? ev.sma200SlopeState === 'falling' : ev.sma200SlopeState === 'rising';
+  if (priceOpposes && maOpposes) return 'no';
+  if (priceSupports && maSupports) return 'ok';
+  return 'warn';
+}
+function _oneHTrendDotHover(ev, direction) {
+  if (!ev || ev.priceAboveSma200 == null || !ev.sma200SlopeState || ev.sma200SlopeState === 'unknown') return 'Evidence incomplete';
+  const isLong = direction === 'long';
+  const priceSupports = isLong ? ev.priceAboveSma200 === true : ev.priceAboveSma200 === false;
+  const maSupports = isLong ? ev.sma200SlopeState === 'rising' : ev.sma200SlopeState === 'falling';
+  const priceOpposes = isLong ? ev.priceAboveSma200 === false : ev.priceAboveSma200 === true;
+  const maOpposes = isLong ? ev.sma200SlopeState === 'falling' : ev.sma200SlopeState === 'rising';
+  if (priceOpposes && maOpposes) return isLong ? 'Price + 200MA oppose LONG' : 'Price + 200MA oppose SHORT';
+  if (priceSupports && maSupports) return isLong ? 'Above rising 200MA \u2022 Bullish structure confirmed' : 'Below falling 200MA \u2022 Bearish structure confirmed';
+  if (ev.sma200SlopeState === 'flat') return '200MA flat \u2022 Structure transitional';
+  return isLong ? 'Above 200MA \u2022 MA still declining' : 'Below 200MA \u2022 MA still rising';
 }
 
-function _oneHTemaDotHover(ev, direction) {
-  if (!ev || !direction) return 'TEMA \u2014 1H TEMA phase evidence unavailable.';
-  const dirWord = direction === 'long' ? 'bullish' : 'bearish';
-  const signAligned = direction === 'long' ? ev.tema92GapAtr > 0 : ev.tema92GapAtr < 0;
+// SMA135 dot — canonical structural-location state machine, reused
+// directly from d.v51Evidence.evidence.sma (Holding/Reclaimed/Testing/
+// Lost — v51SmaStateMachine(), already computed for every 1H scan since
+// V5.1.0C's DIAG.v51FoundationsLive activation; period auto-selects 135
+// for any tf !== '4h'/'1d', confirmBars/ATR-test-band identical to 4H).
+// Confirmed by read-only audit: position + 2-confirmed-bar persistence +
+// 0.15 ATR "at" band — never a single marginal close, no slope
+// involvement. Mirrors _fourHSma80DirectionsAgree()/_fourHSma80DotState()/
+// _fourHSma80DotHover() exactly, with the required 1H-specific
+// reconciliation: the state machine's internal basis direction
+// (d.v51Evidence.identity.direction, derived from the confirmed TEMA17/92
+// cross inside buildV51Evidence()) is a SEPARATE, independently-computed
+// value from the canonical 1H thesis direction (d.oneHTse.direction,
+// licensed via 200MA slope in buildStandaloneOneHTSE()) — when they
+// disagree, the displayed state is inverted using sma.side (the raw,
+// direction-agnostic above/below/at fact) so the dot always reads
+// relative to the canonical 1H thesis, never the internal V5.1 basis.
+// Exactly the same defect class _fourHSma80DirectionsAgree() already
+// guards against for 4H. No new threshold, no new fetch, no change to
+// v51SmaStateMachine()/buildStandaloneOneHTSE()/buildStandaloneOneHAdvisory().
+// SMA135 slope plays NO role in this dot — that evidence remains
+// available in Full Analysis, completely untouched, but does not enter
+// this state (Trend dot owns 200MA slope; this dot owns structural
+// position + persistence only, exactly mirroring 4H SMA80's own
+// slope-free design — confirmed by audit that 4H's SMA80 dot never reads
+// slope either).
+function _oneHSma135DirectionsAgree(d) {
+  const basis = d && d.v51Evidence && d.v51Evidence.identity && d.v51Evidence.identity.direction;
+  const thesis = d && d.oneHTse && d.oneHTse.direction;
+  if ((basis !== 'long' && basis !== 'short') || (thesis !== 'long' && thesis !== 'short')) return null; // unresolved — caller preserves prior mapping
+  return basis === thesis;
+}
+function _oneHSma135DotState(d) {
+  const sma = d && d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.sma;
+  if (!sma || !sma.complete) return 'na';
+  if (sma.state === 'Testing') return 'warn';
+  if (sma.state !== 'Holding' && sma.state !== 'Reclaimed' && sma.state !== 'Lost') return 'na';
+  const supportive = sma.state === 'Holding' || sma.state === 'Reclaimed';
+  const agree = _oneHSma135DirectionsAgree(d);
+  if (agree === false) return supportive ? 'no' : 'ok'; // basis/thesis disagree — invert
+  return supportive ? 'ok' : 'no'; // agree, or unresolved — preserve existing mapping
+}
+function _oneHSma135DotHover(d, direction) {
+  const sma = d && d.v51Evidence && d.v51Evidence.evidence && d.v51Evidence.evidence.sma;
+  if (!sma || !sma.complete) return 'SMA135 evidence unavailable';
+  if (sma.state === 'Testing') return 'Testing SMA135 \u2022 Direction unclear';
+  if (sma.state !== 'Holding' && sma.state !== 'Reclaimed' && sma.state !== 'Lost') return 'SMA135 evidence unavailable';
+  const agree = _oneHSma135DirectionsAgree(d);
+  if (agree !== false) {
+    if (sma.state === 'Holding') return 'Holding SMA135 \u2022 Trend support intact';
+    if (sma.state === 'Reclaimed') return 'SMA135 reclaimed \u2022 Support restored';
+    return 'SMA135 lost \u2022 Structure weakened'; // Lost
+  }
+  const isLong = direction === 'long';
+  const priceAbove = sma.side === 'above';
+  if (isLong) return priceAbove ? 'Above SMA135 \u2022 Supports LONG' : 'Below SMA135 \u2022 Opposes LONG';
+  return !priceAbove ? 'Below SMA135 \u2022 Supports SHORT' : 'Above SMA135 \u2022 Opposes SHORT';
+}
+
+// TEMA dot — native 1H TEMA phase, mirroring _fourHTemaDotHover()'s exact
+// four-way structure: aligned (green) / recovering opposition, i.e.
+// opposing-but-contracting (amber, "turning") / counter-trend pressure,
+// i.e. opposing-and-not-contracting but price still on the licensed side
+// of 200MA (amber) / full opposition, i.e. opposing-and-not-contracting
+// with price also off the licensed side (red). Uses ev.tema92GapAtr's
+// sign for aligned/opposing (the 1H equivalent of 4H's temaPhase) and
+// ev.temaSeparationTrajectory for contracting (the same field name/shape
+// 4H's v51Evidence.tema.separation.trajectory already provides), plus
+// ev.priceAboveSma200 (the SAME field the Trend dot above uses) as the
+// 1H equivalent of 4H's raw.priceVsMa200 "still on the licensed side"
+// discriminator — no new field, no new threshold.
+function _oneHTemaClassAndHover(ev, direction) {
+  if (!ev || ev.tema92GapAtr == null) return { cls: 'na', title: 'TEMA state unavailable' };
+  const isLong = direction === 'long';
+  const signAligned = isLong ? ev.tema92GapAtr > 0 : ev.tema92GapAtr < 0;
+  if (signAligned) return { cls: 'ok', title: isLong ? 'TEMA bullish \u2022 Averages aligned' : 'TEMA bearish \u2022 Averages aligned' };
   const trajectory = ev.temaSeparationTrajectory;
-  if (signAligned && trajectory === 'contracting') return 'TEMA \u2014 1H phase aligned ' + dirWord + ' but contracting \u2014 losing strength.';
-  if (signAligned) return 'TEMA \u2014 1H phase currently aligned ' + dirWord + '.';
-  if (trajectory === 'expanding') return 'TEMA \u2014 1H phase opposed and expanding \u2014 pullback in progress.';
-  return 'TEMA \u2014 1H phase opposed to ' + dirWord + ' but recovering.';
+  if (trajectory === 'contracting') {
+    return { cls: 'warn', title: isLong ? 'TEMA turning bullish \u2022 Momentum shifting' : 'TEMA turning bearish \u2022 Momentum shifting' };
+  }
+  const priceOnThesisSide = isLong ? ev.priceAboveSma200 === true : ev.priceAboveSma200 === false;
+  if (priceOnThesisSide) {
+    return { cls: 'warn', title: isLong ? 'TEMA bearish but above 200MA \u2022 Counter-trend pressure' : 'TEMA bullish but below 200MA \u2022 Counter-trend pressure' };
+  }
+  return { cls: 'no', title: isLong ? 'TEMA bearish \u2022 Opposes LONG' : 'TEMA bullish \u2022 Opposes SHORT' };
 }
 
 // TDAS — 1H UT compact display (Scanner + Watch front face, via the
@@ -11817,20 +11930,23 @@ function _oneHUtCompactLabelHtml(ev) {
 }
 
 // ── Standalone 1H decision-dot state aggregator ───────────────────────────
-// Mirrors _fourHCardDotState()'s own shape/pattern exactly (dotColourToCls
-// mapping, na fallback object, one function returning all four classes +
-// titles) so buildDecisionDotsHtml() can consume 1H the same way it already
-// consumes 4H. Returns na across the board whenever there is no licensed 1H
-// direction (CHOP/UNKNOWN/TRANSITIONAL_RECOVERY_REQUIRED) — never fabricates
-// a direction to grade evidence against, matching owner doctrine §14's
-// "never auto-flip" invariant (a still-licensed-but-CHALLENGED direction is
-// graded amber, never silently promoted or demoted to the opposite side).
+// Mirrors _fourHCardDotState()'s own shape/pattern exactly (na fallback
+// object, one function returning all four classes + titles) so
+// buildDecisionDotsHtml() can consume 1H the same way it already consumes
+// 4H. Returns na across the board whenever there is no licensed 1H
+// direction (CHOP/UNKNOWN/TRANSITIONAL_RECOVERY_REQUIRED) — never
+// fabricates a direction to grade evidence against, matching owner
+// doctrine §14's "never auto-flip" invariant. The top-of-card HTF pill
+// (_oneHFourHSupervisoryState()/_formatOneHHtfPillHover(), wired directly
+// into renderCard()/renderWatchCard(), completely untouched by this
+// function) remains the sole 4H-supervision surface — this aggregator no
+// longer reads or exposes any HTF-supervision field at all.
 function _oneHCardDotState(d) {
   const na = {
-    regimeCls: 'na', htfCls: 'na', temaCls: 'na', utCls: 'na',
-    regimeTitle: 'Regime \u2014 1H structural evidence unavailable.',
-    htfTitle: 'HTF \u2014 4H supervisory evidence unavailable.',
-    temaTitle: 'TEMA \u2014 1H TEMA evidence unavailable.',
+    trendCls: 'na', sma135Cls: 'na', temaCls: 'na', utCls: 'na',
+    trendTitle: 'Evidence incomplete',
+    sma135Title: 'SMA135 evidence unavailable',
+    temaTitle: 'TEMA state unavailable',
     utTitle: 'UT \u2014 1H UT Bot evidence unavailable.',
     utLabelHtml: 'UT',
   };
@@ -11838,29 +11954,20 @@ function _oneHCardDotState(d) {
   const tse = d.oneHTse;
   const direction = tse.direction;
   if (!direction) {
-    return Object.assign({}, na, { regimeTitle: _oneHRegimeDotHover(tse) });
+    return Object.assign({}, na, { trendTitle: 'No directional thesis' });
   }
-
-  const dotColourFromBadge = { aligned: 'ok', supportive: 'warn', conflict: 'no', neutral: 'na' };
-
-  const regimeCls =
-    (tse.state === 'BULLISH_ESTABLISHED' || tse.state === 'BEARISH_ESTABLISHED') ? 'ok'
-    : (tse.state === 'BULLISH_EMERGING' || tse.state === 'BEARISH_EMERGING' || tse.state === 'BULLISH_CHALLENGED' || tse.state === 'BEARISH_CHALLENGED') ? 'warn'
-    : 'na';
-
-  const htfBadgeState = _oneHFourHSupervisoryState(d, direction);
-  const htfCls = dotColourFromBadge[htfBadgeState] || 'na';
 
   const ev = d.oneHNativeEvidence && d.oneHNativeEvidence.evidence;
-  let temaCls = 'na';
-  if (ev && ev.tema92GapAtr != null) {
-    const signAligned = direction === 'long' ? ev.tema92GapAtr > 0 : ev.tema92GapAtr < 0;
-    const trajectory = ev.temaSeparationTrajectory;
-    if (signAligned && trajectory === 'contracting') temaCls = 'warn';
-    else if (signAligned) temaCls = 'ok';
-    else if (trajectory === 'expanding') temaCls = 'no';
-    else temaCls = 'warn';
-  }
+
+  const trendCls = _oneHTrendDotState(ev, direction);
+  const trendTitle = _oneHTrendDotHover(ev, direction);
+
+  const sma135Cls = _oneHSma135DotState(d);
+  const sma135Title = _oneHSma135DotHover(d, direction);
+
+  const temaResult = _oneHTemaClassAndHover(ev, direction);
+  const temaCls = temaResult.cls;
+  const temaTitle = temaResult.title;
 
   // UT dot COLOUR remains confirms/opposes-relative to the card's own
   // canonical 1H direction — unchanged by the compact-label addition. The
@@ -11874,10 +11981,8 @@ function _oneHCardDotState(d) {
   }
 
   return {
-    regimeCls, htfCls, temaCls, utCls,
-    regimeTitle: _oneHRegimeDotHover(tse),
-    htfTitle: _formatOneHHtfPillHover(d, direction),
-    temaTitle: _oneHTemaDotHover(ev, direction),
+    trendCls, sma135Cls, temaCls, utCls,
+    trendTitle, sma135Title, temaTitle,
     utTitle: _oneHUtDotHover(ev, direction),
     utLabelHtml: _oneHUtCompactLabelHtml(ev),
   };
@@ -22855,29 +22960,30 @@ function buildDecisionDotsHtml(d){
     }
   }
 
-  // TDAS — Standalone 1H card dot fix. Reads the canonical standalone-1H
-  // authority (d.oneHTse/d.oneHNativeEvidence/d.oneHFourHSupervisoryEvidence
-  // — all already computed by calcPair() for every 1H scan since V5.4.3)
+  // TDAS — Standalone 1H card dot grammar alignment with 4H. Reads the
+  // canonical standalone-1H authority (d.oneHTse/d.oneHNativeEvidence —
+  // all already computed by calcPair() for every 1H scan since V5.4.3)
   // via _oneHCardDotState(), instead of falling through to the legacy
-  // hasBias/ev.tradeBias/d.htfAlign path below. That legacy path is what
-  // produced the reported defect: legacy d.signal/tradeBias only reflects a
-  // live same-bar crossover, so an already-ESTABLISHED 1H structure (no
-  // fresh crossover this bar) rendered all-grey/dash, while a CHALLENGED
-  // card that happened to still show a live legacy crossover rendered
-  // populated by coincidence — not because its evidence was more valid. No
-  // Technical/Advisory classification, threshold, or 4H behaviour changes —
-  // presentation-only, same pattern as the 4H branch immediately above.
+  // hasBias/ev.tradeBias/d.htfAlign path below. Grammar now mirrors the
+  // established 4H card exactly: Trend / SMA135 (1H's own intermediate-
+  // structure MA, where 4H uses SMA80) / TEMA / UT — describing native 1H
+  // evidence only. 4H supervision is owned exclusively by the top-of-card
+  // HTF pill (_oneHFourHSupervisoryState()/_formatOneHHtfPillHover(),
+  // wired directly into renderCard()/renderWatchCard(), unchanged by this
+  // dot-row edit) — the lower strip no longer duplicates it. No
+  // Technical/Advisory classification, threshold, or 4H card behaviour
+  // changes — presentation-only, same pattern as the 4H branch above.
   if (d && d.tf === '1h' && d.oneHTse) {
     try {
       const _dots = _oneHCardDotState(d);
       return '<div class="dot-row dot-row-lg">'
-        + item(_dots.regimeCls,'Regime',_dots.regimeTitle) + item(_dots.htfCls,'HTF',_dots.htfTitle)
+        + item(_dots.trendCls,'Trend',_dots.trendTitle) + item(_dots.sma135Cls,'SMA135',_dots.sma135Title)
         + item(_dots.temaCls,'TEMA',_dots.temaTitle) + item(_dots.utCls,_dots.utLabelHtml,_dots.utTitle)
         + '</div>';
     } catch (e) {
       if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildDecisionDotsHtml] 1H card dot row threw, degrading to all-na', e);
       return '<div class="dot-row dot-row-lg">'
-        + item('na','Regime') + item('na','HTF') + item('na','TEMA') + item('na','UT')
+        + item('na','Trend') + item('na','SMA135') + item('na','TEMA') + item('na','UT')
         + '</div>';
     }
   }
@@ -23162,9 +23268,10 @@ function renderCard(symbol,d){
   // cause as the ESTABLISHED-vs-CHALLENGED dot defect: legacy d.signal only
   // reflects a live same-bar crossover, so an already-ESTABLISHED 1H
   // structure sat at legacy neutral and rendered "HTF 4H —" regardless of
-  // the genuinely-computed 4H supervisory evidence. Uses the SAME
-  // _oneHFourHSupervisoryState() the decision dot above now uses — one
-  // canonical source, not two independent reads that could disagree.
+  // the genuinely-computed 4H supervisory evidence. This pill is now the
+  // SOLE consumer of _oneHFourHSupervisoryState() — the lower decision-dot
+  // strip no longer duplicates 4H supervision (see the 1H dot-grammar
+  // alignment: Trend/SMA135/TEMA/UT describe native 1H evidence only).
   const _isFourHCanonicalPill = d && d.tf === '4h' && d.eval && d.eval.htfState;
   const _isOneHCanonicalPill = d && d.tf === '1h' && d.oneHTse && d.oneHTse.direction && d.oneHFourHSupervisoryEvidence;
   const _htfPillState = _isFourHCanonicalPill
