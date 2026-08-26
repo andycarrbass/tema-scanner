@@ -10617,10 +10617,27 @@ function _isFourHTseActionable(d) {
 // provenance audit identified, and the ONLY place this function's 1H
 // behaviour changes. 4H (d.tf==='4h') is completely untouched — same
 // first branch, same d.eval.lifecycle.laneDirection read, byte-identical.
+//
+// TDAS — authority-precedence correction (closes the same gap fixed in
+// _fourHCanonicalLaneState() for the Scanner action-zone). Once
+// d.oneHAdvisory EXISTS it is authoritative and legacy d.signal must
+// never be consulted again — including when Advisory has explicitly
+// resolved to non-directional (CHOP/UNKNOWN/TRANSITIONAL_RECOVERY_
+// REQUIRED). The prior truthiness check on d.oneHAdvisory.direction fell
+// through to d.signal in that exact case, letting a stale legacy
+// crossover leak a directional result back onto every OTHER 1H consumer
+// of this function — pill class, HTF badge, RSI/MA/ADX tone, level box,
+// warn strips — the same authority violation, just reached through this
+// function instead of the action-button one. Legacy d.signal fallback is
+// now reserved strictly for the one case where d.oneHAdvisory is entirely
+// absent, for compatibility — identical precedence to
+// _fourHCanonicalLaneState(). 4H branch below (d.eval.lifecycle.
+// laneDirection read) is untouched — same lines, same behaviour.
 function _fourHCanonicalLaneDirection(d) {
   if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') {
-    if (d && d.tf === '1h' && d.oneHAdvisory && d.oneHAdvisory.direction) {
-      return d.oneHAdvisory.direction === 'long' ? 'long' : 'short';
+    if (d && d.tf === '1h' && d.oneHAdvisory) {
+      const dir = d.oneHAdvisory.direction;
+      return (dir === 'long' || dir === 'short') ? dir : 'neutral';
     }
     return (d && d.signal) || 'neutral';
   }
@@ -10664,8 +10681,47 @@ function _fourHCanonicalIsDirectional(d) {
 // unchanged 2-state 'long'|'short'|'neutral' passthrough (identical to
 // _fourHCanonicalLaneDirection()) for 1H or DIAG.fourHTseAuthorityLive
 // off, since there is no canonical authority to be unavailable there.
+// TDAS — 1H action-zone button fix. This function's sibling,
+// _fourHCanonicalLaneDirection() (used by dozens of OTHER consumers — pill
+// class, HTF badge, RSI/MA/ADX tone, level box, warn strips), was already
+// updated in the V5.4.3 standalone-1H uplift to route 1H through canonical
+// d.oneHAdvisory.direction instead of legacy d.signal (see that function's
+// own header comment: "No visible Scanner consumer may silently fall back
+// to raw d.signal for 1H (owner §25)"). THIS function — the ONE consumer
+// that actually gates the Scanner action-zone's +Log decision/View
+// analysis choice — was never given the same fix, and was the exact seam
+// the owner's §25 doctrine was written to close. Root cause: legacy
+// d.signal only reflects a live same-bar crossover, so an already-
+// ESTABLISHED/CHALLENGED 1H structure (no fresh crossover this bar) sat
+// at legacy 'neutral' and silently lost its +Log decision button, while a
+// card that happened to still show a stale legacy crossover kept it by
+// coincidence — not because its canonical state was more directional.
+// Same defect class as the earlier 1H HTF pill/dot fix, now closed here
+// for the action button specifically.
+//
+// TDAS — authority-precedence correction. Once d.oneHAdvisory EXISTS, it
+// is authoritative and legacy d.signal must never be consulted again for
+// this card — including when Advisory has explicitly resolved to
+// non-directional (CHOP/UNKNOWN/TRANSITIONAL_RECOVERY_REQUIRED). The
+// earlier version of this branch fell through to `d.signal` in that exact
+// case, which could let a stale legacy crossover leak a directional
+// button back onto a card canonical Advisory had explicitly deemed
+// non-actionable — the same class of authority violation this whole fix
+// exists to close, just on the opposite (over-eager) side. Legacy
+// `d.signal` fallback is now reserved strictly for the one case where
+// d.oneHAdvisory is entirely absent (no canonical evaluation attempted
+// for this card at all), for compatibility. No change to
+// d.oneHTse/d.oneHAdvisory computation, no new threshold —
+// presentation/wiring only. 4H branch (DIAG.fourHTseAuthorityLive-gated
+// lane read) is completely untouched, byte-identical.
 function _fourHCanonicalLaneState(d) {
-  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') return (d && d.signal) || 'neutral';
+  if (!(DIAG.fourHTseAuthorityLive === true) || !d || d.tf !== '4h') {
+    if (d && d.tf === '1h' && d.oneHAdvisory) {
+      const dir = d.oneHAdvisory.direction;
+      return (dir === 'long' || dir === 'short') ? dir : 'neutral';
+    }
+    return (d && d.signal) || 'neutral';
+  }
   const lane = d.eval && d.eval.lifecycle && d.eval.lifecycle.laneDirection;
   if (lane === 'long' || lane === 'short' || lane === 'neutral') return lane;
   return 'unavailable';
