@@ -11615,18 +11615,49 @@ function _fourHTemaDotHover(d, dirWord) {
   return isLong ? 'TEMA bearish \u2022 Opposes LONG' : 'TEMA bullish \u2022 Opposes SHORT';
 }
 
+// TDAS — 4H UT compact display (Scanner + Watch front card, via the
+// shared buildDecisionDotsHtml() 4H branch both already use). Upgraded to
+// the proven 1H rollover style/information model, per owner approval.
+// Reads ONLY d.trendState.utDirection/utBarsSinceFlip — the SAME already-
+// computed setup-tf confirmed-bar Heikin-Ashi UT Bot fields utCls (below)
+// already uses; utBarsSinceFlip is utBot.barsAgoFlip, fed into
+// buildTrendState() at the calcPair() call site — no new calculation, no
+// new fetch, no new threshold. Dot colour (utCls) remains exactly the
+// existing confirms/opposes-relative-to-d.trendState.direction comparison,
+// byte-unchanged.
 function _fourHUtDotHover(d, dirWord) {
   const utDirWord = d.trendState.utDirection;
   if (!utDirWord || utDirWord === 'unknown') return 'UT state unavailable';
   const isLong = dirWord === 'bullish';
+  const dirLabel = isLong ? 'LONG' : 'SHORT';
   const utMatches = utDirWord === dirWord;
-  if (utMatches) return isLong ? 'UT bullish \u2022 Confirms LONG' : 'UT bearish \u2022 Confirms SHORT';
-  return isLong ? 'UT bearish \u2022 Opposes LONG' : 'UT bullish \u2022 Opposes SHORT';
+  const bars = d.trendState.utBarsSinceFlip;
+  const freshPhrase = (bars != null && isFinite(bars)) ? (' \u00b7 flipped ' + bars + (bars === 1 ? ' bar' : ' bars') + ' ago') : '';
+  return 'UT ' + utDirWord + freshPhrase + ' \u2014 ' + (utMatches ? 'confirms ' : 'opposes ') + dirLabel;
+}
+
+// Compact "UT BUY · 2b" / "UT SELL · 1b" label markup for the 4H UT dot
+// item. Byte-identical dual-colour treatment to the approved 1H control
+// (_oneHUtCompactLabelHtml()): the BUY/SELL word itself is coloured by RAW
+// UT direction only (bullish=green, bearish=red), never by whether it
+// agrees with the card's direction, and never by freshness. `Nb` is
+// bars-since-flip (d.trendState.utBarsSinceFlip), omitted entirely (not
+// zero-padded, not defaulted) when unavailable.
+function _fourHUtCompactLabelHtml(d) {
+  const utDirWord = d && d.trendState && d.trendState.utDirection;
+  if (!utDirWord || utDirWord === 'unknown') return 'UT';
+  const isBuy = utDirWord === 'bullish';
+  const word = isBuy ? 'BUY' : 'SELL';
+  const wordColor = isBuy ? 'var(--green-text)' : 'var(--red-text)';
+  const bars = d.trendState.utBarsSinceFlip;
+  const barsSuffix = (bars != null && isFinite(bars)) ? (' \u00b7 ' + bars + 'b') : '';
+  return 'UT <span style="color:' + wordColor + ';">' + word + '</span>' + barsSuffix;
 }
 
 function _fourHCardDotState(d) {
   const na = { trendCls: 'na', sma80Cls: 'na', temaCls: 'na', utCls: 'na',
-    trendTitle: 'Evidence incomplete', sma80Title: 'SMA80 state unavailable', temaTitle: 'TEMA state unavailable', utTitle: 'UT state unavailable' };
+    trendTitle: 'Evidence incomplete', sma80Title: 'SMA80 state unavailable', temaTitle: 'TEMA state unavailable', utTitle: 'UT state unavailable',
+    utLabelHtml: 'UT' };
   if (!d || d.tf !== '4h' || !d.trendState) return na;
   const ts = d.trendState;
   const dirWord = ts.direction === 'LONG' ? 'bullish' : ts.direction === 'SHORT' ? 'bearish' : 'neutral';
@@ -11675,6 +11706,10 @@ function _fourHCardDotState(d) {
     temaCls = priceOnThesisSideForTema ? 'warn' : 'no'; // counter-trend pressure (amber) vs structural opposition (red)
   }
 
+  // UT dot COLOUR remains confirms/opposes-relative to d.trendState.direction
+  // — byte-unchanged by the compact-label addition. The BUY/SELL compact
+  // label text (utLabelHtml) is a SEPARATE, raw-direction colouring, built
+  // by _fourHUtCompactLabelHtml() above — freshness never enters either.
   const utDirWord = ts.utDirection;
   const utCls = (!utDirWord || utDirWord === 'unknown') ? 'na' : (utDirWord === dirWord ? 'ok' : 'no');
 
@@ -11682,6 +11717,7 @@ function _fourHCardDotState(d) {
     trendCls, sma80Cls, temaCls, utCls,
     trendTitle: _fourHTrendDotHover(d), sma80Title: _fourHSma80DotHover(d),
     temaTitle: _fourHTemaDotHover(d, dirWord), utTitle: _fourHUtDotHover(d, dirWord),
+    utLabelHtml: _fourHUtCompactLabelHtml(d),
   };
 }
 
@@ -22950,7 +22986,7 @@ function buildDecisionDotsHtml(d){
       const _dots = _fourHCardDotState(d);
       return '<div class="dot-row dot-row-lg">'
         + item(_dots.trendCls,'Trend',_dots.trendTitle) + item(_dots.sma80Cls,'SMA80',_dots.sma80Title)
-        + item(_dots.temaCls,'TEMA',_dots.temaTitle) + item(_dots.utCls,'UT',_dots.utTitle)
+        + item(_dots.temaCls,'TEMA',_dots.temaTitle) + item(_dots.utCls,_dots.utLabelHtml,_dots.utTitle)
         + '</div>';
     } catch (e) {
       if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildDecisionDotsHtml] 4H card dot row threw, degrading to all-na', e);
