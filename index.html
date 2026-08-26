@@ -11685,6 +11685,204 @@ function _fourHCardDotState(d) {
   };
 }
 
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS — Standalone 1H card presentation wiring (HTF pill + dots)        ║
+// ║                                                                          ║
+// ║  Root cause this section fixes: the 1H HTF pill/dots never migrated off ║
+// ║  the pre-canonical legacy path (d.signal / d.evaluation.tradeBias /     ║
+// ║  d.htfAlign / buildHtfBadgeState(d,d.signal)) even after V5.4.3 gave 1H ║
+// ║  its own canonical authority (d.oneHTse/d.oneHAdvisory/                 ║
+// ║  d.oneHNativeEvidence/d.oneHFourHSupervisoryEvidence). Legacy d.signal  ║
+// ║  only reflects a live same-bar crossover, so an already-ESTABLISHED 1H ║
+// ║  structure (no fresh crossover this bar) sits at legacy 'neutral' —    ║
+// ║  exactly the reported "HTF 4H —"/all-grey-dots defect — while a        ║
+// ║  CHALLENGED card that happens to still show a live legacy crossover    ║
+// ║  renders populated by coincidence, not because its evidence is more    ║
+// ║  correct. This is the EXACT same class of bug TDAS V4.4/V4.5.7/V4.5.8  ║
+// ║  already fixed once for the active-trade pill/dot and the normal       ║
+// ║  scanner HTF pill — this section is that same fix applied to the 1H    ║
+// ║  standalone authority that didn't exist yet at the time.               ║
+// ║                                                                          ║
+// ║  Reads ONLY already-computed canonical fields. No new fetch, no new     ║
+// ║  threshold, no re-derivation of any indicator, no change to             ║
+// ║  buildStandaloneOneHTSE()/buildStandaloneOneHAdvisory() or any 4H path. ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+
+// 4H supervisory state for a standalone 1H setup, in the SAME four-value
+// vocabulary the existing 4H HTF badge already uses (aligned/supportive/
+// conflict/neutral — see buildHtfBadgeState()/HTF_BADGE_GLYPH above) so the
+// 1H pill/dot can reuse the identical CSS classes and glyph map rather than
+// inventing a second vocabulary. `direction` is passed in explicitly (never
+// read internally) so callers control which direction source is authoritative
+// for their surface — Scanner uses the live native d.oneHTse.direction,
+// Watch uses the persisted watch.signal — exactly mirroring the existing 4H
+// pill's own doctrine of never letting a live re-scan silently redirect an
+// already-persisted Watch thesis.
+//
+// Logic: opposing confirmed 4H UT is the SAME condition
+// standaloneOneHShouldExitOnFourHUt()/buildStandaloneOneHAdvisory()'s
+// FOUR_H_UT_OPPOSITION branch already treats as supervisory veto —
+// 'conflict' here, never re-derived, just read. When UT does not oppose,
+// price's position relative to the confirmed 4H 200MA (already computed by
+// _buildFourHSupervisoryEvidence(), never recomputed here) distinguishes
+// full support ('aligned') from partial/caution support ('supportive') —
+// the same aligned/supportive split buildHtfBadgeState() already makes for
+// 4H, applied to 1H's own supervisory facts instead of inventing a new one.
+function _oneHFourHSupervisoryState(liveData, direction) {
+  if (!direction || !liveData) return 'neutral';
+  const fe = liveData.oneHFourHSupervisoryEvidence;
+  if (!fe || fe.status !== 'complete' || !fe.evidence) return 'neutral';
+  const ev = fe.evidence;
+  if (!ev.utDirection || ev.utDirection === 'unknown') return 'neutral';
+  const utOpposes = direction === 'long' ? ev.utDirection === 'bearish' : ev.utDirection === 'bullish';
+  if (utOpposes) return 'conflict';
+  if (ev.priceAboveSma200 == null) return 'neutral';
+  const priceOnLicensedSide = direction === 'long' ? ev.priceAboveSma200 === true : ev.priceAboveSma200 === false;
+  return priceOnLicensedSide ? 'aligned' : 'supportive';
+}
+
+// Concise trader-facing HTF pill rollover — descriptive only, invents no
+// new decision (reuses the exact same badge state above).
+function _formatOneHHtfPillHover(liveData, direction) {
+  if (!direction) return 'HTF — no licensed 1H direction to supervise.';
+  const fe = liveData && liveData.oneHFourHSupervisoryEvidence;
+  if (!fe || fe.status !== 'complete') return 'HTF — 4H supervisory evidence unavailable.';
+  const dirWord = direction === 'long' ? 'bullish' : 'bearish';
+  const st = _oneHFourHSupervisoryState(liveData, direction);
+  if (st === 'conflict') return 'HTF \u2014 4H supervision vetoes the ' + dirWord + ' (confirmed 4H UT opposes).';
+  if (st === 'supportive') return 'HTF \u2014 4H UT supports the ' + dirWord + ', but price remains on the wrong side of the 4H 200MA \u2014 caution.';
+  if (st === 'aligned') return 'HTF \u2014 4H supervision supports the ' + dirWord + '.';
+  return 'HTF \u2014 4H UT direction unresolved.';
+}
+
+// ── Standalone 1H decision-dot rollovers (Regime / TEMA / UT) ─────────────
+// Descriptive only. Each reads directly from the same canonical objects the
+// Technical/Advisory panels already read from — no independent computation.
+function _oneHRegimeDotHover(tse) {
+  if (!tse || !tse.direction) {
+    const stateWord = (tse && tse.state) ? tse.state.replace(/_/g, ' ').toLowerCase() : 'unresolved';
+    return 'Regime \u2014 no licensed 1H direction (' + stateWord + ').';
+  }
+  const dirWord = tse.direction === 'long' ? 'bullish' : 'bearish';
+  if (tse.state === 'BULLISH_ESTABLISHED' || tse.state === 'BEARISH_ESTABLISHED') {
+    return 'Regime \u2014 native 1H structure is established ' + dirWord + '.';
+  }
+  if (tse.state === 'BULLISH_EMERGING' || tse.state === 'BEARISH_EMERGING') {
+    return 'Regime \u2014 native 1H structure is emerging ' + dirWord + ' (partial TEMA migration).';
+  }
+  return 'Regime \u2014 native 1H structure is licensed ' + dirWord + ' but currently challenged (price off the licensed side).';
+}
+
+function _oneHTemaDotHover(ev, direction) {
+  if (!ev || !direction) return 'TEMA \u2014 1H TEMA phase evidence unavailable.';
+  const dirWord = direction === 'long' ? 'bullish' : 'bearish';
+  const signAligned = direction === 'long' ? ev.tema92GapAtr > 0 : ev.tema92GapAtr < 0;
+  const trajectory = ev.temaSeparationTrajectory;
+  if (signAligned && trajectory === 'contracting') return 'TEMA \u2014 1H phase aligned ' + dirWord + ' but contracting \u2014 losing strength.';
+  if (signAligned) return 'TEMA \u2014 1H phase currently aligned ' + dirWord + '.';
+  if (trajectory === 'expanding') return 'TEMA \u2014 1H phase opposed and expanding \u2014 pullback in progress.';
+  return 'TEMA \u2014 1H phase opposed to ' + dirWord + ' but recovering.';
+}
+
+// TDAS — 1H UT compact display (Scanner + Watch front face, via the
+// shared buildTechnicalChecklistHtml()->buildDecisionDotsHtml() path both
+// already use). Rollover wording only — dot colour/state (utCls, computed
+// in _oneHCardDotState() below) is completely unchanged by this addition.
+function _oneHUtDotHover(ev, direction) {
+  if (!ev || !direction || !ev.utDirection || ev.utDirection === 'unknown') return 'UT \u2014 1H UT Bot evidence unavailable.';
+  const dirLabel = direction === 'long' ? 'LONG' : 'SHORT';
+  const aligned = direction === 'long' ? ev.utDirection === 'bullish' : ev.utDirection === 'bearish';
+  const bars = ev.utBarsSinceFlip;
+  const freshPhrase = (bars != null && isFinite(bars)) ? (' \u00b7 flipped ' + bars + (bars === 1 ? ' bar' : ' bars') + ' ago') : '';
+  return 'UT ' + ev.utDirection + freshPhrase + ' \u2014 ' + (aligned ? 'confirms ' : 'opposes ') + dirLabel;
+}
+
+// Compact "UT BUY · 2b" / "UT SELL · 1b" label markup for the 1H UT dot
+// item. Deliberately a DUAL colour treatment, distinct from the dot's own
+// colour (utCls, still confirms/opposes-relative — unchanged): the BUY/
+// SELL word itself is coloured by RAW UT direction only (bullish=green,
+// bearish=red), never by whether it agrees with the card's direction, and
+// never by freshness. Reuses the existing --green-text/--red-text tokens
+// already used throughout this file (e.g. buildFilterLineHtml's RSI/200MA
+// colouring) — no new colour token. `Nb` is bars-since-flip, omitted
+// entirely (not zero-padded, not defaulted) when unavailable, per spec.
+function _oneHUtCompactLabelHtml(ev) {
+  if (!ev || !ev.utDirection || ev.utDirection === 'unknown') return 'UT';
+  const isBuy = ev.utDirection === 'bullish';
+  const word = isBuy ? 'BUY' : 'SELL';
+  const wordColor = isBuy ? 'var(--green-text)' : 'var(--red-text)';
+  const bars = ev.utBarsSinceFlip;
+  const barsSuffix = (bars != null && isFinite(bars)) ? (' \u00b7 ' + bars + 'b') : '';
+  return 'UT <span style="color:' + wordColor + ';">' + word + '</span>' + barsSuffix;
+}
+
+// ── Standalone 1H decision-dot state aggregator ───────────────────────────
+// Mirrors _fourHCardDotState()'s own shape/pattern exactly (dotColourToCls
+// mapping, na fallback object, one function returning all four classes +
+// titles) so buildDecisionDotsHtml() can consume 1H the same way it already
+// consumes 4H. Returns na across the board whenever there is no licensed 1H
+// direction (CHOP/UNKNOWN/TRANSITIONAL_RECOVERY_REQUIRED) — never fabricates
+// a direction to grade evidence against, matching owner doctrine §14's
+// "never auto-flip" invariant (a still-licensed-but-CHALLENGED direction is
+// graded amber, never silently promoted or demoted to the opposite side).
+function _oneHCardDotState(d) {
+  const na = {
+    regimeCls: 'na', htfCls: 'na', temaCls: 'na', utCls: 'na',
+    regimeTitle: 'Regime \u2014 1H structural evidence unavailable.',
+    htfTitle: 'HTF \u2014 4H supervisory evidence unavailable.',
+    temaTitle: 'TEMA \u2014 1H TEMA evidence unavailable.',
+    utTitle: 'UT \u2014 1H UT Bot evidence unavailable.',
+    utLabelHtml: 'UT',
+  };
+  if (!d || d.tf !== '1h' || !d.oneHTse) return na;
+  const tse = d.oneHTse;
+  const direction = tse.direction;
+  if (!direction) {
+    return Object.assign({}, na, { regimeTitle: _oneHRegimeDotHover(tse) });
+  }
+
+  const dotColourFromBadge = { aligned: 'ok', supportive: 'warn', conflict: 'no', neutral: 'na' };
+
+  const regimeCls =
+    (tse.state === 'BULLISH_ESTABLISHED' || tse.state === 'BEARISH_ESTABLISHED') ? 'ok'
+    : (tse.state === 'BULLISH_EMERGING' || tse.state === 'BEARISH_EMERGING' || tse.state === 'BULLISH_CHALLENGED' || tse.state === 'BEARISH_CHALLENGED') ? 'warn'
+    : 'na';
+
+  const htfBadgeState = _oneHFourHSupervisoryState(d, direction);
+  const htfCls = dotColourFromBadge[htfBadgeState] || 'na';
+
+  const ev = d.oneHNativeEvidence && d.oneHNativeEvidence.evidence;
+  let temaCls = 'na';
+  if (ev && ev.tema92GapAtr != null) {
+    const signAligned = direction === 'long' ? ev.tema92GapAtr > 0 : ev.tema92GapAtr < 0;
+    const trajectory = ev.temaSeparationTrajectory;
+    if (signAligned && trajectory === 'contracting') temaCls = 'warn';
+    else if (signAligned) temaCls = 'ok';
+    else if (trajectory === 'expanding') temaCls = 'no';
+    else temaCls = 'warn';
+  }
+
+  // UT dot COLOUR remains confirms/opposes-relative to the card's own
+  // canonical 1H direction — unchanged by the compact-label addition. The
+  // BUY/SELL compact label text (utLabelHtml) is a SEPARATE, raw-direction
+  // colouring, built by _oneHUtCompactLabelHtml() above — freshness never
+  // enters either.
+  let utCls = 'na';
+  if (ev && ev.utDirection && ev.utDirection !== 'unknown') {
+    const utAligned = direction === 'long' ? ev.utDirection === 'bullish' : ev.utDirection === 'bearish';
+    utCls = utAligned ? 'ok' : 'no';
+  }
+
+  return {
+    regimeCls, htfCls, temaCls, utCls,
+    regimeTitle: _oneHRegimeDotHover(tse),
+    htfTitle: _formatOneHHtfPillHover(d, direction),
+    temaTitle: _oneHTemaDotHover(ev, direction),
+    utTitle: _oneHUtDotHover(ev, direction),
+    utLabelHtml: _oneHUtCompactLabelHtml(ev),
+  };
+}
+
 // ── Rollback seams (V5.3.3B) ──────────────────────────────────────────────
 // Declared as DIAG.* assignment statements further below, immediately
 // after `const DIAG = {...}` itself (the codebase's own established
@@ -22657,6 +22855,33 @@ function buildDecisionDotsHtml(d){
     }
   }
 
+  // TDAS — Standalone 1H card dot fix. Reads the canonical standalone-1H
+  // authority (d.oneHTse/d.oneHNativeEvidence/d.oneHFourHSupervisoryEvidence
+  // — all already computed by calcPair() for every 1H scan since V5.4.3)
+  // via _oneHCardDotState(), instead of falling through to the legacy
+  // hasBias/ev.tradeBias/d.htfAlign path below. That legacy path is what
+  // produced the reported defect: legacy d.signal/tradeBias only reflects a
+  // live same-bar crossover, so an already-ESTABLISHED 1H structure (no
+  // fresh crossover this bar) rendered all-grey/dash, while a CHALLENGED
+  // card that happened to still show a live legacy crossover rendered
+  // populated by coincidence — not because its evidence was more valid. No
+  // Technical/Advisory classification, threshold, or 4H behaviour changes —
+  // presentation-only, same pattern as the 4H branch immediately above.
+  if (d && d.tf === '1h' && d.oneHTse) {
+    try {
+      const _dots = _oneHCardDotState(d);
+      return '<div class="dot-row dot-row-lg">'
+        + item(_dots.regimeCls,'Regime',_dots.regimeTitle) + item(_dots.htfCls,'HTF',_dots.htfTitle)
+        + item(_dots.temaCls,'TEMA',_dots.temaTitle) + item(_dots.utCls,_dots.utLabelHtml,_dots.utTitle)
+        + '</div>';
+    } catch (e) {
+      if (typeof DEBUG_MODE !== 'undefined' && DEBUG_MODE) console.warn('[buildDecisionDotsHtml] 1H card dot row threw, degrading to all-na', e);
+      return '<div class="dot-row dot-row-lg">'
+        + item('na','Regime') + item('na','HTF') + item('na','TEMA') + item('na','UT')
+        + '</div>';
+    }
+  }
+
   if(hasBias){
     const reg = d.regime || {};
     regimeCls = reg.key==='NEUTRAL' ? 'na' : (ev.confirms.regime ? 'ok' : 'no');
@@ -22929,12 +23154,23 @@ function renderCard(symbol,d){
   // (d.eval.technicalState.direction), never legacy d.signal, never
   // htfAlign. Hard invariant: same canonical 4H TSE direction + same
   // confirmed Daily bar => same pill, proven by
-  // test_v54f2h_htf_pill_stability.js. 1H cards are completely untouched —
-  // standalone 1H canonical authority does not exist yet (owner doctrine
-  // §14) — and keep the exact pre-F2H buildHtfBadgeState()/htfAlign path.
+  // test_v54f2h_htf_pill_stability.js.
+  // TDAS — Standalone 1H HTF pill fix. 1H cards previously fell straight
+  // through to the legacy buildHtfBadgeState(d,signal)/htfAlign path (see
+  // this block's own prior comment, now stale: "standalone 1H canonical
+  // authority does not exist yet" — it does, as of V5.4.3). Same root
+  // cause as the ESTABLISHED-vs-CHALLENGED dot defect: legacy d.signal only
+  // reflects a live same-bar crossover, so an already-ESTABLISHED 1H
+  // structure sat at legacy neutral and rendered "HTF 4H —" regardless of
+  // the genuinely-computed 4H supervisory evidence. Uses the SAME
+  // _oneHFourHSupervisoryState() the decision dot above now uses — one
+  // canonical source, not two independent reads that could disagree.
   const _isFourHCanonicalPill = d && d.tf === '4h' && d.eval && d.eval.htfState;
+  const _isOneHCanonicalPill = d && d.tf === '1h' && d.oneHTse && d.oneHTse.direction && d.oneHFourHSupervisoryEvidence;
   const _htfPillState = _isFourHCanonicalPill
     ? d.eval.htfState.relation.state
+    : _isOneHCanonicalPill
+    ? _oneHFourHSupervisoryState(d, d.oneHTse.direction)
     : (signal==='long'||signal==='short') ? buildHtfBadgeState(d, signal) : htfAlign;
   // TDAS V5.4.1A2 — Defect B fix exposed a genuine, pre-existing crash
   // here: _isFourHCanonicalPill only checks htfState's presence, but
@@ -22949,6 +23185,8 @@ function renderCard(symbol,d){
   // above are untouched (neither depends on technicalState).
   const _htfPillHover = (_isFourHCanonicalPill && d.eval.technicalState)
     ? _formatHtfPillHover(d.eval.htfState, d.eval.technicalState.direction)
+    : _isOneHCanonicalPill
+    ? _formatOneHHtfPillHover(d, d.oneHTse.direction)
     : '';
   const htfText = HTF_BADGE_GLYPH[_htfPillState]
     ? `HTF ${htf.toUpperCase()} ${HTF_BADGE_GLYPH[_htfPillState]}`
@@ -28320,19 +28558,30 @@ function renderWatchCard(e){
   // fields (never the raw d.dailyStructuralFact producer output directly —
   // owner doctrine §10) and re-applies the SAME pure _deriveHtfRelation()
   // decision table with the watch's own persisted direction — never a
-  // second classifier, never an independent reconstruction. 1H watch
-  // entries are completely untouched (standalone 1H canonical authority
-  // does not exist yet, owner doctrine §14) and keep the exact pre-F2H
-  // path.
+  // second classifier, never an independent reconstruction.
+  // TDAS — Standalone 1H Watch pill fix (Scanner/Watch parity). 1H watch
+  // entries previously fell straight to the legacy
+  // buildHtfBadgeState(liveData,e.signal) path (stale comment: "standalone
+  // 1H canonical authority does not exist yet" — it does, as of V5.4.3).
+  // Reuses the identical _oneHFourHSupervisoryState() the Scanner card fix
+  // above now uses — same canonical source, same aligned/supportive/
+  // conflict/neutral vocabulary — with the watch's own PERSISTED direction
+  // (e.signal), exactly mirroring the 4H Watch pill's own doctrine one
+  // paragraph up: a live re-scan must never silently redirect an
+  // already-persisted Watch thesis. No change to buildWatchEvidenceModel(),
+  // the 5-checkpoint Watch Progress checklist, or any Watch lifecycle rule.
   const _watchHtfState = liveData && liveData.eval && liveData.eval.htfState;
   const _isFourHCanonicalWatchPill = e && e.tf === '4h' && liveData && liveData.tf === '4h' && _watchHtfState;
   const _watchSetupDirection = e && (e.signal === 'long' || e.signal === 'short') ? e.signal : null;
+  const _isOneHCanonicalWatchPill = e && e.tf === '1h' && liveData && liveData.tf === '1h' && liveData.oneHFourHSupervisoryEvidence && _watchSetupDirection;
   const _htfState = _isFourHCanonicalWatchPill
     ? _deriveHtfRelation(_watchSetupDirection, {
         structuralState: _watchHtfState.structuralState,
         completeness: _watchHtfState.meta.completeness,
         utDirection: _watchHtfState.facts.utDirection,
       }).relation
+    : _isOneHCanonicalWatchPill
+    ? _oneHFourHSupervisoryState(liveData, _watchSetupDirection)
     : (typeof buildHtfBadgeState==='function' && liveData) ? buildHtfBadgeState(liveData, e.signal) : 'unknown';
   const htfText = liveData ? `HTF ${(liveData.htf||'').toUpperCase()} ${HTF_BADGE_GLYPH[_htfState]||''}` : '';
   const _hasCandleTimer = liveData && liveData.minsRemaining!=null && liveData.secsRemaining!=null;
