@@ -2293,7 +2293,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // never existed — added. No TSE/Evaluation/Advisory/Trade-Ready/Scanner/
 // Watch/Setups/HTF/CHOP/200MA/RSI-ADX/protection-ladder-sequencing
 // change. Supersedes V5.4.1A4.
-const APP_BUILD = 'V5.4.3';
+const APP_BUILD = 'V5.4.4';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -10850,6 +10850,129 @@ function _fourHCanonicalLaneState(d) {
   const lane = d.eval && d.eval.lifecycle && d.eval.lifecycle.laneDirection;
   if (lane === 'long' || lane === 'short' || lane === 'neutral') return lane;
   return 'unavailable';
+}
+
+// ╔══════════════════════════════════════════════════════════════════════════╗
+// ║  TDAS V5.4.4 — Unified Scanner presentation token                        ║
+// ║                                                                          ║
+// ║  Pure presentation TRANSLATION only — never a decision engine. Reads     ║
+// ║  ONLY the two already-fully-resolved canonical permission objects        ║
+// ║  (d.oneHAdvisory for 1H, d.eval.advisoryState for 4H) — never d.signal,  ║
+// ║  never tradeBias/actionBias, never d.authoritativeClassification (the    ║
+// ║  separate Stage 0-10 Evaluation Engine), never ATR/ADX/RSI/TEMA/UT/MA    ║
+// ║  thresholds, never a TSE state table, never an engine builder. Unlike    ║
+// ║  _fourHCanonicalLaneDirection()/_fourHCanonicalLaneState() (which retain ║
+// ║  a legacy d.signal fallback for their own long-standing dozens of other  ║
+// ║  consumers — untouched, out of scope), this function has NO legacy      ║
+// ║  fallback of any kind: missing/malformed canonical authority always     ║
+// ║  resolves to {direction:'none', tier:'NONE', levelsEligible:false,      ║
+// ║  logDecisionEligible:false} — fail closed, per owner doctrine (missing/ ║
+// ║  malformed canonical authority => no directional pill, no levels, no    ║
+// ║  Trade Ready/SIGNAL presentation, no directional Log Decision).          ║
+// ║                                                                          ║
+// ║  Mapping (owner-approved, V5.4.4 — strict, timeframe-specific):          ║
+// ║                                                                          ║
+// ║  1H canonical vocabulary: NO_TRADE / WATCH / TRADE_READY only.           ║
+// ║    TRADE_READY + long/short         -> SIGNAL                            ║
+// ║    WATCH + long/short               -> BIAS                              ║
+// ║    WATCH + no direction             -> NONE                              ║
+// ║    NO_TRADE                         -> NONE                              ║
+// ║    COUNTER_HTF / UNAVAILABLE        -> NONE  (4H-only actions; invalid   ║
+// ║                                         canonical shape for 1H)          ║
+// ║    unrecognised/missing/malformed   -> NONE                              ║
+// ║                                                                          ║
+// ║  4H canonical vocabulary: WATCH / TRADE_READY / COUNTER_HTF /            ║
+// ║  UNAVAILABLE only.                                                       ║
+// ║    TRADE_READY + LONG/SHORT         -> SIGNAL                            ║
+// ║    COUNTER_HTF + LONG/SHORT         -> SIGNAL  (first-class canonical    ║
+// ║                                         action, not re-derived)          ║
+// ║    WATCH + LONG/SHORT               -> BIAS                              ║
+// ║    WATCH + no direction             -> NONE                              ║
+// ║    UNAVAILABLE                      -> NONE (+ unavailable:true)         ║
+// ║    NO_TRADE                         -> NONE  (1H-only action; invalid    ║
+// ║                                         canonical shape for 4H)          ║
+// ║    unrecognised/missing/malformed   -> NONE                              ║
+// ║                                                                          ║
+// ║  An action enum valid on one timeframe is NEVER accepted as canonical    ║
+// ║  authority on the other — each branch explicitly whitelists only its    ║
+// ║  own timeframe's genuine action vocabulary; anything else (including a  ║
+// ║  cross-timeframe action string) closes the WHOLE token, direction       ║
+// ║  included, not merely the tier. An actionable action (TRADE_READY/      ║
+// ║  WATCH/COUNTER_HTF) with an invalid or missing direction also closes    ║
+// ║  the whole token the same way.                                          ║
+// ║                                                                          ║
+// ║  `unavailable` distinguishes a genuine 4H technical-failure result       ║
+// ║  (action==='UNAVAILABLE', or the canonical object/advisoryState itself   ║
+// ║  missing/malformed) from every other NONE case — including a wrong-      ║
+// ║  vocabulary/cross-timeframe action string, which is a different kind    ║
+// ║  of anomaly (a real object exists, just with unexpected content) and     ║
+// ║  stays plain NONE, not the technical-failure UX. Reused only for the     ║
+// ║  existing Scanner action-zone's disabled "Evaluation unavailable"        ║
+// ║  button text, never for permission. 1H has no engine-level UNAVAILABLE   ║
+// ║  action string (its own exception-catch path already degrades to a       ║
+// ║  genuine NO_TRADE), so `unavailable` is always false for 1H.             ║
+// ╚══════════════════════════════════════════════════════════════════════════╝
+function _scannerPresentationToken(d) {
+  const _closedNone = { direction: 'none', tier: 'NONE', levelsEligible: false, logDecisionEligible: false, unavailable: false };
+  if (!d) return _closedNone;
+
+  // TDAS V5.4.4 (owner hardening pass) — each branch below now explicitly
+  // WHITELISTS the canonical action vocabulary genuinely valid on THAT
+  // timeframe, rather than merely checking for the specific values it
+  // expects to see and letting anything else silently fall through to
+  // tier:'NONE' while still leaking a resolved `direction` from
+  // adv.direction. An action string that is valid on the OTHER timeframe
+  // (4H's COUNTER_HTF/UNAVAILABLE appearing on a 1H object, or 1H's
+  // NO_TRADE appearing on a 4H object — neither should occur from real
+  // production data, but must never be silently accepted as authority if
+  // it somehow does) now closes the ENTIRE token, direction included —
+  // not just the tier — so a malformed/cross-timeframe shape can never
+  // leak a directional pill or a live Log Decision action while merely
+  // suppressing levels/SIGNAL.
+  if (d.tf === '4h') {
+    const adv = d.eval && d.eval.advisoryState;
+    if (!adv || typeof adv.action !== 'string') {
+      // Canonical object genuinely missing/malformed entirely — the real
+      // 4H technical-failure case (calcPair's canonical eval assembly
+      // threw, or a pre-pipeline object). Distinct three-state action-
+      // zone UX, unchanged from the pre-V5.4.4 contract.
+      return { direction: 'none', tier: 'NONE', levelsEligible: false, logDecisionEligible: false, unavailable: true };
+    }
+    if (adv.action === 'UNAVAILABLE') {
+      return { direction: 'none', tier: 'NONE', levelsEligible: false, logDecisionEligible: false, unavailable: true };
+    }
+    if (adv.action !== 'TRADE_READY' && adv.action !== 'COUNTER_HTF' && adv.action !== 'WATCH') {
+      // A real action string is present, but it is outside 4H's own
+      // vocabulary (e.g. 1H-only NO_TRADE) — fail fully closed, distinct
+      // from "nothing computed at all": not the technical-failure UX.
+      return _closedNone;
+    }
+    const dir = adv.direction === 'LONG' ? 'long' : (adv.direction === 'SHORT' ? 'short' : 'none');
+    if (dir === 'none') return _closedNone; // actionable action, no resolvable direction
+    const tier = (adv.action === 'TRADE_READY' || adv.action === 'COUNTER_HTF') ? 'SIGNAL' : 'BIAS';
+    return { direction: dir, tier, levelsEligible: tier === 'SIGNAL', logDecisionEligible: true, unavailable: false };
+  }
+
+  if (d.tf === '1h') {
+    const adv = d.oneHAdvisory;
+    const action = adv && typeof adv.action === 'string' ? adv.action : null;
+    if (action !== 'TRADE_READY' && action !== 'WATCH' && action !== 'NO_TRADE') {
+      // Missing/malformed canonical object, or an action string outside
+      // 1H's own vocabulary (e.g. 4H-only COUNTER_HTF/UNAVAILABLE) —
+      // fully closed. 1H has no distinct technical-failure UX state (its
+      // own exception-catch path already degrades to a genuine NO_TRADE
+      // — see calcPair()'s standalone-1H attachment), so this is always
+      // plain NONE, never `unavailable:true`.
+      return _closedNone;
+    }
+    if (action === 'NO_TRADE') return _closedNone;
+    const dir = (adv.direction === 'long' || adv.direction === 'short') ? adv.direction : 'none';
+    if (dir === 'none') return _closedNone; // actionable action, no resolvable direction
+    const tier = action === 'TRADE_READY' ? 'SIGNAL' : 'BIAS';
+    return { direction: dir, tier, levelsEligible: tier === 'SIGNAL', logDecisionEligible: true, unavailable: false };
+  }
+
+  return _closedNone;
 }
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
@@ -22804,6 +22927,27 @@ function buildTechnicalSummaryHtml(d){
   // engaged". 1H/other timeframes are completely unaffected: this branch
   // is a pure no-op whenever d.tf !== '4h' (falls through unchanged to the
   // exact V5.3.3 legacy path below).
+  // TDAS V5.4.4 — standalone 1H canonical Technical authority, UNKNOWN
+  // fail-closed. When d.oneHTse itself has genuinely resolved to state
+  // 'UNKNOWN' (required native evidence missing, or the 1H 200MA slope has
+  // not resolved — see buildStandaloneOneHTSE()'s own header), canonical
+  // Technical authority explicitly exists and explicitly says "no read
+  // available this cycle". Falling through to the legacy d.evidence/
+  // d.signal-driven model below in that exact case would let a stale/
+  // unrelated legacy read resurrect a confident-looking directional
+  // Technical panel underneath a card canonical authority has already
+  // deemed unresolved — the exact fail-open violation V5.4.4 exists to
+  // close (owner doctrine §17.7). Reuses the SAME existing "EVALUATION
+  // LIMITED" / tech-weak fail-honest pattern the 4H Narrative Engine
+  // already established for its own equivalent unavailable-evidence case
+  // (see the narrative-engine catch block just below) — no new language,
+  // no new colour token, no reinterpretation of legacy evidence.
+  if (d && d.tf === '1h' && d.oneHTse && d.oneHTse.state === 'UNKNOWN') {
+    return '<div class="tdas-techsummary-block tech-weak">'
+      + '<div class="tdas-techsummary-label">EVALUATION LIMITED</div>'
+      + '<div class="tdas-techsummary-detail">Required 1H trend evidence is unavailable this cycle.</div>'
+      + '</div>';
+  }
   // TDAS V5.4.3 — standalone 1H canonical Technical authority, leading
   // branch (same shape as the 4H branch immediately below — additive,
   // never touches it). Pure format of d.oneHTse; never re-derives
@@ -23442,6 +23586,19 @@ function renderCard(symbol,d){
   // renderCard) so the card's left-rail colour and the Evaluation block box
   // always agree — single source of truth, not two separate computations.
   const _advStateClass = _advisoryStateClass(_advisory);
+  // TDAS V5.4.4 — shared Scanner presentation token. Computed once, used
+  // by every trader-facing Scanner permission consumer below (card edge,
+  // pill, Stop/Target eligibility/orientation, Log Decision eligibility) —
+  // the single canonical BIAS/SIGNAL/NONE contract both 1H and 4H now
+  // speak through. Strictly reads d.oneHAdvisory/d.eval.advisoryState with
+  // no legacy d.signal fallback (see _scannerPresentationToken()'s own
+  // header) — deliberately NOT the same object as `_advisory` above
+  // (_buildScannerAdvisory()'s output), since that still carries a
+  // pre-existing 1H/4H legacy compatibility tail for symbols/timeframes
+  // outside this build's canonical coverage; this token instead reads the
+  // two already-fully-resolved canonical fields directly, so it can never
+  // inherit that fallback.
+  const _scannerToken = _scannerPresentationToken(d);
   // TDAS V5.4.0F2H — Trade Ready presentation hierarchy (owner doctrine
   // §13). Trade Ready overrides the normal presentation hierarchy, not the
   // evidence/strategy underneath it: advisory.tradeReady/action/detail are
@@ -23463,15 +23620,16 @@ function renderCard(symbol,d){
     : (_advisory && _advisory.action === 'COUNTER_HTF') ? '<div class="tdas-advisory-block tdas-state-counter-htf">\u26A0 COUNTER-HTF \u2014 Daily backdrop opposes this setup</div>'
     : buildEvaluationSummaryHtml(d, _advisory);
 
-  // TDAS V5.4.0C — Category D fix (formal d.signal inventory finding):
-  // this token drives the card's own left-border colour class
-  // ('long'/'short'/'neutral') — directly adjacent to the pill further
-  // below, which also uses the canonical accessor (_pillSignal, computed
-  // later in this function). Calls the same canonical accessor directly
-  // here rather than hoisting/reordering _pillSignal's own computation —
-  // both resolve to the identical value for the same d, so the border
-  // colour and the pill text can never contradict each other.
-  el.className=`card ${_fourHCanonicalLaneDirection(d)} ${_advStateClass}`.trim();
+  // TDAS V5.4.4 — card left-border colour class now sourced from the
+  // strict, no-legacy-fallback _scannerToken.direction (see its own
+  // header) rather than _fourHCanonicalLaneDirection(d) — the latter
+  // retains a legacy d.signal fallback for its many OTHER, out-of-scope
+  // consumers (Watch/Setups/Full Analysis/runScan partitioning — see that
+  // function's own header), which must not leak into the Scanner card's
+  // own directional presentation. Same border/pill agreement guarantee as
+  // before (both now read the same single _scannerToken), just via the
+  // strict source.
+  el.className=`card ${_scannerToken.direction==='long'?'long':_scannerToken.direction==='short'?'short':'neutral'} ${_advStateClass}`.trim();
   // TDAS V4.5.7 HTF Pill Fix — root cause diagnosis: normal scanner cards'
   // HTF pill used d.htfAlign directly, which requires htfLong/htfShort to
   // BOTH agree (HTF SMA200 position AND HTF TEMA cross direction) before
@@ -23705,16 +23863,26 @@ function renderCard(symbol,d){
   // this is the exact fix for "LONG SIGNAL + BULLISH STRUCTURE —
   // DETERIORATING + AVOID LONG" (owner doctrine §9). 1H unchanged
   // (returns d.signal, exactly as before).
-  const _pillSignal = _fourHCanonicalLaneDirection(d);
+  // TDAS V5.4.4 — shared BIAS/SIGNAL pill grammar. Direction/tier now
+  // sourced strictly from _scannerToken (see its own header) rather than
+  // _fourHCanonicalLaneDirection(d) directly — same underlying canonical
+  // fields, but with no legacy d.signal fallback. New vocabulary: a
+  // canonical directional WATCH now reads "BIAS" (a directional thesis,
+  // no current entry permission) instead of the old, over-permissive
+  // "SIGNAL" wording; TRADE_READY and 4H actionable COUNTER_HTF both read
+  // "SIGNAL" (entry permission from that timeframe's own canonical
+  // engine) — owner doctrine §17.2. Watch-page/Active-Trade pill grammar
+  // (pillClass 'pill-trade' above, and every non-Scanner-card consumer)
+  // is completely untouched by this.
   const pillClass = isOpenTrade
     ? 'pill-trade'
-    : _pillSignal==='long' ? 'pill-long'
-    : _pillSignal==='short' ? 'pill-short'
+    : _scannerToken.direction==='long' ? 'pill-long'
+    : _scannerToken.direction==='short' ? 'pill-short'
     : 'pill-neutral';
   const pillText = isOpenTrade
     ? (openTrade.signal==='long' ? '\u25b2 LONG ACTIVE' : '\u25bc SHORT ACTIVE')
-    : _pillSignal==='long' ? '\u25b2 LONG SIGNAL'
-    : _pillSignal==='short' ? '\u25bc SHORT SIGNAL'
+    : _scannerToken.direction==='long' ? (_scannerToken.tier==='SIGNAL' ? '\u25b2 LONG SIGNAL' : '\u25b2 LONG BIAS')
+    : _scannerToken.direction==='short' ? (_scannerToken.tier==='SIGNAL' ? '\u25bc SHORT SIGNAL' : '\u25bc SHORT BIAS')
     : 'No signal';
 
   // ── TDAS Phase 2A/2B — new decision-focused blocks ──────────────────────
@@ -23732,36 +23900,33 @@ function renderCard(symbol,d){
 
   // ── Levels box ─────────────────────────────────────────────────────────
   let levelsHtml = '';
-  if (d && d.tf === '1h') {
-    // TDAS — 1H Canonical Risk-Geometry Alignment (owner-approved). Box
-    // ELIGIBILITY deliberately stays keyed to the EXISTING legacy-signal
-    // condition (signal!=='neutral') — unchanged from before this fix —
-    // so a currently level-less canonical-directional card (e.g. BNB/
-    // LINK, whose legacy signal sits neutral) does not suddenly gain a
-    // calculated risk box; that would broaden the UI beyond this fix's
-    // scope (owner §2/§4: "Preserve current 1H level-box eligibility
-    // semantics"). Once eligible, canonical d.oneHAdvisory.direction has
-    // EXCLUSIVE authority over label assignment, column ordering, and
-    // which value (stop15/target2) is shown where — legacy `signal`
-    // never determines LONG-vs-SHORT geometry for 1H again (owner §5).
-    // stop15/target2 THEMSELVES are already canonically oriented by this
-    // same build's producer fix (see calcPair()'s "1H Canonical Risk-
-    // Geometry Alignment" block) whenever canonical direction is
-    // long/short — this block only decides display eligibility/ordering,
-    // never recomputes a value. A canonical non-directional state
-    // (oneHAdvisory.direction null, or oneHAdvisory itself absent) always
-    // suppresses the box outright, even with stale legacy directional
-    // signal still present (owner §3) — no legacy signal may resurrect
-    // actionable-looking geometry against a non-directional card.
-    const _oneHLevelEligible = signal !== 'neutral' && !isOpenTrade;
-    const _oneHCanonicalDir = (d.oneHAdvisory && d.oneHAdvisory.direction === 'long') ? 'long'
-      : (d.oneHAdvisory && d.oneHAdvisory.direction === 'short') ? 'short' : null;
-    const _oneHLevelsValid = stop15 != null && isFinite(stop15) && target2 != null && isFinite(target2);
-    if (_oneHLevelEligible && _oneHCanonicalDir && _oneHLevelsValid) {
-      const lSL = _oneHCanonicalDir==='long'?'Stop':'Target';
-      const lTP = _oneHCanonicalDir==='long'?'Target':'Stop';
-      const lSLv = fmt(_oneHCanonicalDir==='long'?stop15:target2);
-      const lTPv = fmt(_oneHCanonicalDir==='long'?target2:stop15);
+  // TDAS V5.4.4 — unified Stop/Target eligibility + orientation, both
+  // timeframes. Replaces the two previous timeframe-specific blocks, each
+  // of which gated visibility on the undocumented legacy `d.signal !==
+  // 'neutral'` condition (1H additionally required canonical direction on
+  // top of that legacy gate; 4H used legacy `signal` for BOTH visibility
+  // AND label/column ordering — a live, confirmed latent inverted-geometry
+  // risk whenever 4H's canonical lane direction diverged from raw
+  // d.signal, the same defect class as the previously-fixed ADA/SUI 1H
+  // case). New shared invariant (owner doctrine §17.3): Stop/Target is
+  // visible if and only if the shared Scanner tier is SIGNAL —
+  // _scannerToken.levelsEligible is exactly that (tier==='SIGNAL', which
+  // itself requires canonical action TRADE_READY/COUNTER_HTF AND a
+  // resolved canonical direction — see _scannerPresentationToken()'s own
+  // header). Label/column ordering now uses _scannerToken.direction
+  // (canonical, no legacy fallback) on BOTH timeframes — never raw
+  // `signal` again. stop15/target2 themselves remain whatever calcPair()
+  // already computed (already canonically oriented on both TFs by their
+  // own existing producer fixes) — this block only decides display
+  // eligibility/ordering, never recomputes a value.
+  if (!isOpenTrade && _scannerToken.levelsEligible && _scannerToken.direction !== 'none') {
+    const _levelsValid = stop15 != null && isFinite(stop15) && target2 != null && isFinite(target2);
+    if (_levelsValid) {
+      const _dir = _scannerToken.direction;
+      const lSL = _dir==='long'?'Stop':'Target';
+      const lTP = _dir==='long'?'Target':'Stop';
+      const lSLv = fmt(_dir==='long'?stop15:target2);
+      const lTPv = fmt(_dir==='long'?target2:stop15);
       levelsHtml = '<div class="levels-box">'
         +'<div class="level-col"><span class="level-label">'+lSL+'</span>'
         +'<span class="level-val stop">'+lSLv+'</span></div>'
@@ -23770,43 +23935,22 @@ function renderCard(symbol,d){
         +'<span class="level-val target">'+lTPv+'</span></div>'
         +'</div>';
     }
-  } else if(signal!=='neutral' && !isOpenTrade){
-    // TDAS — unchanged, byte-identical to before this fix. 4H (and any
-    // other non-1H timeframe) keeps the exact original legacy-signal-keyed
-    // logic — frozen per owner §6, "4H is frozen unless a live defect is
-    // demonstrated." The V5.4.0C producer fix already canonicalises 4H's
-    // stop15/target2 values themselves; this ordering logic is unchanged.
-    const lSL = signal==='long'?'Stop':'Target';
-    const lTP = signal==='long'?'Target':'Stop';
-    const lSLv = fmt(signal==='long'?stop15:target2);
-    const lTPv = fmt(signal==='long'?target2:stop15);
-    levelsHtml = '<div class="levels-box">'
-      +'<div class="level-col"><span class="level-label">'+lSL+'</span>'
-      +'<span class="level-val stop">'+lSLv+'</span></div>'
-      +'<div class="level-arrow">\u2192</div>'
-      +'<div class="level-col right"><span class="level-label">'+lTP+'</span>'
-      +'<span class="level-val target">'+lTPv+'</span></div>'
-      +'</div>';
   }
 
   // ── Action zone — single, at bottom ────────────────────────────────────
   // Scanner is discovery only. Once watched or traded, management moves to Trade Desk.
   let actionZone;
-  // TDAS V5.4.1A2 §Defect B — the action-zone directional check below MUST
-  // use canonical lane state for 4H cards, never the raw `signal` local
-  // (which is d.signal, the legacy field, destructured at the top of this
-  // function — confirmed by direct trace: renderCard() never re-assigns
-  // `signal` from any canonical accessor; only a DIFFERENT function,
-  // buildFilterLineHtml(), does that, on its own unrelated local of the
-  // same name). Using raw d.signal here would let a directional legacy
-  // signal override unavailable canonical authority — exactly the
-  // violation the owner's acceptance criteria explicitly forbid, and
-  // exactly what resolveCanonicalLifecycle()'s own doctrine header
-  // already states: "NEVER reads d.signal as technical or decision
-  // authority." _fourHCanonicalLaneState(d) is a safe drop-in here for
-  // 1H/DIAG.fourHTseAuthorityLive-off cases too — it passes raw d.signal
-  // through unchanged for those, identical to the pre-existing behaviour.
-  const _laneState = _fourHCanonicalLaneState(d);
+  // TDAS V5.4.4 — Log Decision eligibility now sourced from
+  // _scannerToken.logDecisionEligible/.unavailable (strict, no legacy
+  // fallback — see _scannerPresentationToken()'s own header) rather than
+  // _fourHCanonicalLaneState(d), which retains a legacy d.signal fallback
+  // for 1H when d.oneHAdvisory is genuinely absent (an edge case outside
+  // this token's tolerance — owner doctrine: missing/malformed canonical
+  // authority must never resurrect a directional Log Decision action).
+  // Same three-state render contract as before (directional / unavailable
+  // / genuinely neutral) — owner doctrine §17.4: BIAS or SIGNAL directional
+  // permission both make Log Decision available identically; only the
+  // absence of canonical direction (NONE) withholds it.
   if(isOpenTrade){
     // Navigation-only status button — no management actions on scanner
     actionZone = '<div class="card-btn-row">'
@@ -23817,7 +23961,7 @@ function renderCard(symbol,d){
     actionZone = '<div class="card-btn-row">'
       +'<button class="card-btn status-watching" onclick="focusScannerWatchCard(\''+symbol+'\')">\uD83D\uDFE1 Watching →</button>'
       +'</div>';
-  } else if(_laneState==='long' || _laneState==='short'){
+  } else if(_scannerToken.logDecisionEligible){
     // alreadyLogged: a non-watching decision (skip/miss) was recorded for this
     // symbol on this TF within the last 12 hours. Show a muted acknowledged state
     // rather than the active Log button — prevents accidental duplicate logging.
@@ -23825,15 +23969,13 @@ function renderCard(symbol,d){
     actionZone = alreadyLogged
       ? '<button class="card-btn secondary" style="cursor:default;" disabled>\u2713 '+(sameTfRecent.decision==='missed'?'Missed':'Skipped')+'</button>'
       : '<button class="card-btn" onclick="openLogChoice(event,\''+symbol+'\')">+ Log decision</button>';
-  } else if(_laneState==='unavailable'){
+  } else if(_scannerToken.unavailable){
     // TDAS V5.4.1A2 §Defect B — three-state render contract. An
     // unavailable canonical 4H evaluation must never be presented as
     // either directional (+ Log decision) or genuinely neutral (View
-    // analysis) — see _fourHCanonicalLaneState()'s own header comment
-    // for the full root-cause trace. Non-actionable, existing
-    // disabled-button styling (same pattern as the already-logged
-    // acknowledged state above), never routed to either the logging or
-    // analysis action.
+    // analysis). Non-actionable, existing disabled-button styling (same
+    // pattern as the already-logged acknowledged state above), never
+    // routed to either the logging or analysis action.
     actionZone = '<button class="card-btn secondary" style="cursor:default;" disabled title="Canonical 4H evaluation unavailable this cycle — refresh to retry">Evaluation unavailable</button>';
   } else {
     actionZone = '<button class="card-btn secondary" onclick="openAnalysisPanel({symbol:\''+symbol+'\',tf:\''+d.tf+'\',consumer:\'scanner\',snapshotRole:\'primary\'})">View analysis</button>';
@@ -31993,15 +32135,23 @@ function buildAuthoritativeSortKey(d, context) {
   const hcQualityKnown = !!(ac && ac.highConvictionKnown === true);
   const hcQuality = hcQualityKnown && ac.highConviction === true;
 
-  // TDAS V5.4.2 — 4H readiness now sourced from canonical Advisory
+  // TDAS V5.4.2 — 4H readiness sourced from canonical Advisory
   // (d.eval.advisoryState.action, i.e. buildCanonicalAdvisoryDecision()
   // via _buildScannerAdvisory()) — the confirmed V5.4.2 audit defect was
   // that Scanner sort and the visible card headline derived from two
   // different engines (this function read Stage 0-10; the card read TSE/
-  // TR1-5 + entry-quality). Standalone 1H has no canonical Advisory
-  // authority yet (owner doctrine: 1H authority migration explicitly
-  // deferred beyond V5.4.2) — that branch is completely unchanged,
-  // still legacy Stage-0-10-driven, exactly as before this task.
+  // TR1-5 + entry-quality).
+  //
+  // TDAS V5.4.4 — `ready`/`readyKnown` below are RETAINED for 1H, but
+  // their ROLE has changed: they are no longer the primary permission
+  // gate (that is now _scannerPresentationToken(d).tier, read directly in
+  // the 1H branch further down) — they now serve only as SUBORDINATE
+  // consistency inputs to the existing, unmodified High-Conviction/
+  // setupPath sub-bucket logic, exactly mirroring how `stage`/`setupPath`
+  // already serve as subordinate-only inputs on the 4H side. This closes
+  // the same-class defect V5.4.2 fixed for 4H: 1H Scanner ORDER was still
+  // decided entirely by the older, parallel Stage 0-10 engine even after
+  // the visible 1H card itself had already migrated to d.oneHAdvisory.
   const isFourH = !!(d && d.tf === '4h');
   const adv = isFourH ? ((d && d.eval && d.eval.advisoryState) || null) : null;
   const canonicalAction = adv ? adv.action : null;
@@ -32049,44 +32199,73 @@ function buildAuthoritativeSortKey(d, context) {
   }
 
   if (!isFourH) {
-    // ── Standalone 1H — UNCHANGED legacy Stage-0-10-driven behaviour. ────
-    if (!readyKnown) {
-      return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    // ── Standalone 1H — TDAS V5.4.4 primary permission migrated to ──────
+    // ── canonical oneHAdvisory-derived tier (BIAS/SIGNAL/NONE), via the ──
+    // ── same strict _scannerPresentationToken() the Scanner card render ──
+    // ── path now uses (no legacy fallback — see its own header). This ───
+    // ── was a confirmed live gap: 1H Scanner ORDER was still entirely ───
+    // ── decided by the older, parallel Stage 0-10 d.authoritativeClass- ──
+    // ── ification engine, never by d.oneHAdvisory, even though the ──────
+    // ── visible card itself had already migrated (owner ruling: this is ──
+    // ── remaining live core Scanner decision influence, in scope). ──────
+    // ── Stage/setupPath/HC-quality below remain EXACTLY the pre-existing ─
+    // ── subordinate ranking/sub-bucket logic — completely unmodified in ──
+    // ── their own criteria — they now only ever refine ordering WITHIN ───
+    // ── an already-canonically-permitted class, never independently ─────
+    // ── grant, promote, or demote a card across the canonical NONE/BIAS/ ─
+    // ── SIGNAL boundary (owner doctrine, this build).
+    const _oneHToken = _scannerPresentationToken(d);
+    if (_oneHToken.tier === 'NONE') {
+      return _sortKeyUnknown(stage, setupPath, symbol, 'canonical_advisory_unknown');
     }
-    if (hc) {
-      const consistent = hcKnown && ready && readyKnown && stage === 10 &&
-        (setupPath === 'four_h_led' || setupPath === 'standalone_one_h');
-      if (!consistent) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
-      const b = SCANNER_SORT_BUCKETS.high_conviction;
-      return {
-        bucket: b.bucket, bucketKey: 'high_conviction', userLabel: b.userLabel,
-        stage, setupPath,
-        authoritativeReady: true, authoritativeReadyKnown: true,
-        authoritativeHighConviction: true, authoritativeHighConvictionKnown: true,
-        context: { hasOpenTrade: false, isActiveWatch: false },
-        tieBreak: { symbol },
-        source: 'evaluation_engine',
-      };
-    }
-    if (stage === 10) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
-    if (ready) {
-      const pathEntry = _SORT_TRADE_READY_PATH_MAP[setupPath];
-      if (!pathEntry || stage !== pathEntry.expectedStage) {
-        return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    if (_oneHToken.tier === 'SIGNAL') {
+      // Subordinate High Conviction sub-bucket — UNMODIFIED consistency
+      // criteria (hcKnown/stage===10/setupPath), preserved exactly as
+      // before. The one change: an inconsistent/unavailable legacy
+      // Stage/setupPath read no longer demotes an already-canonically-
+      // permitted SIGNAL card all the way down to the 'unknown' bucket
+      // (that would let legacy Stage override canonical permission, the
+      // exact violation this migration exists to close) — it now falls
+      // through to the plain canonical Trade Ready bucket below instead,
+      // mirroring the existing, untouched 4H SIGNAL branch's own
+      // "an unknown or inconsistent setupPath simply falls to the generic
+      // bucket rather than failing closed to 'unknown'" precedent.
+      if (hc) {
+        const consistent = hcKnown && ready && readyKnown && stage === 10 &&
+          (setupPath === 'four_h_led' || setupPath === 'standalone_one_h');
+        if (consistent) {
+          const b = SCANNER_SORT_BUCKETS.high_conviction;
+          return {
+            bucket: b.bucket, bucketKey: 'high_conviction', userLabel: b.userLabel,
+            stage, setupPath,
+            authoritativeReady: true, authoritativeReadyKnown: true,
+            authoritativeHighConviction: true, authoritativeHighConvictionKnown: true,
+            context: { hasOpenTrade: false, isActiveWatch: false },
+            tieBreak: { symbol },
+            source: 'canonical_advisory',
+          };
+        }
       }
-      const b = SCANNER_SORT_BUCKETS[pathEntry.bucketKey];
+      const pathEntry = _SORT_TRADE_READY_PATH_MAP[setupPath];
+      const bucketKey = (pathEntry && readyKnown && ready && stage === pathEntry.expectedStage) ? pathEntry.bucketKey : 'trade_ready_one_h_only';
+      const b = SCANNER_SORT_BUCKETS[bucketKey];
       return {
-        bucket: b.bucket, bucketKey: pathEntry.bucketKey, userLabel: b.userLabel,
+        bucket: b.bucket, bucketKey, userLabel: b.userLabel,
         stage, setupPath,
         authoritativeReady: true, authoritativeReadyKnown: true,
         authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
         context: { hasOpenTrade: false, isActiveWatch: false },
         tieBreak: { symbol },
-        source: 'evaluation_engine',
+        source: 'canonical_advisory',
       };
     }
-    const nonReadyKey = (stage != null) ? _SORT_NON_READY_STAGE_MAP[stage] : undefined;
-    if (!nonReadyKey) return _sortKeyUnknown(stage, setupPath, symbol, 'evaluation_unknown');
+    // _oneHToken.tier === 'BIAS' — canonical directional WATCH. Stage
+    // remains a subordinate finer-ordering hint only, exactly mirroring
+    // the existing (untouched) 4H WATCH branch below; falls to a single
+    // generic non-ready bucket when Stage cannot classify it, rather than
+    // 'unknown' — canonical Advisory already knows this is a genuine,
+    // known BIAS.
+    const nonReadyKey = (stage != null && _SORT_NON_READY_STAGE_MAP[stage]) ? _SORT_NON_READY_STAGE_MAP[stage] : 'entry_not_optimal';
     const nb = SCANNER_SORT_BUCKETS[nonReadyKey];
     return {
       bucket: nb.bucket, bucketKey: nonReadyKey, userLabel: nb.userLabel,
@@ -32095,7 +32274,7 @@ function buildAuthoritativeSortKey(d, context) {
       authoritativeHighConviction: false, authoritativeHighConvictionKnown: hcKnown,
       context: { hasOpenTrade: false, isActiveWatch: false },
       tieBreak: { symbol },
-      source: 'evaluation_engine',
+      source: 'canonical_advisory',
     };
   }
 
