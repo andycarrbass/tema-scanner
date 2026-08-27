@@ -21488,6 +21488,30 @@ async function calcPair(symbol,tf){
       : (_tseGeometryDir === 'long' ? price + 2.5 * atr : price - 2.5 * atr);
   }
 
+  // ── TDAS — 1H Canonical Risk-Geometry Alignment ──────────────────────────
+  // Standalone-1H equivalent of the V5.4.0C 4H risk-geometry correction
+  // immediately above, closing the exact gap that block's own comment left
+  // open ("Standalone 1H is completely untouched"). NOT a new direction
+  // classifier: consumes the SAME canonical 1H authority
+  // (_result.oneHAdvisory.direction, already attached above via
+  // buildStandaloneOneHAdvisory() — the standalone-1H equivalent of
+  // trendState.direction) — never legacy _result.signal. EXACT SAME
+  // formula shapes as every stop15/target2 computation in this function —
+  // identical ATR-based stop, identical Fib-1.618-based directional
+  // target against the same already-computed swingH50/swingL50/fibRange —
+  // no formula, multiplier, ATR basis, or precision change, only the
+  // direction input. Deliberately runs ONLY when canonical 1H direction is
+  // genuinely long/short (owner §1) — a non-directional canonical state
+  // (oneHAdvisory.direction null, or oneHAdvisory itself absent/thrown)
+  // leaves stop15/target2 untouched here; box suppression for that case is
+  // the renderer's job (see renderCard()'s own 1H levels-box block), not
+  // this producer's. 4H (tf==='4h') is completely untouched by this block.
+  if (_result.tf === '1h' && _result.oneHAdvisory && (_result.oneHAdvisory.direction === 'long' || _result.oneHAdvisory.direction === 'short')) {
+    const _oneHGeometryDir = _result.oneHAdvisory.direction;
+    _result.stop15 = _oneHGeometryDir === 'long' ? price - 1.5 * atr : price + 1.5 * atr;
+    _result.target2 = _oneHGeometryDir === 'short' ? swingL50 - fibRange * 0.618 : swingH50 + fibRange * 0.618;
+  }
+
   // ── TDAS V5.2.1 — Market Evidence TSE shadow attachment ──────────────────
   // Runs AFTER the atomic select above so _result.evidence is the final
   // legacy Market Evidence bundle (whichever the flag chose), and after
@@ -23583,7 +23607,50 @@ function renderCard(symbol,d){
 
   // ── Levels box ─────────────────────────────────────────────────────────
   let levelsHtml = '';
-  if(signal!=='neutral' && !isOpenTrade){
+  if (d && d.tf === '1h') {
+    // TDAS — 1H Canonical Risk-Geometry Alignment (owner-approved). Box
+    // ELIGIBILITY deliberately stays keyed to the EXISTING legacy-signal
+    // condition (signal!=='neutral') — unchanged from before this fix —
+    // so a currently level-less canonical-directional card (e.g. BNB/
+    // LINK, whose legacy signal sits neutral) does not suddenly gain a
+    // calculated risk box; that would broaden the UI beyond this fix's
+    // scope (owner §2/§4: "Preserve current 1H level-box eligibility
+    // semantics"). Once eligible, canonical d.oneHAdvisory.direction has
+    // EXCLUSIVE authority over label assignment, column ordering, and
+    // which value (stop15/target2) is shown where — legacy `signal`
+    // never determines LONG-vs-SHORT geometry for 1H again (owner §5).
+    // stop15/target2 THEMSELVES are already canonically oriented by this
+    // same build's producer fix (see calcPair()'s "1H Canonical Risk-
+    // Geometry Alignment" block) whenever canonical direction is
+    // long/short — this block only decides display eligibility/ordering,
+    // never recomputes a value. A canonical non-directional state
+    // (oneHAdvisory.direction null, or oneHAdvisory itself absent) always
+    // suppresses the box outright, even with stale legacy directional
+    // signal still present (owner §3) — no legacy signal may resurrect
+    // actionable-looking geometry against a non-directional card.
+    const _oneHLevelEligible = signal !== 'neutral' && !isOpenTrade;
+    const _oneHCanonicalDir = (d.oneHAdvisory && d.oneHAdvisory.direction === 'long') ? 'long'
+      : (d.oneHAdvisory && d.oneHAdvisory.direction === 'short') ? 'short' : null;
+    const _oneHLevelsValid = stop15 != null && isFinite(stop15) && target2 != null && isFinite(target2);
+    if (_oneHLevelEligible && _oneHCanonicalDir && _oneHLevelsValid) {
+      const lSL = _oneHCanonicalDir==='long'?'Stop':'Target';
+      const lTP = _oneHCanonicalDir==='long'?'Target':'Stop';
+      const lSLv = fmt(_oneHCanonicalDir==='long'?stop15:target2);
+      const lTPv = fmt(_oneHCanonicalDir==='long'?target2:stop15);
+      levelsHtml = '<div class="levels-box">'
+        +'<div class="level-col"><span class="level-label">'+lSL+'</span>'
+        +'<span class="level-val stop">'+lSLv+'</span></div>'
+        +'<div class="level-arrow">\u2192</div>'
+        +'<div class="level-col right"><span class="level-label">'+lTP+'</span>'
+        +'<span class="level-val target">'+lTPv+'</span></div>'
+        +'</div>';
+    }
+  } else if(signal!=='neutral' && !isOpenTrade){
+    // TDAS — unchanged, byte-identical to before this fix. 4H (and any
+    // other non-1H timeframe) keeps the exact original legacy-signal-keyed
+    // logic — frozen per owner §6, "4H is frozen unless a live defect is
+    // demonstrated." The V5.4.0C producer fix already canonicalises 4H's
+    // stop15/target2 values themselves; this ordering logic is unchanged.
     const lSL = signal==='long'?'Stop':'Target';
     const lTP = signal==='long'?'Target':'Stop';
     const lSLv = fmt(signal==='long'?stop15:target2);
