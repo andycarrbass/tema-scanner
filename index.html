@@ -2414,6 +2414,19 @@ let _syncLock   = false;   // prevents overlapping sync operations
 // still not read by the retry loop, in case a future consumer wants a
 // cheap "was there ever unconfirmed state this session" flag.
 let _syncDirty  = false;   // true when local changes haven't been confirmed synced — NOT read by the P2 retry loop (see above)
+// TDAS — Persistence Integrity Fix. Side-channel, not a change to
+// sheetsPost()'s boolean return contract (every other caller — sheetsGet-
+// style reads, savePairs, etc. — is completely unaffected). Set by
+// _verifyAck() below whenever a successful acknowledgement's parsed body
+// carries a `rejected` array (currently only saveJournal()'s server-side
+// terminal-state reconciliation produces one) — the raw Sheet rows for
+// any ids whose incoming write was rejected because it would have
+// regressed a locked terminal state (CLOSED->OPEN / DELETED->undeleted).
+// Read and consumed exactly once by pushToSheets() immediately after a
+// successful push, so this device converges to the server's authoritative
+// row for those ids instead of marking its rejected local mutation
+// synced as though it had become truth.
+let _lastSaveJournalRejected = null;
 let _sheetsOk   = true;    // circuit breaker — disabled after repeated failures
 let _failCount  = 0;       // consecutive failure counter
 const MAX_FAILS = 3;       // circuit breaker threshold
@@ -2965,6 +2978,7 @@ async function sheetsPost(action, data, expectedCount){
       console.warn('[SHEETS] '+action+' acknowledgement count mismatch — expected:', expectedCount, 'got:', parsed.count);
       return { ok:false, parsed };
     }
+    if(Array.isArray(parsed.rejected)) _lastSaveJournalRejected = parsed.rejected;
     return { ok:true, parsed };
   }
 
@@ -3333,9 +3347,76 @@ async function pullFromSheets(){
 
   const remoteMap = new Map(remoteEntries.map(e => [String(e.id), e]));
 
+  // TDAS — Persistence Integrity Fix (SOL forensic audit + same-lifecycle
+  // freshness correction). Locked invariants, enforced identically at
+  // every local-over-remote override site in this function:
+  //   A. Closure is monotonic — a remote row with outcome!=null can never
+  //      be overwritten by a local row with outcome==null, regardless of
+  //      syncStatus/device/updatedAt. TDAS has no supported CLOSED->OPEN
+  //      transition.
+  //   B. Soft deletion is monotonic — a remote row with deleted===true
+  //      can never be overwritten by a local row with deleted!==true.
+  //      There is no supported undelete workflow.
+  //   C. Terminal-state authority (A/B) always takes precedence over
+  //      timestamp — checked first, unconditionally. A genuine forward
+  //      transition (local closed & remote open, local deleted & remote
+  //      not — i.e. local is AHEAD of remote in lifecycle) is always
+  //      admitted, no timestamp comparison needed; that's what OPEN->
+  //      CLOSED and non-deleted->deleted are supposed to do.
+  //   D. Only once both sides occupy the exact SAME lifecycle state does
+  //      updatedAt freshness decide: local may override only when its
+  //      updatedAt is STRICTLY newer than remote's. This matters for
+  //      Active Trade fields such as confirmed Current Stop/protection
+  //      state, which can legitimately change several times while a
+  //      trade stays OPEN — a stale same-state local copy must not beat
+  //      a genuinely newer same-state remote row (or vice versa).
+  //      Fail-safe: equal timestamps, or either timestamp missing/
+  //      unparseable, means freshness cannot be genuinely established —
+  //      the existing remote row is preserved rather than guessed past.
+  // Returns false when letting `local` override `remote` would regress a
+  // locked terminal state, OR when both are same-state and local is not
+  // demonstrably newer — the caller must then leave the remote row
+  // standing and treat the rejected local mutation as no longer valid
+  // (never re-attempted as though it were still pending).
+  function _journalMutationTimestampMs(entry){
+    const raw = entry && entry.updatedAt;
+    if(!raw) return null;
+    const ms = new Date(raw).getTime();
+    return isFinite(ms) ? ms : null;
+  }
+  function _journalLocalOverrideSafe(local, remote){
+    if(!remote) return true; // no remote row to regress against
+    const localClosed = local.outcome != null;
+    const remoteClosed = remote.outcome != null;
+    if(remoteClosed && !localClosed) return false; // would regress CLOSED -> OPEN
+    const localDeleted = local.deleted === true;
+    const remoteDeleted = remote.deleted === true;
+    if(remoteDeleted && !localDeleted) return false; // would regress DELETED -> not-deleted
+
+    const localAheadInLifecycle = (localClosed && !remoteClosed) || (localDeleted && !remoteDeleted);
+    if(localAheadInLifecycle) return true; // legitimate forward transition -- no freshness check needed
+
+    // Genuinely same lifecycle state on both sides -- freshness decides.
+    const localMs = _journalMutationTimestampMs(local);
+    const remoteMs = _journalMutationTimestampMs(remote);
+    if(localMs == null || remoteMs == null) return false; // cannot establish freshness -- fail safe to remote
+    return localMs > remoteMs; // strictly newer only; equal or older -> remote wins
+  }
+
   // Re-apply session-dirty entries — may not be in Sheets yet
   const sessionEntries = journal.filter(j => sessionDirtyIds.has(j.id));
-  sessionEntries.forEach(j => remoteMap.set(String(j.id), { ...j, syncStatus: 'pending' }));
+  sessionEntries.forEach(j => {
+    const _remote = remoteMap.get(String(j.id));
+    if(!_journalLocalOverrideSafe(j, _remote)){
+      // Locked terminal state on the remote row -- reject the local
+      // override. The already-fetched remote row (already in remoteMap)
+      // stands. This id's local mutation is no longer a valid pending
+      // write, so stop treating it as one.
+      sessionDirtyIds.delete(j.id);
+      return;
+    }
+    remoteMap.set(String(j.id), { ...j, syncStatus: 'pending' });
+  });
 
   // TDAS V5.4.0P2 (P2.1) — reload survival for genuinely unacknowledged
   // local records, covering BOTH shapes of the problem:
@@ -3353,17 +3434,24 @@ async function pullFromSheets(){
   //
   // Rule, exactly as scoped: a local record with syncStatus !== 'synced'
   // is treated as an unacknowledged mutation for that record id and is
-  // preserved unconditionally — remoteMap.has(id) or not makes no
-  // difference — until it is positively acknowledged (a future push
-  // marks it 'synced') or deliberately discarded by an explicit future
-  // user action. This is NOT timestamp-based last-write-wins: an
-  // acknowledged remote row, however new, never silently overwrites a
-  // still-pending local mutation of the same id, because "pending" itself
-  // is the signal that the remote copy hasn't caught up yet — that is the
-  // entire reason it's pending. Reusing _isPreReset() (the same predicate
-  // mergeEntry()'s own local-only branch already relies on) keeps the one
-  // safety exception intact: an entry that predates a deliberate journal
-  // reset is never resurrected, remote-present or not.
+  // preserved — remoteMap.has(id) or not makes no difference — until it
+  // is positively acknowledged (a future push marks it 'synced') or
+  // deliberately discarded by an explicit future user action. This is
+  // NOT timestamp-based last-write-wins: an acknowledged remote row,
+  // however new, never silently overwrites a still-pending local
+  // mutation of the same id, because "pending" itself is the signal that
+  // the remote copy hasn't caught up yet — that is the entire reason
+  // it's pending. Reusing _isPreReset() (the same predicate mergeEntry()'s
+  // own local-only branch already relies on) keeps the one safety
+  // exception intact: an entry that predates a deliberate journal reset
+  // is never resurrected, remote-present or not.
+  //
+  // TDAS — Persistence Integrity Fix. This preservation is now ALSO
+  // subject to _journalLocalOverrideSafe() above — the exact same SOL
+  // forensic finding applies here identically: a local row left over from
+  // a PRIOR (memory-cleared) session with syncStatus!=='synced' is just
+  // as capable of regressing a locked terminal state as the sessionEntries
+  // pass above, and previously had zero protection against it.
   //
   // Deliberately narrow, not a general local-wins merge: only entries
   // with syncStatus !== 'synced' are ever affected. An already-synced
@@ -3377,6 +3465,8 @@ async function pullFromSheets(){
     if(j.syncStatus === 'synced') return;
     if(sessionDirtyIds.has(j.id)) return; // already handled by the pass above
     if(_isPreReset(j)) return; // never resurrect pre-reset data, remote-present or not
+    const _remote = remoteMap.get(String(j.id));
+    if(!_journalLocalOverrideSafe(j, _remote)) return; // regression rejected -- remote stands, do not restore into sessionDirtyIds either
     remoteMap.set(String(j.id), { ...j, syncStatus: 'pending' });
     sessionDirtyIds.add(j.id); // restore into the dirty/pending sync + retry workflow
   });
@@ -3420,6 +3510,26 @@ async function pushToSheets(){
   const ok = await sheetsPost('saveJournal', [...sentinel, ...safeToPush], _expected);
   if(ok){
     if(DEBUG_MODE) console.log('[SYNC] Push complete');
+    // TDAS — Persistence Integrity Fix. Consume the rejected-ids side
+    // channel (set by sheetsPost()'s _verifyAck() above) exactly once.
+    // These are raw Sheet rows for ids whose incoming write the server
+    // rejected because it would have regressed a locked terminal state
+    // (CLOSED->OPEN / DELETED->undeleted) — converted via the SAME
+    // normaliseSheets() conversion pullFromSheets() already trusts, so
+    // this device converges to the server's authoritative row for those
+    // ids rather than ever marking its rejected local mutation synced as
+    // though it had become truth.
+    const _rejectedRaw = _lastSaveJournalRejected || [];
+    _lastSaveJournalRejected = null; // consume once
+    const _rejectedCanonical = new Map(
+      _rejectedRaw.map(raw => {
+        const entry = normaliseSheets(raw);
+        return [String(entry.id), entry];
+      })
+    );
+    if(_rejectedCanonical.size && DEBUG_MODE){
+      console.log('[SYNC] Server rejected local write for locked-state ids:', Array.from(_rejectedCanonical.keys()).join(','));
+    }
     // TDAS V5.4.3 — sessionDirtyIds fix. Restores the Set to its intended
     // meaning ("currently unacknowledged local writes") rather than "ids
     // ever edited this session" (the confirmed defect — see the SOL
@@ -3438,6 +3548,21 @@ async function pushToSheets(){
     // exactly as the newer mutation left them (pending, dirty), so its
     // own future push is what clears it, never this stale acknowledgement.
     journal = journal.map(j => {
+      const _canonical = _rejectedCanonical.get(String(j.id));
+      if(_canonical){
+        // Server-side terminal-state or same-lifecycle-freshness
+        // rejection — converge to the server's row immediately,
+        // regardless of whether this id was in sessionDirtyIds. A row
+        // can be part of THIS push purely via the syncStatus==='synced'
+        // bundling clause (a stale-but-locally-"synced"-looking copy,
+        // never itself marked dirty) — it must still converge if the
+        // server rejects it, exactly the same as a genuinely dirty
+        // rejected row. It IS accurately synced now (it matches the
+        // server exactly), so stamp it synced; never re-attempt the
+        // rejected write.
+        sessionDirtyIds.delete(j.id);
+        return stampSynced(_canonical);
+      }
       if(!sessionDirtyIds.has(j.id)) return j;
       if(_pushedVersions.get(j.id) !== j.updatedAt) return j; // superseded by a newer in-flight mutation — leave pending
       sessionDirtyIds.delete(j.id);
