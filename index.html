@@ -2692,7 +2692,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // never existed — added. No TSE/Evaluation/Advisory/Trade-Ready/Scanner/
 // Watch/Setups/HTF/CHOP/200MA/RSI-ADX/protection-ladder-sequencing
 // change. Supersedes V5.4.1A4.
-const APP_BUILD = 'V5.4.5';
+const APP_BUILD = 'V5.4.6';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -35681,6 +35681,16 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
       loading: false,
       formingBarTimeSec: null,
       generation: 0,           // this 1H load's own generation — compared against _chartsState.loadGeneration before ANY commit
+      // TDAS CHARTS — historical backfill (2026-09-03, owner-authorised,
+      // localhost dev on V5.4.5 baseline): the earliest 1H timestamp
+      // (ms) for which 1H source coverage + warm-up is CONFIRMED loaded
+      // for the current symbol. null = no confirmed gap (normal/initial
+      // state). Set to a boundary timestamp only when a backfill-driven
+      // 1H fetch for a newly-exposed older 4H region fails or returns
+      // short of the required range — _chartsBuildOneHMarkers() then
+      // fails closed and omits any event strictly before this boundary,
+      // per the hard "no invented/fabricated 1H markers" requirement.
+      coverageIncompleteBeforeMs: null,
     },
     // TDAS CHARTS — 4H MA200 regime shading (2026-08-31)
     regimeShadingPrimitive: null,
@@ -35696,6 +35706,20 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
       forSymbol: null,    // which symbol rawCandles belongs to — a mismatch here means the cached data is stale and must not be reused
       loading: false,
       generation: 0,      // this Daily load's own generation — compared against _chartsState.loadGeneration before ANY commit, exactly like oneH.generation
+    },
+    // TDAS CHARTS — historical backfill (2026-09-03, owner-authorised,
+    // localhost dev on V5.4.5 baseline). Runtime/display lifecycle state
+    // ONLY — deliberately never persisted (no localStorage, no Apps
+    // Script), matching the owner's explicit "not persistence" framing.
+    // A fresh page-open/symbol-switch resets all of this (see the reset
+    // call at both commit points), exactly like oneH/dailyMa200 above.
+    backfill: {
+      inFlight: false,               // duplicate/concurrent-request guard — a rapid pan cannot start a second overlapping transaction
+      forSymbol: null,                // which symbol this state belongs to — mismatch means stale, reset on commit
+      generation: null,               // the loadGeneration this backfill chain was started under
+      earliestLoaded4hMs: null,       // earliest CLOSED 4H bar's OPEN time (ms) currently loaded — updated after every successful commit
+      researchTargetReached: false,   // true once earliestLoaded4hMs <= the 24-month research boundary for forSymbol
+      exhausted: false,               // true once Binance has confirmed no older bars exist for forSymbol (genuinely < 24mo of history)
     },
   };
 
@@ -36744,6 +36768,10 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     // rsiSeries remain null unless a future toggle calls a dedicated
     // enable-RSI function; buildChartIndicatorSeries() keeps computing
     // s.rsi regardless, so no capability is lost, only the render step.
+    // TDAS CHARTS — historical backfill (2026-09-03): wired ONCE here,
+    // inside this function's own one-shot guard (line 1 of this
+    // function) — see _chartsWireBackfillTrigger()'s own comment.
+    _chartsWireBackfillTrigger();
   }
 
   function _chartsPhase0Render(){
@@ -37319,6 +37347,347 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     return Array.from(map.values()).sort(function(a, b){ return a.time - b.time; });
   }
 
+  // ╔════════════════════════════════════════════════════════════════════╗
+  // ║  TDAS CHARTS — Historical backfill (2026-09-03, owner-authorised,   ║
+  // ║  localhost development candidate on V5.4.5 baseline). Fixed V1     ║
+  // ║  research target: ~24 months of usable 4H research history, with   ║
+  // ║  complete matching 1H source coverage and sufficient calculation   ║
+  // ║  warm-up. NOT unlimited history, NOT listing-to-present backfill.  ║
+  // ║  Reuses the EXISTING _chartsLoadClosedCandlesWithCache()/           ║
+  // ║  _chartsFetchClosedRangePaginated()/_chartsMergeDedupeCandles()/    ║
+  // ║  loadGeneration machinery throughout — no second historical-data    ║
+  // ║  stack. Deliberately NOT gated by a DIAG flag (owner instruction:   ║
+  // ║  no flag "merely because earlier work used flags" — this is        ║
+  // ║  localhost-only development on an already-protected V5.4.5         ║
+  // ║  production baseline; no concrete rollback need identified).       ║
+  // ╚════════════════════════════════════════════════════════════════════╝
+
+  const CHARTS_RESEARCH_MONTHS = 24; // fixed V1 research-depth target — time-based, not a page count
+  // TDAS CHARTS — warm-up bar counts (source-traced, not guessed): the
+  // longest single lookback/state dependency in the 4H research pipeline
+  // is MA200 (buildChartIndicatorSeries()'s HTF/base SMA200, 200-bar
+  // window) — 220 4H bars gives a conservative margin above that exact
+  // number. The 1H pipeline's longest dependency is UT Bot's own
+  // ATR/trailing-stop state (utAtrPeriod, KV4/ATR10 by default) — far
+  // shorter than 200 bars; 100 1H bars is a conservative multiple of
+  // that. Neither value is invented from nothing: 220 is MA200's own
+  // 200-bar requirement plus a fixed 20-bar margin; 100 is roughly 10x
+  // the default ATR period, comfortably covering ATR/trail settling.
+  // Warm-up bars may exist internally (loaded, computed-over) without
+  // being counted as "usable research history" — see
+  // CHARTS_RESEARCH_MONTHS above, which the warm-up boundary sits
+  // BEYOND, per owner instruction.
+  const CHARTS_WARMUP_BARS_4H = 220;
+  const CHARTS_WARMUP_BARS_1H = 100;
+  // Bounded per-transaction chunk size — owner instruction: "prefer one
+  // bounded older-history transaction at a time... a sensible chunk can
+  // be based on the existing Binance page limits and current ~1500-bar
+  // 4H size." 500 bars (~83 days at 4H) is a fraction of the existing
+  // single-request 1500-bar ceiling — small enough to stay responsive
+  // per transaction, large enough that reaching the 24-month target
+  // (~180 4H bars/month × 24 ≈ 4300 bars) takes a small, bounded number
+  // of transactions rather than one huge multi-page fetch.
+  const CHARTS_BACKFILL_CHUNK_BARS_4H = 500;
+  // Left-edge trigger threshold, in bars-before-earliest-loaded — modest
+  // per owner instruction ("loading begins before the user hits empty
+  // space"), using the confirmed real LWC series.barsInLogicalRange()
+  // API (see _chartsWireBackfillTrigger() below).
+  const CHARTS_BACKFILL_TRIGGER_BARS_BEFORE = 30;
+
+  // Calendar-accurate "N months ago" using native Date arithmetic — the
+  // ONLY month-aware date math anywhere in this file; deliberately NOT a
+  // 30-day approximation (owner instruction: "stable timestamp/date
+  // arithmetic appropriate to the existing codebase" — Date's own
+  // setUTCMonth() handles month-length/year-rollover correctly with no
+  // custom calendar logic of our own).
+  function _chartsResearchStartTimestampMs(nowMs){
+    const d = new Date(nowMs);
+    d.setUTCMonth(d.getUTCMonth() - CHARTS_RESEARCH_MONTHS);
+    return d.getTime();
+  }
+
+  function _chartsWarmupStartTimestampMs(researchStartMs){
+    return researchStartMs - CHARTS_WARMUP_BARS_4H * CHARTS_TF_MS['4h'];
+  }
+
+  // Pure function — given the earliest 4H bar currently loaded and the
+  // two boundary timestamps above, decides the NEXT bounded older-history
+  // chunk to request (or null if the target is already reached). Never
+  // requests past warmupStartMs (never "materially earlier than
+  // required except for the calculation warm-up", per owner instruction).
+  function _chartsComputeNextBackfillChunkRange(earliestLoaded4hMs, researchStartMs, warmupStartMs){
+    if (earliestLoaded4hMs == null) return null; // nothing loaded yet — not this function's concern
+    if (earliestLoaded4hMs <= warmupStartMs) return null; // already at/past the full (research+warmup) boundary — target reached
+    const barMs = CHARTS_TF_MS['4h'];
+    const endTime = earliestLoaded4hMs - 1; // strictly older than what's already loaded — never re-requests the same bar
+    const chunkStart = endTime - CHARTS_BACKFILL_CHUNK_BARS_4H * barMs;
+    // If this bounded chunk would reach (or cross) the warm-up boundary,
+    // clamp to EXACTLY warmupStartMs — a single final chunk that lands
+    // precisely on the required boundary, never further, never a second
+    // "cleanup" transaction needed to trim overshoot.
+    const startTime = Math.max(chunkStart, warmupStartMs);
+    const reachesTarget = startTime <= warmupStartMs;
+    return { startTime: startTime, endTime: endTime, reachesTarget: reachesTarget };
+  }
+
+  // Resets ALL backfill lifecycle state for a fresh symbol — called at
+  // BOTH genuine symbol-commit points (page-open, symbol-switch), the
+  // exact same "reset on real ownership transfer" idiom oneH/dailyMa200
+  // already use elsewhere in this file. Deliberately does NOT touch
+  // IndexedDB (the cache itself is preserved across symbol switches and
+  // revisits, per owner instruction — "revisit a previously backfilled
+  // symbol and confirm IndexedDB makes old history available
+  // efficiently").
+  function _chartsResetBackfillState(symbol){
+    _chartsState.backfill.inFlight = false;
+    _chartsState.backfill.forSymbol = symbol;
+    _chartsState.backfill.generation = _chartsState.loadGeneration;
+    _chartsState.backfill.earliestLoaded4hMs = null; // set on first render below
+    _chartsState.backfill.researchTargetReached = false;
+    _chartsState.backfill.exhausted = false;
+    _chartsState.oneH.coverageIncompleteBeforeMs = null;
+  }
+
+  // Called after EVERY successful 4H render (initial load, refresh,
+  // symbol-switch, and backfill itself) — keeps
+  // backfill.earliestLoaded4hMs authoritative and current without a
+  // second bookkeeping path. Pure bookkeeping; never fetches, never
+  // renders.
+  function _chartsUpdateEarliestLoaded4h(){
+    const raw = _chartsState.rawCandles;
+    if (!Array.isArray(raw) || !raw.length) { _chartsState.backfill.earliestLoaded4hMs = null; return; }
+    const closed = selectClosedCandles(raw, Date.now());
+    if (!closed.length) { _chartsState.backfill.earliestLoaded4hMs = null; return; }
+    _chartsState.backfill.earliestLoaded4hMs = closed[0].time;
+  }
+
+  // Wired ONCE per chart instance (see _ensureChartsInstances()) via the
+  // confirmed real LWC public hooks: subscribeVisibleLogicalRangeChange()
+  // + series.barsInLogicalRange(). No manual "Load History" button —
+  // per owner instruction, only add one if browser behaviour later
+  // proves the automatic trigger unsuitable.
+  function _chartsBackfillRangeChangeHandler(range){
+    if (!range || !_chartsState.candleSeries || !_chartsState.symbol) return;
+    const bf = _chartsState.backfill;
+    if (bf.forSymbol !== _chartsState.symbol) return; // stale bookkeeping from a superseded symbol — ignore until reset catches up
+    if (bf.inFlight || bf.researchTargetReached || bf.exhausted) return;
+    let info;
+    try { info = _chartsState.candleSeries.barsInLogicalRange(range); } catch (e) { return; }
+    if (!info || typeof info.barsBefore !== 'number') return;
+    if (info.barsBefore <= CHARTS_BACKFILL_TRIGGER_BARS_BEFORE) {
+      // TDAS CHARTS — historical backfill browser-regression fix
+      // (2026-09-03): explicit .catch() — see
+      // _chartsRunHistoricalBackfill()'s own try/finally; this is
+      // defence-in-depth on the caller side so an unhandled promise
+      // rejection can never occur from this call site either. This is
+      // permanent production error handling, not diagnostic-only —
+      // retained after the temporary diagnostic logging was removed.
+      _chartsRunHistoricalBackfill().catch(function(e){
+        _chartsLogSymbolLoadStep(_chartsState.symbol, 'backfill trigger call FAILED (bf.inFlight guaranteed reset by the orchestrator\'s own finally block)', e && e.message ? e.message : e);
+      });
+    }
+  }
+
+  // The main backfill orchestrator. Fully generation-safe (checked before
+  // each network stage, before cache write — inherited from
+  // _chartsLoadClosedCandlesWithCache() itself — and again before ANY
+  // commit here), fully additive/nonfatal (a failure here never corrupts
+  // already-loaded 4H/1H state — the merge step only ever adds validated
+  // closed candles on top of what's already committed).
+  async function _chartsRunHistoricalBackfill(){
+    const symbol = _chartsState.symbol;
+    const tf = _chartsState.tf;
+    const bf = _chartsState.backfill;
+    if (bf.inFlight || bf.forSymbol !== symbol) return; // duplicate-suppression / stale-symbol guard
+    const myGeneration = _chartsState.loadGeneration;
+    const nowMs = Date.now();
+    const researchStartMs = _chartsResearchStartTimestampMs(nowMs);
+    const warmupStartMs = _chartsWarmupStartTimestampMs(researchStartMs);
+    const chunk = _chartsComputeNextBackfillChunkRange(bf.earliestLoaded4hMs, researchStartMs, warmupStartMs);
+    if (!chunk) {
+      // TDAS CHARTS — historical backfill browser-regression fix #2
+      // (2026-09-03, owner-authorised). CONFIRMED root cause (source
+      // trace, category C the owner specifically asked about):
+      // _chartsComputeNextBackfillChunkRange() returns null for TWO
+      // genuinely different reasons — (a) earliestLoaded4hMs is null
+      // ("nothing loaded yet, I can't answer") and (b) earliestLoaded4hMs
+      // has already reached the warm-up boundary ("genuinely done"). This
+      // line used to treat both identically, setting
+      // bf.researchTargetReached = true for EITHER case.
+      //
+      // On a symbol switch, _chartsResetBackfillState() sets
+      // bf.earliestLoaded4hMs = null BEFORE _recomputeAndRender() calls
+      // candleSeries.setData() — and setData() can synchronously fire
+      // the visible-logical-range-change subscription as part of that
+      // same call, reaching this function via the trigger handler while
+      // bf.earliestLoaded4hMs is STILL null (this line runs, in that
+      // race, BEFORE _chartsUpdateEarliestLoaded4h() — called moments
+      // later in the same synchronous commit flow — ever gets a chance
+      // to populate the real value). That transient "don't know yet"
+      // state was being permanently misread as "target reached," which
+      // then permanently blocked all further backfill for that symbol
+      // (the trigger handler's own bf.researchTargetReached guard,
+      // working exactly as designed, refuses every subsequent request).
+      //
+      // Fix: only the genuine "reached the boundary" case (b) may ever
+      // set researchTargetReached. Case (a) — earliestLoaded4hMs still
+      // null — simply returns without touching any state; a later,
+      // correctly-populated trigger (either the real
+      // _chartsUpdateEarliestLoaded4h() completing, or the user's next
+      // qualifying pan) resolves it correctly instead.
+      if (bf.earliestLoaded4hMs != null) bf.researchTargetReached = true;
+      return;
+    }
+
+    // TDAS CHARTS — historical backfill browser-regression fix (2026-09-03,
+    // owner-authorised). CONFIRMED lifecycle/gating defect found by source
+    // trace: everything from here down used to run with NO surrounding
+    // try/catch/finally. _recomputeAndRender()/loadResearchChartConfig()/
+    // _chartsUpdateEarliestLoaded4h()/_chartsOneHRecomputeAndRender() were
+    // all called unguarded — any exception from any of them (a genuine
+    // rendering edge case, a transient DOM/chart-state issue, etc.) would
+    // reject this async function BEFORE reaching the `bf.inFlight = false`
+    // line at the bottom, leaving bf.inFlight permanently stuck true for
+    // that symbol. The call site (_chartsBackfillRangeChangeHandler) also
+    // had no .catch() — the same defect from the other side. A stuck
+    // bf.inFlight silently and permanently disables the left-edge trigger
+    // for that symbol (the handler's own `if (bf.inFlight ...) return;`
+    // guard, working exactly as designed, refuses every subsequent
+    // request). This matches the owner's own reported symptom shape
+    // ("backfill no longer becomes available" after a switch) — this fix
+    // makes bf.inFlight=false a GUARANTEED outcome of every call,
+    // regardless of what throws inside, via try/finally. Every other
+    // requirement (24-month target, warm-up, 4H cache, 1H completeness,
+    // viewport preservation, fractional marker positioning, generation
+    // safety) is completely unchanged below — only the error-safety
+    // wrapper is new.
+    bf.inFlight = true;
+    try {
+      _chartsLogSymbolLoadStep(symbol, 'backfill 4H chunk start', new Date(chunk.startTime).toISOString() + ' -> ' + new Date(chunk.endTime).toISOString() + ' [gen=' + myGeneration + ']');
+      let fetched4h = [];
+      let failed = false, failErr = null;
+      try {
+        fetched4h = await _chartsLoadClosedCandlesWithCache(symbol, tf, chunk.startTime, chunk.endTime, myGeneration);
+      } catch (e) { failed = true; failErr = e; }
+      if (myGeneration !== _chartsState.loadGeneration || _chartsState.symbol !== symbol) {
+        _chartsLogSymbolLoadStep(symbol, 'backfill 4H result discarded (stale generation)', 'gen=' + myGeneration + ' current=' + _chartsState.loadGeneration);
+        return;
+      }
+      if (failed) {
+        // Network failure — owner instruction: "network failure preserving
+        // prior valid state." Nothing already loaded is touched; simply
+        // stop this transaction so the range-change handler can retry on
+        // the next qualifying pan event.
+        _chartsLogSymbolLoadStep(symbol, 'backfill 4H FAILED (prior history unaffected)', failErr && failErr.message ? failErr.message : failErr);
+        return;
+      }
+      // Terminal condition — owner item 13: verify via genuine request
+      // semantics, not just "a single short page." A page shorter than the
+      // Binance per-request cap AND ending before it reached the intended
+      // chunk end (rather than merely being the natural tail of a request
+      // whose window itself was smaller than the cap) is real evidence the
+      // venue has no older bars left, mirroring the SAME short-page
+      // termination signal _chartsFetchClosedRangePaginated() already uses
+      // for its own pages, applied here to the whole chunk's own result.
+      const noOlderBarsFound = fetched4h.length === 0
+        || (fetched4h.length > 0 && fetched4h[0].time > chunk.startTime + CHARTS_TF_MS['4h']);
+
+      const mergedRaw = _chartsMergeDedupeCandles(_chartsState.rawCandles.concat(fetched4h));
+      const beforeCount = _chartsState.rawCandles.length;
+      _chartsState.rawCandles = mergedRaw;
+      const prependedCount = Math.max(0, mergedRaw.length - beforeCount);
+
+      // ── Viewport preservation (owner hard requirement, real LWC APIs   ──
+      // only — getVisibleLogicalRange()/setVisibleLogicalRange(), never
+      // fitContent()/Latest/autoscale reset during backfill).
+      let preRange = null;
+      try { if (_chartsState.chart) preRange = _chartsState.chart.timeScale().getVisibleLogicalRange(); } catch (e) { preRange = null; }
+
+      const cfg = loadResearchChartConfig(symbol);
+      _recomputeAndRender(cfg); // reuses the EXISTING recompute+render pipeline unmodified — no second render path
+      _chartsUpdateEarliestLoaded4h();
+
+      if (preRange && prependedCount > 0 && _chartsState.chart) {
+        try {
+          _chartsState.chart.timeScale().setVisibleLogicalRange({ from: preRange.from + prependedCount, to: preRange.to + prependedCount });
+        } catch (e) { /* non-fatal — a failed viewport restore must never break the chart itself */ }
+      }
+
+      if (noOlderBarsFound) {
+        bf.exhausted = true;
+        _chartsLogSymbolLoadStep(symbol, 'backfill 4H exhausted (no older bars available)', symbol + ' has less than the full research window on this venue — retaining ' + mergedRaw.length + ' candles');
+      }
+      if (chunk.reachesTarget) {
+        bf.researchTargetReached = true;
+        _chartsLogSymbolLoadStep(symbol, 'backfill research target reached', '~' + CHARTS_RESEARCH_MONTHS + ' months usable history available');
+      }
+
+      // ── Matching 1H coverage for the NEWLY exposed 4H region only —    ──
+      // never refetches the whole 1H range on every chunk (owner
+      // instruction: "avoid repeatedly refetching the entire 24-month 1H
+      // dataset"). The 1H warm-up boundary is computed the SAME way as 4H
+      // (source-traced independently — UT/ATR state, not MA200).
+      const existing1hEarliestMs = _chartsState.oneH.rawCandles.length ? _chartsState.oneH.rawCandles[0].time : null;
+      const oneHNeededStart = chunk.startTime - CHARTS_WARMUP_BARS_1H * CHARTS_TF_MS['1h'];
+      const oneHFetchEnd = existing1hEarliestMs != null ? Math.min(existing1hEarliestMs - 1, chunk.endTime) : chunk.endTime;
+      if (oneHNeededStart < oneHFetchEnd) {
+        let fetched1h = [];
+        let oneHFailed = false;
+        try {
+          fetched1h = await _chartsLoadClosedCandlesWithCache(symbol, '1h', oneHNeededStart, oneHFetchEnd, myGeneration);
+        } catch (e) { oneHFailed = true; }
+        if (myGeneration !== _chartsState.loadGeneration || _chartsState.symbol !== symbol) {
+          _chartsLogSymbolLoadStep(symbol, 'backfill 1H result discarded (stale generation)', 'gen=' + myGeneration + ' current=' + _chartsState.loadGeneration);
+          return;
+        }
+        if (oneHFailed || !fetched1h.length) {
+          // Hard requirement: never claim complete 1H coverage for a
+          // region whose source data didn't actually arrive. Fail closed —
+          // _chartsBuildOneHMarkers() will omit any event before this
+          // boundary, and the existing 1H status line surfaces it.
+          _chartsState.oneH.coverageIncompleteBeforeMs = chunk.startTime;
+          _setOneHStatus('1H history incomplete before ' + new Date(chunk.startTime).toISOString().slice(0, 10) + ' — markers omitted for that region');
+          _chartsLogSymbolLoadStep(symbol, 'backfill 1H FAILED/incomplete — 1H markers fail closed for this region', oneHFailed ? 'fetch error' : 'zero candles returned');
+        } else {
+          _chartsState.oneH.rawCandles = _chartsMergeDedupeCandles(_chartsState.oneH.rawCandles.concat(fetched1h));
+          // Only clear the fail-closed boundary if this fetch genuinely
+          // covers all the way back to oneHNeededStart — otherwise keep
+          // the (now possibly narrower, but still honest) incomplete
+          // boundary in place rather than assuming success.
+          const gotBackTo = fetched1h[0].time;
+          if (gotBackTo <= oneHNeededStart + CHARTS_TF_MS['1h']) {
+            _chartsState.oneH.coverageIncompleteBeforeMs = null;
+          } else {
+            _chartsState.oneH.coverageIncompleteBeforeMs = gotBackTo;
+          }
+          _chartsOneHRecomputeAndRender(); // full recompute over the merged array — reuses the EXISTING function unmodified
+          _chartsLogSymbolLoadStep(symbol, 'backfill 1H coverage extended', fetched1h.length + ' candles merged, ' + _chartsState.oneH.rawCandles.length + ' total');
+        }
+      }
+    } catch (e) {
+      // TDAS CHARTS — historical backfill browser-regression fix
+      // (2026-09-03): any unexpected exception anywhere above is now
+      // caught, logged, and non-fatal — it can never leave bf.inFlight
+      // stuck (the finally block below guarantees the reset regardless),
+      // and it can never propagate to break the 4H chart itself.
+      _chartsLogSymbolLoadStep(symbol, 'backfill UNEXPECTED ERROR (bf.inFlight guaranteed reset — 4H chart unaffected)', e && e.message ? e.message : e);
+    } finally {
+      bf.inFlight = false;
+    }
+  }
+
+  // Wired once, inside _ensureChartsInstances()'s existing one-shot guard
+  // (if (_chartsState.chart) return; at the top already prevents this
+  // from ever being called twice for the same chart instance — no
+  // separate guard needed here, mirroring subscribeCrosshairMove()'s own
+  // established pattern immediately below it).
+  function _chartsWireBackfillTrigger(){
+    if (!_chartsState.chart) return;
+    try {
+      _chartsState.chart.timeScale().subscribeVisibleLogicalRangeChange(_chartsBackfillRangeChangeHandler);
+    } catch (e) { /* non-fatal — backfill trigger failing to wire must never break the chart itself */ }
+  }
+
   // ── Cache-aware coverage loader ─────────────────────────────────────────
   // Owner item 2A load sequence: inspect cache → use what's valid → find
   // gaps → paginate the gaps only → merge/dedupe → persist newly-closed
@@ -37391,21 +37760,27 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
   // Owner item 4 — "true 1H timing": the 4H candlestick series is NEVER
   // given 1H data points (setData/update are never called with a 1H
   // timestamp) — 4H geometry/spacing is therefore structurally unaffected
-  // by anything below. Instead, 1H markers are drawn by a custom
-  // primitive (the same attachPrimitive()/paneViews()/renderer()
-  // mechanism already used for the 4H Buy/Sell pill labels) that computes
-  // each marker's pixel position via chart.timeScale().timeToCoordinate()
-  // — which accepts ANY Unix timestamp and maps it to an x-coordinate
-  // using the time scale's own existing (4H-derived) coordinate mapping,
-  // interpolating between the two nearest known bar positions for a
-  // timestamp that doesn't land exactly on a 4H bar. This is the
-  // documented, general-purpose LWC coordinate API — the same one the 4H
-  // label primitive already calls for its own (4H-aligned) timestamps —
-  // used here with 1H-aligned timestamps instead. I want to flag this
-  // honestly: I have no browser available to visually confirm the
-  // resulting interpolated pixel placement looks correct once rendered;
-  // this is the single least-certain piece of this slice and the first
-  // thing worth checking visually.
+  // by anything below. 1H markers are drawn by a custom primitive (the
+  // same attachPrimitive()/paneViews()/renderer() mechanism already used
+  // for the 4H Buy/Sell pill labels).
+  //
+  // CORRECTED 2026-09-03 (comment-only correction; no source behaviour
+  // change here — this note previously described chart.timeScale()
+  // .timeToCoordinate() as interpolating between arbitrary timestamps.
+  // That was disproven by direct extraction and execution of the actual
+  // embedded LWC 5.2.1 library during the 1H UT overlay parity audit:
+  // timeToCoordinate() performs an EXACT-MATCH-ONLY lookup against the
+  // chart's own internal time index — it returns null, not an
+  // interpolated coordinate, for any timestamp that doesn't land exactly
+  // on an already-plotted bar. This is precisely why ~75% of genuine 1H
+  // events were silently dropped before the fix, and why
+  // _chartsResolveFractionalXCoordinate() now exists: it tries the real
+  // timeToCoordinate() exact-match fast path first (byte-identical
+  // behaviour for 4H-aligned events), and for any other 1H timestamp,
+  // finds the two real bracketing 4H bars and interpolates directly in
+  // PIXEL space between their own real timeToCoordinate() results — see
+  // that function's own header comment for the full proof and the full
+  // root-cause/fix history.
 
   function _chartsOneHFourHWindowRange(){
     const raw = _chartsState.rawCandles;
@@ -37481,6 +37856,114 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
       },
     };
   }
+  // ── 1H marker sub-4H-bar coordinate resolution (2026-09-03, V5.4.6
+  // bounded fix, owner-authorised — REVISED after browser-acceptance
+  // failure of the first candidate) ───────────────────────────────────────
+  // ROOT CAUSE this repairs: LWC's chart.timeScale().timeToCoordinate()
+  // performs an EXACT-MATCH-ONLY lookup against the chart's own internal
+  // time index — which is populated exclusively by the timestamps the
+  // real plotted series (candleSeries/smaSeries/ma200 series, all
+  // 4H-timestamped) have actually setData()'d. A 1H event's own genuine
+  // timestamp only equals one of those 4H-grid points once every four
+  // hours; the other three 1H bars per 4H window return null and are
+  // silently dropped — the confirmed, source-traced explanation for
+  // "only ~25% of 1H UT events render" (see the 1H UT overlay parity
+  // audit).
+  //
+  // FIRST CANDIDATE (reverted) tried: resolve each bracketing bar's
+  // logical index via timeToIndex(t,false), linearly interpolate a
+  // FRACTIONAL logical index between them, then pass that into
+  // logicalToCoordinate(). Browser acceptance failed — off-grid markers
+  // bunched/clipped at the far-left edge. Source-traced against the
+  // ACTUAL embedded LWC 5.2.1 library (verbatim extraction, not
+  // reconstructed): logicalToCoordinate(t) resolves to TimeScale's
+  // private jt(t), whose FIRST line is
+  //   jt(t){ if(this.Zi()||!c(t)) return 0; ... }
+  // where c(t) is `"number"==typeof t && t%1==0` — an INTEGER-ONLY gate.
+  // A fractional logical index silently fails that gate and jt() returns
+  // 0 (the coordinate-space origin — the far-left edge), never
+  // interpolating. logicalToCoordinate() and timeToIndex() are therefore
+  // NOT interchangeable for non-integer values, despite both being
+  // described as "logical index" — logicalToCoordinate() only actually
+  // accepts the same whole-number bar positions timeToIndex() returns
+  // for REAL bars, not values interpolated between them. This was proven
+  // by direct execution of the verbatim extracted c()/jt() functions
+  // against a concrete +1H off-grid example (interpolated logical 3.25
+  // -> jt() returns 0, matching the reported far-left-edge symptom
+  // exactly), and cross-checked against direct pixel interpolation of
+  // the two bracketing bars' own real timeToCoordinate() results (526.5
+  // in that example) — confirming the two routes are not interchangeable
+  // and that pixel-space interpolation is the correct domain.
+  //
+  // CORRECTED fix strategy (this candidate): never touch logical-index
+  // space at all. Find the two REAL, ACTUALLY-PLOTTED 4H bars that
+  // bracket the event (read back from the SAME s.haCandles array
+  // _chartsPhase0Render() already used to populate candleSeries), resolve
+  // EACH bracketing bar's pixel X via the chart's own real, unmodified
+  // timeToCoordinate() (exact match, since these ARE real bar times —
+  // the identical call the untouched fast path already uses), and
+  // linearly interpolate directly in PIXEL space between those two real
+  // coordinates by elapsed-time proportion. No logical index is ever
+  // interpolated; no non-integer value is ever passed to any LWC
+  // coordinate API. An exact 4H-aligned event still resolves via the
+  // untouched, byte-identical timeToCoordinate() fast path first — so
+  // the ~25% that already rendered correctly remain completely
+  // unaffected by this change, exactly as before.
+  //
+  // Fails CLOSED (returns null, exactly like the pre-existing behaviour
+  // for an unresolvable marker) whenever the event cannot be safely
+  // bracketed by two real, currently-loaded 4H bars — before the first
+  // loaded bar, after the last loaded bar, or if either bracketing bar's
+  // own pixel coordinate can't be resolved. Per owner instruction, this
+  // NEVER extrapolates beyond actually-loaded history and never snaps.
+  function _chartsResolveFractionalXCoordinate(chart, eventTimeSec){
+    if (!chart || eventTimeSec == null || !isFinite(eventTimeSec)) return null;
+    let ts;
+    try { ts = chart.timeScale(); } catch (e) { return null; }
+    if (!ts || typeof ts.timeToCoordinate !== 'function') return null;
+
+    // Fast path — exact 4H-aligned event: identical to the pre-existing
+    // behaviour, byte-for-byte, no change for the ~25% that already worked.
+    let exact;
+    try { exact = ts.timeToCoordinate(eventTimeSec); } catch (e) { exact = null; }
+    if (exact != null) return exact;
+
+    const s = _chartsState && _chartsState.series;
+    if (!s || !s.complete || !Array.isArray(s.haCandles) || !s.haCandles.length) return null;
+    const bars = s.haCandles; // chronological — the SAME array candleSeries.setData() was built from
+
+    const firstSec = Math.floor(bars[0].time / 1000);
+    const lastSec = Math.floor(bars[bars.length - 1].time / 1000);
+    // Fail closed — never extrapolate beyond the actually-loaded 4H range.
+    if (eventTimeSec < firstSec || eventTimeSec > lastSec) return null;
+
+    // Binary search for the last real bar at or before eventTimeSec.
+    let lo = 0, hi = bars.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      const midSec = Math.floor(bars[mid].time / 1000);
+      if (midSec <= eventTimeSec) lo = mid; else hi = mid - 1;
+    }
+    const prevIdx = lo, nextIdx = lo + 1;
+    if (nextIdx >= bars.length) return null; // no following real bar to bracket against — fail closed
+
+    const prevSec = Math.floor(bars[prevIdx].time / 1000);
+    const nextSec = Math.floor(bars[nextIdx].time / 1000);
+    if (!(nextSec > prevSec)) return null; // degenerate/duplicate bar times — fail closed, never divide by zero
+
+    // Pixel-space interpolation ONLY — both calls are the SAME real
+    // timeToCoordinate() the untouched fast path uses, on REAL bar times.
+    let leftX, rightX;
+    try {
+      leftX = ts.timeToCoordinate(prevSec);
+      rightX = ts.timeToCoordinate(nextSec);
+    } catch (e) { return null; }
+    if (leftX == null || rightX == null) return null; // bracketing bar not resolvable on-chart — fail closed
+
+    const frac = (eventTimeSec - prevSec) / (nextSec - prevSec);
+    return leftX + frac * (rightX - leftX);
+  }
+
   function _makeOneHMarkerPrimitive(){
     let _markers = [];
     let _chart = null, _series = null, _requestUpdate = null;
@@ -37502,9 +37985,15 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
         // null return — a single bad marker can now never take down the
         // whole paneViews() call (and therefore the whole pane's render)
         // with it; that marker is simply skipped.
+        //
+        // TDAS CHARTS — V5.4.6 bounded fix (2026-09-03, owner-authorised):
+        // x is now resolved via _chartsResolveFractionalXCoordinate()
+        // instead of a raw exact-match timeToCoordinate() call — see that
+        // function's own header comment for the full root-cause/fix
+        // rationale. y/price resolution is completely unchanged.
         const positioned = _markers.map(function(m){
           try {
-            const x = _chart.timeScale().timeToCoordinate(m.time); // owner item 4 — true 1H timing, see block comment above
+            const x = _chartsResolveFractionalXCoordinate(_chart, m.time);
             const y = _series.priceToCoordinate(m.price);
             if (x == null || y == null) return null;
             return { x: x, y: y, text: m.text, color: m.color };
@@ -37821,8 +38310,18 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     if (_chartsState.cleanChartEnabled) return [];
     if (!cfg.oneHShowOverlay || !oneHSeriesResult || !oneHSeriesResult.complete || !oneHSeriesResult.ut || !Array.isArray(oneHSeriesResult.ut.history)) return [];
     const haCandles = oneHSeriesResult.haCandles;
+    // TDAS CHARTS — historical backfill (2026-09-03): hard requirement —
+    // "no invented/fabricated 1H markers." If a backfill-driven 1H fetch
+    // for some older 4H region failed or returned short,
+    // _chartsState.oneH.coverageIncompleteBeforeMs marks the boundary
+    // before which 1H source coverage is NOT proven complete. Any event
+    // strictly before that boundary is omitted here — fails closed,
+    // regardless of what calcUTBot() itself computed — rather than ever
+    // presenting a possibly-gapped historical region as complete.
+    const coverageFloorMs = (_chartsState && _chartsState.oneH) ? _chartsState.oneH.coverageIncompleteBeforeMs : null;
     return oneHSeriesResult.ut.history
       .filter(function(ev){ return ev && (ev.sig === 'long' || ev.sig === 'short') && ev._t != null; })
+      .filter(function(ev){ return coverageFloorMs == null || ev._t >= coverageFloorMs; })
       .filter(function(ev){ return ev.sig === 'long' ? cfg.oneHShowBuy : cfg.oneHShowSell; })
       .map(function(ev){
         const bar = haCandles[ev.bar];
@@ -38431,7 +38930,9 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     }
     // Ownership reconfirmed — safe to commit shared state now.
     _chartsState.rawCandles = fetchFailed ? [] : fetchedRawCandles;
+    _chartsResetBackfillState(_chartsState.symbol); // TDAS CHARTS — historical backfill (2026-09-03): fresh symbol commit, reset backfill lifecycle state
     _recomputeAndRender(cfg);
+    _chartsUpdateEarliestLoaded4h();
     // TDAS CHARTS — S-level fix (2026-08-31, price-scale autoscale
     // defect): genuine page-open symbol commit — reset autoscale AFTER
     // the new instrument's candle/SMA80/MA200 data has already been set
@@ -38578,12 +39079,14 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
       _chartsState.utByBar = null;
       _chartsState.timeSecToBarIndex = null;
       _chartsState.rawCandles = raw;
+      _chartsResetBackfillState(newSymbol); // TDAS CHARTS — historical backfill (2026-09-03): fresh symbol commit, reset backfill lifecycle state
       _chartsLogSymbolLoadStep(newSymbol, 'state commit', 'symbol/rawCandles/inspector-reset applied');
 
       _populateChartsControls(cfg); // reflect the now-committed symbol/config in the controls
 
       try {
         _recomputeAndRender(cfg);
+        _chartsUpdateEarliestLoaded4h();
         _chartsLogSymbolLoadStep(newSymbol, 'parse/build', 'buildChartIndicatorSeries + render succeeded');
         // TDAS CHARTS — S-level fix (2026-08-31, price-scale autoscale
         // defect): genuine symbol-switch commit — reset autoscale AFTER
@@ -38922,8 +39425,22 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
       _chartsState.utByBar = null;
       _chartsState.timeSecToBarIndex = null;
       _chartsState.rawCandles = raw;
+      // TDAS CHARTS — historical backfill (2026-09-03): Refresh's own
+      // fetch/render behaviour is deliberately UNCHANGED (owner
+      // instruction — "Existing Charts behaviour must remain unchanged:
+      // ... Refresh") — it still replaces rawCandles with the bare
+      // recent window exactly as before. This reset call is bookkeeping
+      // ONLY, so backfill.earliestLoaded4hMs/researchTargetReached stay
+      // truthful about what's actually loaded after Refresh (which, like
+      // before this task, does discard any previously backfilled older
+      // history — a pre-existing Refresh characteristic this task does
+      // not alter). A subsequent left-edge pan simply re-triggers
+      // backfill, served quickly from IndexedDB for the already-fetched
+      // portion.
+      _chartsResetBackfillState(symbol);
       try {
         _recomputeAndRender(cfg);
+        _chartsUpdateEarliestLoaded4h();
         _chartsLogSymbolLoadStep(symbol, 'refresh parse/build', 'succeeded');
         // Deliberately no _chartsResetPriceScaleAutoscale() call here —
         // see this function's own top comment ("Manual vertical scaling
