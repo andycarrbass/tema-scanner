@@ -2195,18 +2195,21 @@ body.charts-analysis-mode .charts-controls-row{padding:2px 0 4px 0;}
         <label>Symbol
           <select id="chartsSymbolSelect" style="margin-left:4px;" onchange="chartsPhase0OnSymbolChange()"></select>
         </label>
-        <label>UT KV
-          <input id="chartsUtKvInput" type="number" min="1" max="20" style="width:52px;margin-left:4px;">
-        </label>
-        <label>UT ATR
-          <input id="chartsUtAtrInput" type="number" min="1" max="50" style="width:52px;margin-left:4px;">
-        </label>
         <label>MA200 length
           <input id="chartsMa200Input" type="number" min="10" max="500" style="width:64px;margin-left:4px;">
         </label>
         <label>MA200 smoothing
           <input id="chartsMa200SmoothInput" type="number" min="1" max="50" style="width:52px;margin-left:4px;">
         </label>
+        <!-- TDAS CHARTS — Control-bar reorganisation (2026-09-04, owner-
+             authorised). New series-visibility-only toggles — hide/show
+             the ALREADY-rendered MA200/SMA80/candle series via each
+             series' own applyOptions({visible}); no recompute, no
+             refetch, no research-config change, no viewport/autoscale
+             reset. Default ON for all three (existing behaviour
+             unchanged). -->
+        <label><input type="checkbox" id="chartsMa200VisibleToggle" checked onchange="chartsPhase0ToggleMa200Visible()" style="margin-right:3px;" title="Show/hide the MA200 line only — display only, no recalculation">MA200</label>
+        <label><input type="checkbox" id="chartsSma80VisibleToggle" checked onchange="chartsPhase0ToggleSma80Visible()" style="margin-right:3px;" title="Show/hide the SMA80 line only — display only, no recalculation">SMA80</label>
         <!-- TDAS CHARTS — Daily 200MA overlay (2026-09-02, owner
              architecture decision). Presentation-only trader toggle,
              default OFF, session-local (no persistence). Belongs with the
@@ -2215,11 +2218,15 @@ body.charts-analysis-mode .charts-controls-row{padding:2px 0 4px 0;}
              direction — chartsPhase0ToggleDailyMa200() itself reads the
              checkbox's own .checked state. -->
         <label><input type="checkbox" id="chartsDailyMa200Toggle" onchange="chartsPhase0ToggleDailyMa200()" style="margin-right:3px;" title="1D MA200 — canonical Daily 200MA (raw Binance close, same source as Scanner/Watch), dashed, mapped onto the 4H timeline with no look-ahead">Daily 200MA</label>
-        <!-- TDAS CHARTS — Clean Chart (2026-09-02, Task 4 item 3).
-             Presentation-only trader toggle, default OFF, session-local
-             per the same existing config mechanism every other Charts
-             display toggle already uses. -->
-        <label><input type="checkbox" id="chartsCleanChartToggle" onchange="chartsPhase0ToggleCleanChart()" style="margin-right:3px;" title="Hide 4H and 1H Buy/Sell markers only — HA candles, SMA80, MA200, tooltip and toolbar remain fully functional; underlying marker data is preserved, not recalculated">Clean Chart</label>
+        <!-- TDAS CHARTS — SMA80/MA200 Structure Cloud (2026-09-04, owner-
+             authorised). Presentation-only trader toggle, default OFF,
+             session-local — same mechanism as Clean Chart/Daily 200MA
+             immediately above. Independent of Clean Chart (owner
+             doctrine: Clean Chart hides UT/event markers only; the
+             cloud is controlled separately and remains visible when
+             Clean Chart is ON). -->
+        <label><input type="checkbox" id="chartsStructureCloudToggle" onchange="chartsPhase0ToggleStructureCloud()" style="margin-right:3px;" title="SMA80/MA200 structure cloud — muted fill between the two 4H HA moving averages only (green when SMA80 &gt; MA200, red when below); presentation only, not regime authority">Structure Cloud</label>
+        <label><input type="checkbox" id="chartsCandlesVisibleToggle" checked onchange="chartsPhase0ToggleCandlesVisible()" style="margin-right:3px;" title="Show/hide the candlestick series only — display only, no recalculation">Candles</label>
         <!-- TDAS CHARTS — regime shading hidden for V1 (2026-09-02):
              owner has visually rejected the current shading; both
              genuine defects found during the diagnostic pass (ms->sec
@@ -2230,30 +2237,75 @@ body.charts-analysis-mode .charts-controls-row{padding:2px 0 4px 0;}
              reverted, mirroring the exact prior detachment pattern.
              `checked` was already absent (default OFF, unchanged). -->
         <label style="display:none;"><input type="checkbox" id="chartsRegimeShadingToggle" onchange="chartsPhase0ToggleRegimeShading()" style="margin-right:3px;" title="4H HA close vs 4H MA200 regime shading — presentation only, green above MA200 / red below, restrained opacity">Regime shading</label>
-        <button class="jf-btn" onclick="chartsPhase0ApplyResearchConfig()" title="Applies UT KV / UT ATR / MA200 length / MA200 smoothing to the current symbol">Apply indicator settings</button>
+        <!-- TDAS CHARTS — Clean Chart (2026-09-02, Task 4 item 3).
+             Presentation-only trader toggle, default OFF, session-local
+             per the same existing config mechanism every other Charts
+             display toggle already uses. Control-bar reorganisation
+             (2026-09-04): must remain the FINAL display option in this
+             row, per owner instruction. -->
+        <label><input type="checkbox" id="chartsCleanChartToggle" onchange="chartsPhase0ToggleCleanChart()" style="margin-right:3px;" title="Hide 4H and 1H Buy/Sell markers only — HA candles, SMA80, MA200, tooltip and toolbar remain fully functional; underlying marker data is preserved, not recalculated">Clean Chart</label>
+        <button class="jf-btn" onclick="chartsPhase0ApplyResearchConfig()" title="Applies MA200 length / MA200 smoothing to the current symbol">Apply indicator settings</button>
         <button class="jf-btn" onclick="chartsPhase0ResetResearchConfig()">Reset to canonical</button>
         <span id="chartsResearchModeBadge" style="font-size:11px;color:var(--text3);"></span>
       </div>
-      <!-- TDAS CHARTS — 1H UT tactical overlay controls (owner item 5,
-           2026-08-31). Independent from the 4H research row above — Apply
-           here (chartsPhase0ApplyOneHSettings()) never touches 4H UT/
-           SMA80/MA200/the canonical 1H engine/Scanner/Watch/Setups/any
-           persisted production authority (see that function's own
-           comment). Buy/Sell checkboxes are presentation filters only —
-           both directions are always calculated regardless of which are
-           checked. -->
-      <div id="chartsOneHControls" class="charts-controls-row" style="border-top:1px solid var(--border2,rgba(255,255,255,0.08));padding-top:6px;">
-        <span style="font-size:11px;color:var(--text3);font-weight:600;">1H UT</span>
-        <label><input type="checkbox" id="chartsOneHShowOverlay" checked style="margin-right:3px;">Show overlay</label>
-        <label><input type="checkbox" id="chartsOneHShowBuy" checked style="margin-right:3px;">Buy signals</label>
-        <label><input type="checkbox" id="chartsOneHShowSell" checked style="margin-right:3px;">Sell signals</label>
-        <label>KV
-          <input id="chartsOneHKvInput" type="number" min="1" max="20" style="width:44px;margin-left:4px;">
-        </label>
-        <label>ATR
-          <input id="chartsOneHAtrInput" type="number" min="1" max="50" style="width:44px;margin-left:4px;">
-        </label>
-        <button class="jf-btn" onclick="chartsPhase0ApplyOneHSettings()" title="Applies 1H UT KV/ATR and Buy/Sell/overlay visibility — never affects the 4H chart">Apply</button>
+      <!-- TDAS CHARTS — Control-bar reorganisation (2026-09-04, owner-
+           authorised). 4H UT management moved out of the top research row
+           into its own independent block here, to the LEFT of the
+           existing 1H UT block, with the SAME visual grammar (Show
+           overlay/Buy/Sell/KV/ATR/Apply). 4H and 1H controls remain fully
+           independent — chartsPhase0Apply4hUtSettings() never touches 1H
+           fields, chartsPhase0ApplyOneHSettings() never touches 4H
+           fields (unchanged, see that function's own comment).
+           UT control-row alignment tweak (2026-09-04, owner-authorised,
+           layout-only): the 4H and 1H blocks now share ONE horizontal row
+           — #chartsFourHControls and #chartsOneHControls are unchanged
+           (same ids, same children, same onchange handlers, same
+           defaults), only their CONTAINER changed: both are now nested
+           flex groups inside a new shared #chartsUtControlsRow wrapper
+           (which carries the row-level border/padding previously
+           duplicated on each block) instead of being two separate
+           full-width "charts-controls-row" divs stacked vertically. No
+           id was removed, renamed, or had its onchange/value semantics
+           touched — every existing getElementById() reference in JS
+           still resolves to the exact same element. flex-wrap on both
+           the wrapper and each inner group means both blocks share one
+           row at normal desktop/laptop widths and wrap only when
+           genuinely too narrow. -->
+      <div id="chartsUtControlsRow" class="charts-controls-row" style="border-top:1px solid var(--border2,rgba(255,255,255,0.08));padding-top:6px;align-items:flex-start;">
+        <div id="chartsFourHControls" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <span style="font-size:11px;color:var(--text3);font-weight:600;">4H UT</span>
+          <label><input type="checkbox" id="chartsFourHShowOverlay" checked style="margin-right:3px;">Show overlay</label>
+          <label><input type="checkbox" id="chartsFourHShowBuy" checked style="margin-right:3px;">Buy signals</label>
+          <label><input type="checkbox" id="chartsFourHShowSell" checked style="margin-right:3px;">Sell signals</label>
+          <label>KV
+            <input id="chartsUtKvInput" type="number" min="1" max="20" style="width:44px;margin-left:4px;">
+          </label>
+          <label>ATR
+            <input id="chartsUtAtrInput" type="number" min="1" max="50" style="width:44px;margin-left:4px;">
+          </label>
+          <button class="jf-btn" onclick="chartsPhase0Apply4hUtSettings()" title="Applies 4H UT KV/ATR and Buy/Sell/overlay visibility — never affects the 1H overlay or MA200/SMA80 length/smoothing">Apply</button>
+        </div>
+        <!-- TDAS CHARTS — 1H UT tactical overlay controls (owner item 5,
+             2026-08-31). Independent from the 4H block to its left — Apply
+             here (chartsPhase0ApplyOneHSettings()) never touches 4H UT/
+             SMA80/MA200/the canonical 1H engine/Scanner/Watch/Setups/any
+             persisted production authority (see that function's own
+             comment). Buy/Sell checkboxes are presentation filters only —
+             both directions are always calculated regardless of which are
+             checked. -->
+        <div id="chartsOneHControls" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding-left:14px;border-left:1px solid var(--border2,rgba(255,255,255,0.08));">
+          <span style="font-size:11px;color:var(--text3);font-weight:600;">1H UT</span>
+          <label><input type="checkbox" id="chartsOneHShowOverlay" checked style="margin-right:3px;">Show overlay</label>
+          <label><input type="checkbox" id="chartsOneHShowBuy" checked style="margin-right:3px;">Buy signals</label>
+          <label><input type="checkbox" id="chartsOneHShowSell" checked style="margin-right:3px;">Sell signals</label>
+          <label>KV
+            <input id="chartsOneHKvInput" type="number" min="1" max="20" style="width:44px;margin-left:4px;">
+          </label>
+          <label>ATR
+            <input id="chartsOneHAtrInput" type="number" min="1" max="50" style="width:44px;margin-left:4px;">
+          </label>
+          <button class="jf-btn" onclick="chartsPhase0ApplyOneHSettings()" title="Applies 1H UT KV/ATR and Buy/Sell/overlay visibility — never affects the 4H chart">Apply</button>
+        </div>
       </div>
     </div>
     <div id="chartsStage" class="charts-stage">
@@ -2692,7 +2744,7 @@ const DEFAULT_PAIRS=['BTCUSDT','ETHUSDT','SOLUSDT','LINKUSDT','BNBUSDT','TAOUSDT
 // never existed — added. No TSE/Evaluation/Advisory/Trade-Ready/Scanner/
 // Watch/Setups/HTF/CHOP/200MA/RSI-ADX/protection-ladder-sequencing
 // change. Supersedes V5.4.1A4.
-const APP_BUILD = 'V5.4.6';
+const APP_BUILD = 'V5.4.7';
 (function(){
   const _badgeEl = document.getElementById('appBuildBadge');
   if(_badgeEl) _badgeEl.textContent = APP_BUILD;
@@ -20358,6 +20410,16 @@ function defaultResearchChartConfig(symbol) {
     oneHShowOverlay: true,
     oneHShowBuy: true,
     oneHShowSell: true,
+    // TDAS CHARTS — Control-bar reorganisation (2026-09-04, owner-
+    // authorised). 4H UT display filters, mirroring the 1H fields
+    // immediately above exactly (same semantics, same persisted
+    // mechanism) rather than inventing a second behaviour. Default true
+    // for all three — preserves current 4H event/calculation and display
+    // behaviour unchanged (4H UT labels were always shown before this
+    // task introduced the ability to filter them).
+    fourHShowOverlay: true,
+    fourHShowBuy: true,
+    fourHShowSell: true,
     // TDAS CHARTS — 4H MA200 regime shading (2026-08-31): presentation-only
     // toggle, persisted through the SAME existing mechanism as every other
     // Charts research/presentation setting — no new storage facility.
@@ -20991,42 +21053,82 @@ async function calcPair(symbol,tf){
   const closes=raw.map(k=>k.close);
   const highs=raw.map(k=>k.high);
   const lows=raw.map(k=>k.low);
+  // TDAS — Canonical Closed-Candle Authority Correction (2026-09-04,
+  // owner-authorised, localhost dev on V5.4.6 baseline). MOVED UP from
+  // this function's UT Bot section (previously ~300 lines below,
+  // immediately before utSourceCandles) — this is NOT a new calculation,
+  // NOT a new array, and NOT a behaviour change to what these arrays
+  // themselves contain. closedHighs/closedLows/closedCloses/closedTimes/
+  // closedCandlesNormal were already computed, byte-identically
+  // (raw.slice(0,-1) / highs.slice(0,-1) / lows.slice(0,-1) /
+  // closes.slice(0,-1)), for UT Bot's own consumption. The audit found
+  // they were defined too late to be reused by MA200/SMA80/SMA135/RSI/
+  // ADX/TEMA17/TEMA92/ATR above them in the function, which is exactly
+  // why those eight independently built their own (uncorrected, still
+  // includes-the-forming-bar) series from raw closes/highs/lows instead.
+  // Moving the definitions earlier — with no change to their own
+  // formulas — lets every affected calculation below reuse the SAME
+  // closed-only series UT Bot already trusted, closing the authority
+  // boundary at its single earliest point rather than patching each
+  // indicator separately. UT Bot's own code, later in this function, is
+  // completely unchanged — it references these same variable names and
+  // gets the exact same values it always did.
+  const closedHighs=highs.slice(0,-1);
+  const closedLows=lows.slice(0,-1);
+  const closedCloses=closes.slice(0,-1);
+  const closedTimes=raw.slice(0,-1).map(k=>k.time);
+  const closedCandlesNormal = raw.slice(0,-1);
   const vols=raw.map(k=>k.volume);
   const lastVol=vols[vols.length-1];
   const avVol=avgVol(vols,20);
   const volRatio=avVol!==null&&avVol>0?lastVol/avVol:null;
-  const t17a=tema(closes,17),t92a=tema(closes,92);
-  const ma200=sma(closes,200);
+  const t17a=tema(closedCloses,17),t92a=tema(closedCloses,92);
+  const ma200=sma(closedCloses,200);
   // TDAS V4.9 T1 — prior closed-candle SMA200 (one bar earlier), reusing
-  // the SAME already-closed candle series (closes[]) ma200 itself uses.
-  // No new fetch, no new indicator calculation — same technique already
-  // established by prevT17/prevT92 below (shift the same series by one
-  // bar and recompute). null whenever there are not yet 201 closed bars
-  // (sma() itself returns null for insufficient data).
-  const prevMa200=sma(closes.slice(0,-1),200);
+  // the SAME already-closed candle series (closedCloses[]) ma200 itself
+  // uses. No new fetch, no new indicator calculation — same technique
+  // already established by prevT17/prevT92 below (shift the same series
+  // by one bar and recompute). null whenever there are not yet 201
+  // closed bars (sma() itself returns null for insufficient data).
+  const prevMa200=sma(closedCloses.slice(0,-1),200);
   // TDAS V4.9.2 T3 — 200MA chop detection (setup timeframe). Reuses the
-  // SAME already-closed candle series (closes[]) ma200/prevMa200 already
-  // use. No new fetch, no new indicator calculation.
-  const ma200ChopState=_ma200ChopFromCloses(closes);
-  // Use live ticker price for display and P&L — Bitunix only returns closed candles
-  // so closes[last] is always one candle behind the current live price.
-  // All indicator calculations still use the closed candle series (closes array).
-  const lastClose=closes[closes.length-1];
+  // SAME already-closed candle series (closedCloses[]) ma200/prevMa200
+  // already use. No new fetch, no new indicator calculation.
+  const ma200ChopState=_ma200ChopFromCloses(closedCloses);
+  // Use live ticker price for display and P&L — Bitunix only returns closed candles.
+  // TDAS — Canonical Closed-Candle Authority Correction (2026-09-04):
+  // lastClose is now genuinely the last CLOSED base-timeframe candle's
+  // close (closedCloses[], not closes[]) — this corrects a pre-existing
+  // intent-vs-implementation mismatch: the surrounding code already
+  // documented lastClose as "the genuinely closed candle's own price"
+  // (see currentBarAtrDistance below) and aboveMA_closed's own name
+  // already asserted closed-candle semantics; the implementation simply
+  // hadn't matched that intent until now. price's live-ticker-with-
+  // lastClose-fallback behaviour is unchanged in shape — only the
+  // fallback value itself is now a genuinely confirmed price instead of
+  // the still-updating forming candle's close. All indicator calculations
+  // above and below use the closed candle series (closedCloses/
+  // closedHighs/closedLows), never the forming-inclusive closes/highs/lows.
+  const lastClose=closedCloses[closedCloses.length-1];
   const price=tickerMap[symbol]||lastClose;
   // Timeframe-specific SMAs matching TradingView chart setup
-  const sma80=sma(closes,80);
-  const sma135=sma(closes,135);
+  const sma80=sma(closedCloses,80);
+  const sma135=sma(closedCloses,135);
   const trendSMA = tf==='4h'||tf==='1d' ? sma80 : sma135;
   const trendSMALabel = tf==='4h'||tf==='1d' ? '80 SMA' : '135 SMA';
   const aboveTrendSMA = trendSMA !== null ? price > trendSMA : null;
 
   // ── EMA 50 ────────────────────────────────────────────────────────────────
+  // Not part of the audited/authorised closed-candle correction set —
+  // left on the existing closes[] series unchanged, per scope lock.
   const ema50arr = ema(closes, 50);
   const ema50 = ema50arr&&ema50arr.length>=50 ? ema50arr[ema50arr.length-1] : null;
   const aboveEma50 = ema50 !== null ? price > ema50 : null;
   const ema50Dist = ema50 !== null ? (price - ema50) / ema50 * 100 : null;
 
   // ── Fibonacci — 50-bar swing ──────────────────────────────────────────────
+  // Not part of the audited/authorised closed-candle correction set —
+  // left on the existing highs[]/lows[] series unchanged, per scope lock.
   const lookback50 = Math.min(50, closes.length);
   const recentH50 = highs.slice(-lookback50);
   const recentL50 = lows.slice(-lookback50);
@@ -21037,8 +21139,11 @@ async function calcPair(symbol,tf){
   let fib1618=0, fib2618=0, fibRetrace618=0;
 
   const t17=t17a[t17a.length-1],t92=t92a[t92a.length-1];
-  // DEBUG_MODE: compare old SMA RSI vs new Wilder RSI — remove after validation
-  const rsi=calcRSI(closes);
+  // DEBUG_MODE: compare old SMA RSI vs new Wilder RSI — remove after validation.
+  // Diagnostic-only block, not part of the authorised correction set —
+  // deliberately left reading closes[] unchanged (DEBUG_MODE && DIAG.rsiAudit
+  // gated; never runs in normal production evaluation).
+  const rsi=calcRSI(closedCloses);
   if(DEBUG_MODE && DIAG.rsiAudit){
     // Old SMA RSI (last 14 bars only)
     const _smaRsi=(()=>{
@@ -21053,7 +21158,7 @@ async function calcPair(symbol,tf){
       delta:     (_smaRsi!=null&&rsi!=null)?parseFloat((_smaRsi-rsi).toFixed(2)):null,
     });
   }
-  const atr=calcATR(highs,lows,closes,14);
+  const atr=calcATR(closedHighs,closedLows,closedCloses,14);
   // TDAS V4.9.7 — closed-candle execution-extension inputs (current +
   // previous closed bar). Reuses the SAME already-closed candle series
   // (highs/lows/closes) atr/trendSMA/rsi themselves already use — no new
@@ -21073,8 +21178,20 @@ async function calcPair(symbol,tf){
   // confirmed-candle value, never a third parallel computation.
   const currentBarAtrDistance = (atr != null && atr > 0 && trendSMA != null) ? Math.abs(lastClose - trendSMA) / atr : null;
   const _prevClosedPrice = closes.length >= 2 ? closes[closes.length-2] : null;
-  const _prevAtr = (highs.length >= 2 && lows.length >= 2 && closes.length >= 2) ? calcATR(highs.slice(0,-1), lows.slice(0,-1), closes.slice(0,-1), 14) : null;
-  const _prevTrendSMA = (tf==='4h'||tf==='1d') ? sma(closes.slice(0,-1), 80) : sma(closes.slice(0,-1), 135);
+  const _prevAtr = (closedHighs.length >= 2 && closedLows.length >= 2 && closedCloses.length >= 2) ? calcATR(closedHighs.slice(0,-1), closedLows.slice(0,-1), closedCloses.slice(0,-1), 14) : null;
+  // TDAS — Canonical Closed-Candle Authority Correction, remediation
+  // (2026-09-05, owner-authorised release-gate fix): _prevTrendSMA was
+  // the one field the original correction pass missed — it still read
+  // closes.slice(0,-1) (the raw, forming-inclusive array) while its
+  // sibling _prevAtr, immediately above, was already correctly fixed to
+  // closedCloses.slice(0,-1). This mixed one closed-safe value with one
+  // still-contaminated value inside the SAME previousBarAtrDistance
+  // calculation below — a genuine inconsistency surfaced by the V5.4.7
+  // release-gate FULL run. Corrected to the same closedCloses-based
+  // pattern _prevAtr already uses. MA periods (80/135), the sma()
+  // formula, and the surrounding extension-distance logic are completely
+  // unchanged — this is a time-authority correction only.
+  const _prevTrendSMA = (tf==='4h'||tf==='1d') ? sma(closedCloses.slice(0,-1), 80) : sma(closedCloses.slice(0,-1), 135);
   const previousBarAtrDistance = (_prevAtr != null && _prevAtr > 0 && _prevTrendSMA != null && _prevClosedPrice != null) ? Math.abs(_prevClosedPrice - _prevTrendSMA) / _prevAtr : null;
   const aboveMA=ma200!==null?price>ma200:null;
   const maDist=ma200!==null?(price-ma200)/ma200*100:null;
@@ -21205,7 +21322,7 @@ async function calcPair(symbol,tf){
   // task. Factored out so the exact same function can also compute the
   // adjacent/HTF-timeframe ADX below, with no second, independently-
   // written ADX implementation anywhere in this codebase.
-  const _adxCalc=calcADXWithHistory(highs,lows,closes,ADX_PERIOD,ADX_SLOPE_LOOKBACK_BARS);
+  const _adxCalc=calcADXWithHistory(closedHighs,closedLows,closedCloses,ADX_PERIOD,ADX_SLOPE_LOOKBACK_BARS);
   const adx=_adxCalc.value;
   const adxPrev3=_adxCalc.prevValue;
   const adxTrending=adx>=25;
@@ -21285,18 +21402,12 @@ async function calcPair(symbol,tf){
   // UT_BOT_SOURCE_MODE='heikin_ashi') because the validated TradingView UT
   // Bot chart uses HA candles as a noise filter. ALL OTHER indicators below
   // (TEMA, RSI, ADX, SMA200, regime) continue to use normal exchange OHLC —
-  // closedHighs/closedLows/closedCloses are NOT touched by this and remain
-  // the normal-candle series consumed elsewhere in this function.
-  const closedHighs=highs.slice(0,-1);
-  const closedLows=lows.slice(0,-1);
-  const closedCloses=closes.slice(0,-1);
-  const closedTimes=raw.slice(0,-1).map(k=>k.time);
-
-  // UT-Bot-only candle source — normal or Heikin Ashi, per UT_BOT_SOURCE_MODE.
-  // closedCandlesNormal carries time/open/high/low/close/volume for the
-  // transform; closedHighs/Lows/Closes (above) remain the normal series used
-  // by every other indicator in this function and are never reassigned.
-  const closedCandlesNormal = raw.slice(0,-1);
+  // closedHighs/closedLows/closedCloses (defined near the top of this
+  // function alongside closes/highs/lows — see the Canonical Closed-Candle
+  // Authority Correction comment there) are NOT touched by this and are
+  // the SAME normal-candle series MA200/SMA80/SMA135/RSI/ADX/TEMA17/
+  // TEMA92/ATR above already consume; UT Bot below simply reuses
+  // closedCandlesNormal, also already defined up there.
   const utSourceCandles = UT_BOT_SOURCE_MODE === 'heikin_ashi'
     ? buildHeikinAshiCandles(closedCandlesNormal)
     : closedCandlesNormal;
@@ -35658,6 +35769,25 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     // genuinely outside that object's contract entirely. No new
     // persistence subsystem introduced.
     cleanChartEnabled: false,
+    // TDAS CHARTS — SMA80/MA200 Structure Cloud (2026-09-04, owner-
+    // authorised). Display/session state only — same contract as
+    // cleanChartEnabled immediately above: never in canonicalStrategyConfig,
+    // never in researchChartConfig's persisted identity, never written to
+    // localStorage, structurally unreachable from Apply/Reset. Default OFF.
+    structureCloudEnabled: false,
+    structureCloudPrimitive: null,
+    structureCloudSegments: null, // retained for inspection/testing — calculation is not discarded by the toggle
+    // TDAS CHARTS — Control-bar reorganisation (2026-09-04, owner-
+    // authorised). Pure series-visibility toggles — same contract as
+    // cleanChartEnabled/structureCloudEnabled immediately above: never in
+    // canonicalStrategyConfig, never in researchChartConfig's persisted
+    // identity, never written to localStorage. Applied via each series'
+    // OWN applyOptions({visible}) — no recompute, no refetch, no new
+    // series creation, no viewport/autoscale change. Default ON for all
+    // three (existing visible-by-default behaviour unchanged).
+    ma200Visible: true,
+    sma80Visible: true,
+    candlesVisible: true,
     resizeObserver: null,
     windowResizeHandler: null,
     escKeyHandler: null,
@@ -35847,6 +35977,11 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     const atr = document.getElementById('chartsUtAtrInput'); if (atr) atr.value = cfg.utAtrPeriod;
     const ma200 = document.getElementById('chartsMa200Input'); if (ma200) ma200.value = cfg.ma200Length;
     const ma200s = document.getElementById('chartsMa200SmoothInput'); if (ma200s) ma200s.value = cfg.ma200SmoothingLength;
+    // TDAS CHARTS — Control-bar reorganisation (2026-09-04): 4H UT
+    // display filters, same population pattern as the 1H fields below.
+    const fourHOverlay = document.getElementById('chartsFourHShowOverlay'); if (fourHOverlay) fourHOverlay.checked = !!cfg.fourHShowOverlay;
+    const fourHBuy = document.getElementById('chartsFourHShowBuy'); if (fourHBuy) fourHBuy.checked = !!cfg.fourHShowBuy;
+    const fourHSell = document.getElementById('chartsFourHShowSell'); if (fourHSell) fourHSell.checked = !!cfg.fourHShowSell;
     // TDAS CHARTS — 1H UT tactical overlay controls (2026-08-31): reflect
     // the current config's 1H fields too, same pattern as the 4H inputs
     // above — this function is the single place any control's displayed
@@ -35861,6 +35996,13 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     // as every other control above.
     const regimeToggle = document.getElementById('chartsRegimeShadingToggle'); if (regimeToggle) regimeToggle.checked = !!cfg.regimeShadingEnabled;
     const cleanChartToggle = document.getElementById('chartsCleanChartToggle'); if (cleanChartToggle) cleanChartToggle.checked = !!_chartsState.cleanChartEnabled; // session state, not part of cfg — see _chartsState's own comment
+    const structureCloudToggle = document.getElementById('chartsStructureCloudToggle'); if (structureCloudToggle) structureCloudToggle.checked = !!_chartsState.structureCloudEnabled; // session state, not part of cfg — same pattern as cleanChartToggle immediately above
+    // TDAS CHARTS — Control-bar reorganisation (2026-09-04): new
+    // series-visibility toggles, same session-state pattern (not part of
+    // cfg) as cleanChartToggle/structureCloudToggle immediately above.
+    const ma200VisibleToggle = document.getElementById('chartsMa200VisibleToggle'); if (ma200VisibleToggle) ma200VisibleToggle.checked = !!_chartsState.ma200Visible;
+    const sma80VisibleToggle = document.getElementById('chartsSma80VisibleToggle'); if (sma80VisibleToggle) sma80VisibleToggle.checked = !!_chartsState.sma80Visible;
+    const candlesVisibleToggle = document.getElementById('chartsCandlesVisibleToggle'); if (candlesVisibleToggle) candlesVisibleToggle.checked = !!_chartsState.candlesVisible;
     const badge = document.getElementById('chartsResearchModeBadge');
     const isCanonical = cfg.utKeyValue === UT_BOT_KEY_VALUE && cfg.utAtrPeriod === UT_BOT_ATR_PERIOD
       && cfg.ma200Length === 200 && cfg.ma200SmoothingLength === 5;
@@ -36747,6 +36889,19 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     // for; neither primitive's setData/paneViews call touches the other.
     _chartsState.oneH.markersPrimitive = _makeOneHMarkerPrimitive();
     _chartsState.candleSeries.attachPrimitive(_chartsState.oneH.markersPrimitive);
+    // TDAS CHARTS — SMA80/MA200 Structure Cloud (2026-09-04, owner-
+    // authorised). A DIFFERENT feature from the dormant regime shading
+    // above — fills only the vertical area between the SMA80 and MA200
+    // lines (never the whole pane), and is attached (not left detached
+    // like the dormant shading). Attached LAST/appended (zOrder:'bottom'
+    // controls actual paint order independently of attachment sequence —
+    // see the embedded library's own compositor tier handling — so this
+    // ordering choice only avoids shifting the existing primitives'
+    // array indices for any code/tests that positionally reference them).
+    // See _makeStructureCloudPrimitive()'s own header comment for the
+    // full geometry/coordinate-discipline trace.
+    _chartsState.structureCloudPrimitive = _makeStructureCloudPrimitive();
+    _chartsState.candleSeries.attachPrimitive(_chartsState.structureCloudPrimitive);
     // TDAS CHARTS PHASE 0 — candle inspector (owner item D): tracks the
     // latest crosshair position/time so a later 'i' keypress can resolve
     // "the candle currently under the pointer" without polling. Does not
@@ -36916,8 +37071,16 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     // anchored at the bar's HA high (label above, pointer down) — per
     // owner item C.
     try {
+      // TDAS CHARTS — Control-bar reorganisation (2026-09-04, owner-
+      // authorised): 4H display filters, same "always calculate, only
+      // filter what's rendered" pattern _chartsBuildOneHMarkers() already
+      // uses for 1H. cfg.fourHShowBuy/fourHShowSell filter which
+      // directions are included; cfg.fourHShowOverlay (combined with the
+      // pre-existing cleanChartEnabled toggle) gates the whole overlay.
+      const cfg4h = loadResearchChartConfig(_chartsState.symbol);
       const utHistory = (s.ut && Array.isArray(s.ut.history)) ? s.ut.history : [];
       const labels = utHistory.filter(function(ev){ return ev && (ev.sig === 'long' || ev.sig === 'short') && ev._t != null; })
+        .filter(function(ev){ return ev.sig === 'long' ? cfg4h.fourHShowBuy : cfg4h.fourHShowSell; })
         .map(function(ev){
           const bar = s.haCandles[ev.bar];
           const isBuy = ev.sig === 'long';
@@ -36940,8 +37103,11 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
         // segments : [])). Reads _chartsState.cleanChartEnabled directly
         // — a session-state field, NOT loadResearchChartConfig()'s
         // persisted object — so this line can never be affected by
-        // Apply/Reset-to-canonical.
-        _chartsState.utMarkersPrimitive.setLabels(_chartsState.cleanChartEnabled ? [] : labels);
+        // Apply/Reset-to-canonical. cfg4h.fourHShowOverlay is the new
+        // (2026-09-04) independent overlay gate, combined here — either
+        // one hides the overlay, matching 1H's own
+        // oneHShowOverlay-combined-with-Clean-Chart precedent.
+        _chartsState.utMarkersPrimitive.setLabels((_chartsState.cleanChartEnabled || !cfg4h.fourHShowOverlay) ? [] : labels);
       }
     } catch (e) { /* non-fatal — chart still renders without labels */ }
 
@@ -36949,6 +37115,11 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     // redrawn on every 4H render, from the SAME s.haCandles/s.ma200Base
     // this render call already produced — no separate calculation pass.
     _chartsRenderRegimeShading();
+
+    // TDAS CHARTS — SMA80/MA200 Structure Cloud (2026-09-04): recomputed
+    // and redrawn on every 4H render, from the SAME s.haCandles/s.sma/
+    // s.ma200Base this render call already produced.
+    _chartsRenderStructureCloud();
 
     const attrib = document.getElementById('chartsAttribution');
     // TDAS CHARTS PHASE 0 — owner instruction (2026-08-31 visual styling
@@ -38289,6 +38460,197 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     _chartsState.regimeShadingPrimitive.setSegments(cfg.regimeShadingEnabled ? segments : []);
   }
 
+  // ╔════════════════════════════════════════════════════════════════════╗
+  // ║  TDAS CHARTS — SMA80/MA200 Structure Cloud (2026-09-04, owner-       ║
+  // ║  authorised). A DIFFERENT feature from the dormant regime shading    ║
+  // ║  above: fills ONLY the vertical area between the SMA80 and MA200     ║
+  // ║  lines (never the whole pane/background) — the prior full-pane      ║
+  // ║  shading was visually rejected; this has different geometry and     ║
+  // ║  product purpose per explicit owner instruction, and is genuinely   ║
+  // ║  attached (not left detached). Reuses the EXISTING s.haCandles/     ║
+  // ║  s.sma/s.ma200Base output of buildChartIndicatorSeries() — no       ║
+  // ║  second MA calculation, no new fetch. Because those arrays are      ║
+  // ║  themselves already closed-candle-only by construction (the SAME    ║
+  // ║  closed-candle authority every other Charts indicator already       ║
+  // ║  relies on), the cloud inherits forming-candle immunity for free:   ║
+  // ║  no separate guard was needed here.                                 ║
+  // ║                                                                      ║
+  // ║  Colour/opacity: reuses the SAME live CHARTS_THEME.utBull/utBear     ║
+  // ║  tokens (== Scanner LONG/SHORT CSS) every other Charts element       ║
+  // ║  already uses — no new colour palette introduced. Alpha matches the ║
+  // ║  owner-supplied Pine reference (color.new(color.green/red, 90) —    ║
+  // ║  90% transparency = 10% opacity).                                   ║
+  // ║                                                                      ║
+  // ║  Crossover handling: where SMA80-MA200 changes sign between two      ║
+  // ║  adjacent CLOSED 4H bars, the segment is split at the exact linear   ║
+  // ║  intersection (f = diff0/(diff0-diff1)) rather than switching colour ║
+  // ║  abruptly at the next bar boundary — per owner instruction §8.       ║
+  // ║                                                                      ║
+  // ║  Coordinate discipline (owner §9 — source-traced, not guessed):      ║
+  // ║  the crossover point's TIME is a genuine fraction between two real   ║
+  // ║  bar timestamps, so it CANNOT be resolved via chart.timeScale()      ║
+  // ║  .timeToCoordinate() (exact-match-only — see the 1H marker parity    ║
+  // ║  audit) nor via a fractional logical index passed to                 ║
+  // ║  logicalToCoordinate() (proven, in the same audit's follow-up fix,   ║
+  // ║  to silently collapse to the coordinate-space origin for any         ║
+  // ║  non-integer value — LWC's own jt() has a hard `"number"==typeof     ║
+  // ║  t&&t%1==0` integer gate). This primitive therefore reuses the       ║
+  // ║  ALREADY-PROVEN _chartsResolveFractionalXCoordinate() — the exact    ║
+  // ║  same real-bar-bracketing, pixel-space-only interpolation that       ║
+  // ║  fixed that earlier defect — for EVERY x-coordinate here (both       ║
+  // ║  real-bar times, via its own exact-match fast path, and the          ║
+  // ║  interpolated crossover time). No fractional logical-index call      ║
+  // ║  exists anywhere in this feature. Y-coordinates use the ordinary,    ║
+  // ║  unrestricted series.priceToCoordinate() (a continuous price scale   ║
+  // ║  API with no such integer constraint).                               ║
+  // ╚════════════════════════════════════════════════════════════════════╝
+
+  const CHARTS_STRUCTURE_CLOUD_ALPHA = 0.30; // TDAS CHARTS — opacity tuning pass (2026-09-04, owner-authorised): raised from 0.10 — the initial Pine-matched value was too subtle in real browser use. Visual-only change; no other Structure Cloud behaviour touched.
+
+  // Pure function — given the SAME parallel s.haCandles/s.sma/s.ma200Base
+  // arrays buildChartIndicatorSeries() already produced, returns one
+  // fill-quad descriptor per adjacent-bar pair (or two, when a genuine
+  // crossover splits it), each in TIME+PRICE space only — no pixel/
+  // coordinate work here at all (that belongs to the primitive's own
+  // paneViews(), per the coordinate-discipline note above).
+  function _chartsComputeStructureCloudSegments(haCandles, smaSeries, ma200Series){
+    if (!Array.isArray(haCandles) || !Array.isArray(smaSeries) || !Array.isArray(ma200Series)) return [];
+    const segments = [];
+    for (let i = 0; i < haCandles.length - 1; i++) {
+      const sma0 = smaSeries[i], sma1 = smaSeries[i + 1];
+      const ma0 = ma200Series[i], ma1 = ma200Series[i + 1];
+      // Owner §13 — no fill until BOTH SMA80 and MA200 are valid at a
+      // timestamp; no extrapolation through missing MA data. A gap at
+      // either endpoint of this bar-pair means this whole segment is
+      // skipped (never fabricated by carrying the last-known value forward).
+      if (sma0 == null || !isFinite(sma0) || ma0 == null || !isFinite(ma0)) continue;
+      if (sma1 == null || !isFinite(sma1) || ma1 == null || !isFinite(ma1)) continue;
+      const t0 = Math.floor(haCandles[i].time / 1000); // seconds — matches candleSeries.setData()'s own time domain
+      const t1 = Math.floor(haCandles[i + 1].time / 1000);
+      const diff0 = sma0 - ma0, diff1 = sma1 - ma1;
+      // Owner §8 exact-equality handling: both endpoints exactly equal ->
+      // no separation to show at all -> no fill, never a fabricated third
+      // colour state.
+      if (diff0 === 0 && diff1 === 0) continue;
+      if (diff0 !== 0 && diff1 !== 0 && (diff0 > 0) !== (diff1 > 0)) {
+        // Genuine sign change — split at the exact linear intersection.
+        const f = diff0 / (diff0 - diff1);
+        const crossTime = t0 + f * (t1 - t0);
+        const crossPrice = sma0 + f * (sma1 - sma0); // == ma0 + f*(ma1-ma0) at the true intersection, by construction
+        segments.push({ t0: t0, sma0: sma0, ma0: ma0, t1: crossTime, sma1: crossPrice, ma1: crossPrice, color: diff0 > 0 ? 'green' : 'red' });
+        segments.push({ t0: crossTime, sma0: crossPrice, ma0: crossPrice, t1: t1, sma1: sma1, ma1: ma1, color: diff1 > 0 ? 'green' : 'red' });
+      } else {
+        // Same sign throughout, or an exact-equality touch at exactly one
+        // endpoint (owner §8: "handle exact equality safely" — a single-
+        // point touch is not itself a sign change and must not spuriously
+        // split the segment) — one quad, coloured by whichever endpoint is
+        // non-zero.
+        const color = diff0 !== 0 ? (diff0 > 0 ? 'green' : 'red') : (diff1 > 0 ? 'green' : 'red');
+        segments.push({ t0: t0, sma0: sma0, ma0: ma0, t1: t1, sma1: sma1, ma1: ma1, color: color });
+      }
+    }
+    return segments;
+  }
+
+  // Same defensive shape as _regimeShadingRenderer() above — a no-op
+  // draw() (required, called unconditionally by the library's dispatch
+  // wrapper), the whole drawBackground() body wrapped so a cloud-rendering
+  // problem can only ever mean "no cloud this frame", never a broken chart.
+  function _structureCloudRenderer(quads){
+    return {
+      draw: function(){ try {} catch (e) {} },
+      drawBackground: function(target){
+        try {
+          target.useBitmapCoordinateSpace(function(scope){
+            try {
+              const ctx = scope && scope.context;
+              if (!ctx) return;
+              const hr = (scope.horizontalPixelRatio && isFinite(scope.horizontalPixelRatio) && scope.horizontalPixelRatio > 0) ? scope.horizontalPixelRatio : 1;
+              const vr = (scope.verticalPixelRatio && isFinite(scope.verticalPixelRatio) && scope.verticalPixelRatio > 0) ? scope.verticalPixelRatio : 1;
+              quads.forEach(function(q){
+                try {
+                  if (typeof q.x0 !== 'number' || !isFinite(q.x0)) return;
+                  if (typeof q.x1 !== 'number' || !isFinite(q.x1)) return;
+                  if (typeof q.ySma0 !== 'number' || !isFinite(q.ySma0)) return;
+                  if (typeof q.yMa0 !== 'number' || !isFinite(q.yMa0)) return;
+                  if (typeof q.ySma1 !== 'number' || !isFinite(q.ySma1)) return;
+                  if (typeof q.yMa1 !== 'number' || !isFinite(q.yMa1)) return;
+                  const rgb = _chartsRegimeColorToRgb(q.colorHex);
+                  ctx.fillStyle = 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ',' + CHARTS_STRUCTURE_CLOUD_ALPHA + ')';
+                  ctx.beginPath();
+                  ctx.moveTo(q.x0 * hr, q.ySma0 * vr);
+                  ctx.lineTo(q.x1 * hr, q.ySma1 * vr);
+                  ctx.lineTo(q.x1 * hr, q.yMa1 * vr);
+                  ctx.lineTo(q.x0 * hr, q.yMa0 * vr);
+                  ctx.closePath();
+                  ctx.fill();
+                } catch (quadErr) { /* one bad quad must never take down the rest */ }
+              });
+            } catch (innerErr) { /* never let a cloud bug escape the coordinate-space callback */ }
+          });
+        } catch (outerErr) { /* never let a cloud bug escape drawBackground() itself */ }
+      },
+    };
+  }
+
+  function _makeStructureCloudPrimitive(){
+    let _segments = [];
+    let _chart = null, _series = null, _requestUpdate = null;
+    return {
+      setSegments: function(segments){ _segments = segments || []; if (_requestUpdate) _requestUpdate(); },
+      attached: function(param){ _chart = (param && param.chart) || null; _series = (param && param.series) || null; _requestUpdate = (param && param.requestUpdate) || null; },
+      detached: function(){ _chart = null; _series = null; _requestUpdate = null; },
+      updateAllViews: function(){},
+      paneViews: function(){
+        try {
+          if (!_chart || !_series) return [];
+          const quads = [];
+          for (let i = 0; i < _segments.length; i++) {
+            const seg = _segments[i];
+            if (!seg || !seg.color) continue;
+            try {
+              // Owner §9 — the ONLY x-coordinate resolver used anywhere in
+              // this primitive; see this feature's own header comment for
+              // the full coordinate-discipline proof. Real bar times hit
+              // its exact-match fast path; the interpolated crossover time
+              // resolves via real-bar-bracketing pixel interpolation —
+              // never a fractional logical index.
+              const x0 = _chartsResolveFractionalXCoordinate(_chart, seg.t0);
+              const x1 = _chartsResolveFractionalXCoordinate(_chart, seg.t1);
+              if (x0 == null || x1 == null) continue; // fail closed — never extrapolate/guess a coordinate
+              const ySma0 = _series.priceToCoordinate(seg.sma0);
+              const yMa0 = _series.priceToCoordinate(seg.ma0);
+              const ySma1 = _series.priceToCoordinate(seg.sma1);
+              const yMa1 = _series.priceToCoordinate(seg.ma1);
+              if (ySma0 == null || yMa0 == null || ySma1 == null || yMa1 == null) continue;
+              const colorHex = seg.color === 'green' ? CHARTS_THEME.utBull : CHARTS_THEME.utBear;
+              quads.push({ x0: x0, x1: x1, ySma0: ySma0, yMa0: yMa0, ySma1: ySma1, yMa1: yMa1, colorHex: colorHex });
+            } catch (segErr) { continue; } // one bad segment must never abort the rest
+          }
+          // zOrder 'bottom' — same compositor tier as the dormant regime
+          // shading, confirmed to sit behind candles/SMA80/MA200/UT labels.
+          return [{ renderer: function(){ return _structureCloudRenderer(quads); }, zOrder: function(){ return 'bottom'; } }];
+        } catch (outerErr) { return []; }
+      },
+    };
+  }
+
+  // Recomputed and redrawn on every 4H render, from the SAME
+  // s.haCandles/s.sma/s.ma200Base this render call already produced — no
+  // separate calculation pass, exactly mirroring _chartsRenderRegimeShading()
+  // immediately above. Calculation always runs regardless of the toggle
+  // (consistent with every other Charts display toggle's "underlying data
+  // is preserved, not recalculated" contract) — only the RENDERED output
+  // is gated on _chartsState.structureCloudEnabled.
+  function _chartsRenderStructureCloud(){
+    if (!_chartsState.structureCloudPrimitive) return;
+    const s = _chartsState.series;
+    if (!s || !s.complete) { _chartsState.structureCloudPrimitive.setSegments([]); return; }
+    const segments = _chartsComputeStructureCloudSegments(s.haCandles, s.sma, s.ma200Base);
+    _chartsState.structureCloudSegments = segments;
+    _chartsState.structureCloudPrimitive.setSegments(_chartsState.structureCloudEnabled ? segments : []);
+  }
+
   // Builds the marker list from a computed 1H series + the current
   // visibility toggles (owner item 5: "Buy/Sell visibility controls are
   // presentation filters only — both directions must continue to be
@@ -38698,6 +39060,52 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
     _chartsState.cleanChartEnabled = checkbox ? !!checkbox.checked : false;
     _chartsPhase0Render();
     _chartsRenderOneHMarkers();
+  };
+
+  // TDAS CHARTS — SMA80/MA200 Structure Cloud (2026-09-04, owner-
+  // authorised): a pure presentation/session toggle, stored directly on
+  // _chartsState.structureCloudEnabled — same architecture as Clean Chart
+  // immediately above (deliberately NOT in canonicalStrategyConfig/
+  // researchChartConfig — see _chartsState's own field comment). Never
+  // calls _chartsFetchClosedCandles/_startBinanceWs/
+  // buildChartIndicatorSeries, never increments loadGeneration — the
+  // toggle only ever re-invokes _chartsPhase0Render(), which recomputes
+  // the cloud from the ALREADY-computed s.haCandles/s.sma/s.ma200Base
+  // (no new fetch, no new indicator calculation, no view/viewport reset).
+  window.chartsPhase0ToggleStructureCloud = function(){
+    if (!DIAG.chartsPhase0Enabled) return;
+    const checkbox = document.getElementById('chartsStructureCloudToggle');
+    _chartsState.structureCloudEnabled = checkbox ? !!checkbox.checked : false;
+    _chartsPhase0Render();
+  };
+
+  // TDAS CHARTS — Control-bar reorganisation (2026-09-04, owner-
+  // authorised): pure series-visibility toggles. Each applies the
+  // LightweightCharts-native `series.applyOptions({visible})` directly to
+  // the SAME persistent series instance created once in
+  // _ensureChartsInstances() — no recompute, no refetch, no new series,
+  // no research-config change, no viewport/autoscale change, no
+  // _chartsPhase0Render() call needed at all (applyOptions triggers its
+  // own redraw). Session-local state only, same contract as
+  // cleanChartEnabled/structureCloudEnabled — see _chartsState's own
+  // field comment.
+  window.chartsPhase0ToggleMa200Visible = function(){
+    if (!DIAG.chartsPhase0Enabled) return;
+    const checkbox = document.getElementById('chartsMa200VisibleToggle');
+    _chartsState.ma200Visible = checkbox ? !!checkbox.checked : true;
+    if (_chartsState.ma200BaseSeries) _chartsState.ma200BaseSeries.applyOptions({ visible: _chartsState.ma200Visible });
+  };
+  window.chartsPhase0ToggleSma80Visible = function(){
+    if (!DIAG.chartsPhase0Enabled) return;
+    const checkbox = document.getElementById('chartsSma80VisibleToggle');
+    _chartsState.sma80Visible = checkbox ? !!checkbox.checked : true;
+    if (_chartsState.smaSeries) _chartsState.smaSeries.applyOptions({ visible: _chartsState.sma80Visible });
+  };
+  window.chartsPhase0ToggleCandlesVisible = function(){
+    if (!DIAG.chartsPhase0Enabled) return;
+    const checkbox = document.getElementById('chartsCandlesVisibleToggle');
+    _chartsState.candlesVisible = checkbox ? !!checkbox.checked : true;
+    if (_chartsState.candleSeries) _chartsState.candleSeries.applyOptions({ visible: _chartsState.candlesVisible });
   };
 
 
@@ -39168,26 +39576,56 @@ _updateActiveTfIndicator(); // correct initial state before any scan/change even
 
   window.chartsPhase0ApplyResearchConfig = function(){
     if (!DIAG.chartsPhase0Enabled) return;
-    // TDAS CHARTS PHASE 0 — M fix (2026-08-31, owner item 3): Apply is now
-    // indicator-settings only. Symbol selection is handled entirely by
-    // chartsPhase0OnSymbolChange() above the moment the dropdown changes
-    // — this function no longer reads #chartsSymbolSelect.value, no
-    // longer computes a symbolChanged branch, and no longer fetches
-    // anything. It applies UT KV / UT ATR / MA200 length / MA200
-    // smoothing to the CURRENT symbol's research config and recomputes
-    // in place — the already-fetched candle data is unaffected by these
-    // parameters, only their interpretation is, so no refetch/WS
-    // restart is needed or performed.
-    const kv = document.getElementById('chartsUtKvInput');
-    const atr = document.getElementById('chartsUtAtrInput');
+    // TDAS CHARTS — Control-bar reorganisation (2026-09-04, owner-
+    // authorised): this button is now MA200 length/smoothing ONLY — 4H
+    // UT KV/ATR moved to its own independent chartsPhase0Apply4hUtSettings()
+    // button, mirroring 1H's existing separation. Still applies to the
+    // CURRENT symbol's research config and recomputes in place — the
+    // already-fetched candle data is unaffected by these parameters,
+    // only their interpretation is, so no refetch/WS restart is needed
+    // or performed.
     const ma200 = document.getElementById('chartsMa200Input');
     const ma200s = document.getElementById('chartsMa200SmoothInput');
     const cfg = loadResearchChartConfig(_chartsState.symbol);
     cfg.symbol = _chartsState.symbol;
-    if (kv && kv.value)   cfg.utKeyValue = parseInt(kv.value, 10);
-    if (atr && atr.value) cfg.utAtrPeriod = parseInt(atr.value, 10);
     if (ma200 && ma200.value)  cfg.ma200Length = parseInt(ma200.value, 10);
     if (ma200s && ma200s.value) cfg.ma200SmoothingLength = parseInt(ma200s.value, 10);
+    saveResearchChartConfig(cfg);
+    _populateChartsControls(cfg);
+    _recomputeAndRender(cfg);
+  };
+
+  // ── 4H UT research-controls Apply (2026-09-04, Control-bar
+  // reorganisation, owner-authorised) ─────────────────────────────────────
+  // Independent from the MA200/SMA80 Apply above and from the 1H Apply
+  // below — never touches MA200 length/smoothing, never touches 1H
+  // fields. Applies ONLY 4H UT KV/ATR and the new 4H Show overlay/Buy/
+  // Sell display filters to the current symbol's research config. Unlike
+  // 1H (which has its own independent recompute path over
+  // _chartsState.oneH.rawCandles), 4H UT is computed inside the SAME
+  // buildChartIndicatorSeries() call that also produces MA200/SMA80/RSI/
+  // ATR for this symbol — there is no separate "4H UT only" recompute
+  // function to call, so this necessarily goes through the same
+  // _recomputeAndRender(cfg) the MA200/SMA80 Apply button uses. This does
+  // not weaken the isolation from the USER's perspective: this button
+  // reads/writes ONLY UT KV/ATR/overlay/Buy/Sell fields, never MA200
+  // length/smoothing — the two Apply buttons remain fully independent in
+  // what they let the trader change, even though both ultimately share
+  // one underlying render call.
+  window.chartsPhase0Apply4hUtSettings = function(){
+    if (!DIAG.chartsPhase0Enabled) return;
+    const showOverlay = document.getElementById('chartsFourHShowOverlay');
+    const showBuy = document.getElementById('chartsFourHShowBuy');
+    const showSell = document.getElementById('chartsFourHShowSell');
+    const kv = document.getElementById('chartsUtKvInput');
+    const atr = document.getElementById('chartsUtAtrInput');
+    const cfg = loadResearchChartConfig(_chartsState.symbol);
+    cfg.symbol = _chartsState.symbol;
+    if (showOverlay) cfg.fourHShowOverlay = !!showOverlay.checked;
+    if (showBuy) cfg.fourHShowBuy = !!showBuy.checked;
+    if (showSell) cfg.fourHShowSell = !!showSell.checked;
+    if (kv && kv.value)   cfg.utKeyValue = parseInt(kv.value, 10);
+    if (atr && atr.value) cfg.utAtrPeriod = parseInt(atr.value, 10);
     saveResearchChartConfig(cfg);
     _populateChartsControls(cfg);
     _recomputeAndRender(cfg);
